@@ -180,6 +180,12 @@ LUTzy/
 
 ---
 
+## 📄 License
+
+LUTzy is released under the [MIT License](LICENSE) — free to use, modify, and distribute.
+
+---
+
 <div align="center">
 <sub>Built with SwiftUI · Core Image · Metal — and nothing else.</sub>
 </div>
