@@ -27,3 +27,6 @@ DerivedData/
 build/
 *.o
 *.swiftmodule
+
+# Claude Code
+.claude/
