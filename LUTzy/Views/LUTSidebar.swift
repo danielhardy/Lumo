@@ -5,12 +5,26 @@ struct LUTSidebar: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var searchText = ""
 
+    /// Names of collapsed folders. Stored as a set of category names (a folder
+    /// absent from the set is expanded), so newly-discovered folders default to
+    /// expanded. Persisted across launches and re-scans.
+    private static let collapsedKey = "lutzy.collapsedLUTCategories"
+    @State private var collapsed: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: LUTSidebar.collapsedKey) ?? [])
+
+    private var isSearching: Bool { !searchText.isEmpty }
+
     private var filteredCategories: [LUTLibrary.Category] {
         if searchText.isEmpty {
             return viewModel.library.categories
         }
         let query = searchText.lowercased()
         return viewModel.library.categories.compactMap { cat in
+            // A folder-name match surfaces the whole folder; otherwise keep only
+            // the LUTs whose own name matches.
+            if cat.name.lowercased().contains(query) {
+                return cat
+            }
             let filtered = cat.luts.filter { $0.name.lowercased().contains(query) }
             return filtered.isEmpty ? nil : LUTLibrary.Category(id: cat.id, name: cat.name, luts: filtered)
         }
@@ -19,11 +33,21 @@ struct LUTSidebar: View {
     var body: some View {
         VStack(spacing: 0) {
             // Header
-            HStack {
+            HStack(spacing: 8) {
                 Text("LUTs")
                     .font(.headline)
                     .foregroundColor(.secondary)
                 Spacer()
+                if filteredCategories.count > 1 {
+                    Button(action: toggleAll) {
+                        Image(systemName: allExpanded ? "rectangle.compress.vertical"
+                                                       : "rectangle.expand.vertical")
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundColor(.secondary)
+                    .disabled(isSearching)
+                    .help(allExpanded ? "Collapse all folders" : "Expand all folders")
+                }
                 Text("\(viewModel.library.allLUTs.count)")
                     .font(.caption)
                     .foregroundColor(Color(nsColor: .tertiaryLabelColor))
@@ -34,11 +58,30 @@ struct LUTSidebar: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
 
-            // Search
-            TextField("Search", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
+            // Search (matches LUT names and folder names)
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                TextField("Search", text: $searchText)
+                    .textFieldStyle(.plain)
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Clear search")
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+            .onExitCommand { searchText = "" }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
 
             Divider()
 
@@ -76,15 +119,59 @@ struct LUTSidebar: View {
             set: { viewModel.selectLUT($0) }
         )) {
             ForEach(filteredCategories) { category in
-                Section(header: Text(category.name).font(.caption).foregroundColor(.secondary)) {
+                Section(isExpanded: isExpandedBinding(category.id)) {
                     ForEach(category.luts) { lut in
                         LUTRow(lut: lut, isSelected: viewModel.selectedLUT == lut)
                             .tag(lut)
+                    }
+                } header: {
+                    HStack {
+                        Text(category.name)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("\(category.luts.count)")
+                            .font(.caption2)
+                            .foregroundColor(Color(nsColor: .tertiaryLabelColor))
                     }
                 }
             }
         }
         .listStyle(.sidebar)
+    }
+
+    // MARK: - Folder collapse state
+
+    /// True when no visible folder is collapsed (drives the toggle-all icon).
+    private var allExpanded: Bool {
+        collapsed.isDisjoint(with: Set(filteredCategories.map(\.id)))
+    }
+
+    /// Expansion binding for one folder. While searching, folders are forced
+    /// open so matches are always visible and writes are ignored.
+    private func isExpandedBinding(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { isSearching || !collapsed.contains(id) },
+            set: { expand in
+                guard !isSearching else { return }
+                if expand { collapsed.remove(id) } else { collapsed.insert(id) }
+                persistCollapsed()
+            }
+        )
+    }
+
+    private func toggleAll() {
+        let ids = Set(filteredCategories.map(\.id))
+        if allExpanded {
+            collapsed.formUnion(ids)   // everything open → collapse all
+        } else {
+            collapsed.subtract(ids)    // some closed → expand all
+        }
+        persistCollapsed()
+    }
+
+    private func persistCollapsed() {
+        UserDefaults.standard.set(Array(collapsed), forKey: Self.collapsedKey)
     }
 }
 
