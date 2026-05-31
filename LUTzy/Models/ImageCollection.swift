@@ -17,12 +17,6 @@ final class ImageCollection: ObservableObject {
     @Published var selectedIndex: Int = 0
     @Published var isActive: Bool = false
 
-    /// All image extensions LUTzy can open.
-    private static let supportedExtensions: Set<String> = [
-        "dng", "cr2", "cr3", "nef", "arw", "orf", "raf", "rw2", "pef", "srw", "x3f", "raw",
-        "jpg", "jpeg", "png", "tiff", "tif", "bmp", "heic",
-    ]
-
     private var thumbnailTask: Task<Void, Never>?
 
     var selectedItem: Item? {
@@ -47,7 +41,7 @@ final class ImageCollection: ObservableObject {
         var newItems: [Item] = []
         while let fileURL = enumerator.nextObject() as? URL {
             let ext = fileURL.pathExtension.lowercased()
-            guard Self.supportedExtensions.contains(ext) else { continue }
+            guard ImageProcessor.supportedExtensions.contains(ext) else { continue }
             let name = fileURL.deletingPathExtension().lastPathComponent
             newItems.append(Item(url: fileURL, displayName: name, imageData: nil))
         }
