@@ -12,17 +12,31 @@ final class ImageProcessor {
 
     private let context: CIContext
 
-    /// All image types we can open.
-    static let supportedTypes: [UTType] = [
-        .rawImage,
-        .jpeg, .png, .tiff, .bmp, .heic,
-    ]
+    // MARK: - Supported formats (single source of truth)
 
-    /// RAW-specific types (need CIRAWFilter).
-    private static let rawTypes: Set<String> = [
+    /// Canonical RAW file extensions (lowercased). RAW files are demosaiced via CIRAWFilter.
+    /// Add a new RAW format here and it flows to RAW detection and `supportedExtensions`.
+    private static let rawExtensions: Set<String> = [
         "dng", "cr2", "cr3", "nef", "arw", "orf",
         "raf", "rw2", "pef", "srw", "x3f", "raw",
     ]
+
+    /// Canonical standard (non-RAW) image extensions (lowercased), loaded directly as a `CIImage`.
+    /// Add a new standard format here and it flows to `supportedExtensions` and `supportedTypes`.
+    private static let standardExtensions: Set<String> = [
+        "jpg", "jpeg", "png", "tiff", "tif", "bmp", "heic",
+    ]
+
+    /// Every extension LUTzy can open (RAW + standard, lowercased). The one definition
+    /// shared by both the open panel and folder import — derive from it, never duplicate it.
+    static let supportedExtensions: Set<String> = rawExtensions.union(standardExtensions)
+
+    /// Image types for `NSOpenPanel`, derived from the canonical extension sets above.
+    /// `.rawImage` covers every RAW format in a single type; standard extensions map to system UTTypes.
+    static let supportedTypes: [UTType] = {
+        let standardTypes = standardExtensions.compactMap { UTType(filenameExtension: $0) }
+        return [.rawImage] + Set(standardTypes).sorted { $0.identifier < $1.identifier }
+    }()
 
     private init() {
         // Use Metal for GPU acceleration when available.
@@ -39,7 +53,7 @@ final class ImageProcessor {
     func loadImage(from url: URL) throws -> CIImage {
         let ext = url.pathExtension.lowercased()
 
-        if Self.rawTypes.contains(ext) {
+        if Self.rawExtensions.contains(ext) {
             return try loadRAW(from: url)
         } else {
             guard let image = CIImage(contentsOf: url) else {
@@ -49,26 +63,24 @@ final class ImageProcessor {
         }
     }
 
+    /// Develop a RAW/DNG at **neutral / default `CIRAWFilter` settings** — no
+    /// user develop adjustments are applied.
+    ///
+    /// This is the single source of truth for the "neutral baseline" RAW
+    /// render. Both normal RAW loading (`loadRAW`) and LUT derivation
+    /// (`RecipeExtractor`) develop RAWs through here, so the derive baseline
+    /// can never drift from the render path and stays independent of any
+    /// user-adjustable develop path. Returns `nil` if the file can't be decoded.
+    static func developRAWNeutral(at url: URL) -> CIImage? {
+        return CIRAWFilter(imageURL: url)?.outputImage
+    }
+
     /// Load a RAW/DNG file using CIRAWFilter for proper demosaicing.
     private func loadRAW(from url: URL) throws -> CIImage {
-        if #available(macOS 12.0, *) {
-            guard let filter = CIRAWFilter(imageURL: url) else {
-                throw ImageError.cannotLoad(url.lastPathComponent)
-            }
-            guard let output = filter.outputImage else {
-                throw ImageError.processingFailed
-            }
-            return output
-        } else {
-            // Fallback for older macOS
-            guard let filter = CIFilter(imageURL: url, options: nil) else {
-                throw ImageError.cannotLoad(url.lastPathComponent)
-            }
-            guard let output = filter.outputImage else {
-                throw ImageError.processingFailed
-            }
-            return output
+        guard let output = Self.developRAWNeutral(at: url) else {
+            throw ImageError.cannotLoad(url.lastPathComponent)
         }
+        return output
     }
 
     // MARK: - Preview rendering

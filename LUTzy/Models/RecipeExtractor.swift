@@ -82,9 +82,11 @@ struct RecipeExtractor {
 
         progress?(0.05, "Loading RAW…")
 
-        // 1. RAW → CIImage via default CIRAWFilter (matches LUTzy's apply path)
-        guard let rawFilter = CIRAWFilter(imageURL: rawURL),
-              let rawImage = rawFilter.outputImage else {
+        // 1. RAW → CIImage at neutral CIRAWFilter defaults. Routed through the
+        //    single shared helper on ImageProcessor so the derive baseline
+        //    can't drift from the render path — and stays independent of any
+        //    user develop settings.
+        guard let rawImage = ImageProcessor.developRAWNeutral(at: rawURL) else {
             throw ExtractorError.cannotLoadRAW(rawURL.lastPathComponent)
         }
 
