@@ -27,6 +27,18 @@ final class AppViewModel: ObservableObject {
     @Published var isShowingOriginal: Bool = false
     @Published var isSideBySide: Bool = true
 
+    /// Info inspector (EXIF + histogram) visibility. Computing the histogram is
+    /// gated on this so we don't tally pixels for a panel nobody's looking at.
+    @Published var isInspectorPresented: Bool = false {
+        didSet { if isInspectorPresented { updateHistogram() } }
+    }
+    /// EXIF/TIFF/GPS metadata of the loaded image, read at load time.
+    @Published var metadata: ImageMetadata = ImageMetadata()
+    /// Histogram of the currently displayed image (graded result, or original
+    /// while comparing). `nil` until computed / when no image is loaded.
+    @Published var histogram: HistogramData?
+    private var histogramTask: Task<Void, Never>?
+
     @Published var isLoading: Bool = false
     @Published var isExporting: Bool = false
     /// Progress (0...1) during a multi-image "Export All" run.
@@ -100,6 +112,7 @@ final class AppViewModel: ObservableObject {
                 self.sourceURL = url
                 self.sourceName = url.lastPathComponent
                 self.sourceSize = ci.extent.size
+                self.processedImage = nil
                 self.statusMessage = "\(sourceName)  \(Int(sourceSize.width))×\(Int(sourceSize.height))"
                 self.isLoading = false
 
@@ -112,6 +125,9 @@ final class AppViewModel: ObservableObject {
                 } else {
                     updatePreview(ci)
                 }
+
+                refreshMetadata(url: url, data: nil)
+                updateHistogram()
             } catch {
                 self.isLoading = false
                 self.presentError("Error: \(error.localizedDescription)")
@@ -146,11 +162,15 @@ final class AppViewModel: ObservableObject {
                 self.sourceURL = nil
                 self.sourceName = name
                 self.sourceSize = ci.extent.size
+                self.processedImage = nil
                 self.statusMessage = "\(sourceName)  \(Int(sourceSize.width))\u{00D7}\(Int(sourceSize.height))"
                 self.isLoading = false
 
                 updateOriginalPreview(ci)
                 if selectedLUT != nil { applyLUT() } else { updatePreview(ci) }
+
+                refreshMetadata(url: nil, data: data)
+                updateHistogram()
             } catch {
                 self.isLoading = false
                 self.presentError("Error: \(error.localizedDescription)")
@@ -250,6 +270,7 @@ final class AppViewModel: ObservableObject {
         guard let lut = selectedLUT else {
             processedImage = nil
             updatePreview(source)
+            updateHistogram()
             return
         }
 
@@ -261,6 +282,7 @@ final class AppViewModel: ObservableObject {
             guard !Task.isCancelled else { return }
             self.processedImage = result
             self.updatePreview(result)
+            self.updateHistogram()
         }
     }
 
@@ -295,10 +317,57 @@ final class AppViewModel: ObservableObject {
                 updatePreview(processed)
             }
         }
+        updateHistogram()
     }
 
     func toggleSideBySide() {
         isSideBySide.toggle()
+    }
+
+    // MARK: - Info inspector (EXIF + histogram)
+
+    func toggleInspector() {
+        isInspectorPresented.toggle()
+    }
+
+    /// The image the histogram should describe: the original while comparing
+    /// (Space held), the graded result when a LUT is active, otherwise source.
+    private var histogramSourceImage: CIImage? {
+        if isShowingOriginal { return sourceImage }
+        if selectedLUT != nil, let processed = processedImage { return processed }
+        return sourceImage
+    }
+
+    /// Recompute the histogram for the currently displayed image. No-op while
+    /// the inspector is closed. Cheap (downscaled tally) but run off-actor and
+    /// cancellable so dragging the intensity slider stays smooth.
+    private func updateHistogram() {
+        guard isInspectorPresented else { return }
+        guard let image = histogramSourceImage else {
+            histogram = nil
+            return
+        }
+        histogramTask?.cancel()
+        histogramTask = Task.detached { [processor] in
+            let result = processor.histogram(of: image)
+            if Task.isCancelled { return }
+            await MainActor.run { self.histogram = result }
+        }
+    }
+
+    /// Read EXIF/TIFF/GPS metadata off the main actor and publish it.
+    private func refreshMetadata(url: URL?, data: Data?) {
+        Task.detached {
+            let meta: ImageMetadata
+            if let url {
+                meta = ImageMetadata.read(from: url)
+            } else if let data {
+                meta = ImageMetadata.read(from: data)
+            } else {
+                meta = ImageMetadata()
+            }
+            await MainActor.run { self.metadata = meta }
+        }
     }
 
     // MARK: - Export

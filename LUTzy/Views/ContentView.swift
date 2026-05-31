@@ -64,6 +64,10 @@ struct ContentView: View {
         } detail: {
             detailContent
         }
+        .inspector(isPresented: $viewModel.isInspectorPresented) {
+            InfoInspectorView(viewModel: viewModel)
+                .inspectorColumnWidth(min: 240, ideal: 280, max: 360)
+        }
     }
 
     private var detailContent: some View {
@@ -107,6 +111,16 @@ struct ContentView: View {
             )
         }
         .help("Toggle side-by-side comparison (V)")
+
+        // Info inspector (histogram + EXIF)
+        Button {
+            viewModel.toggleInspector()
+        } label: {
+            Label("Info", systemImage: "sidebar.right")
+        }
+        .help("Show histogram & EXIF (⌘I)")
+        .keyboardShortcut("i", modifiers: .command)
+        .disabled(viewModel.sourceImage == nil)
 
         Divider()
 
