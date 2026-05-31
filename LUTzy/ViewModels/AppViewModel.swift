@@ -356,6 +356,7 @@ final class AppViewModel: ObservableObject {
 
         let lut = selectedLUT
         let fmt = exportFormat
+        let intensity = lutIntensity
 
         Task.detached { [processor] in
             var exported = 0
@@ -372,7 +373,8 @@ final class AppViewModel: ObservableObject {
                 }
 
                 if let source {
-                    let graded = lut?.apply(to: source) ?? source
+                    // Honor the intensity slider so Export All matches the preview.
+                    let graded = lut?.apply(to: source, intensity: intensity) ?? source
                     let suffix = lut.map { "_" + $0.name.replacingOccurrences(of: " ", with: "_") } ?? ""
                     let dest = uniqueExportURL(in: folder, base: item.name + suffix, ext: fmt.fileExtension)
                     do {
