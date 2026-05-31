@@ -1,0 +1,31 @@
+name: CI
+
+# Build LUTzy on every push to main and every PR targeting it, so broken
+# commits are caught automatically. Zero third-party actions beyond the
+# official checkout — matches the project's zero-dependency ethos.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel an in-progress run if newer commits are pushed to the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: swift build (macOS 14)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Build (debug)
+        run: swift build -v
+
+      - name: Build (release)
+        run: swift build -c release
