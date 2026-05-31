@@ -28,6 +28,18 @@ struct ContentView: View {
             }
             .modifier(KeyboardShortcuts(viewModel: viewModel))
             .modifier(MenuCommandReceivers(viewModel: viewModel))
+            .alert(
+                "Something went wrong",
+                isPresented: Binding(
+                    get: { viewModel.errorMessage != nil },
+                    set: { if !$0 { viewModel.errorMessage = nil } }
+                ),
+                presenting: viewModel.errorMessage
+            ) { _ in
+                Button("OK", role: .cancel) { viewModel.errorMessage = nil }
+            } message: { message in
+                Text(message)
+            }
     }
 
     private func handlePhotosSelection(_ selection: [PhotosPickerItem]) {
