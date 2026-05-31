@@ -152,6 +152,17 @@ struct ContentView: View {
         }
         .keyboardShortcut("s")
         .disabled(viewModel.sourceImage == nil)
+
+        // Batch export — only when a multi-image set is loaded
+        if viewModel.collection.isActive {
+            Button {
+                viewModel.batchExportDialog()
+            } label: {
+                Label("Export All", systemImage: "square.and.arrow.up.on.square")
+            }
+            .help("Apply the current LUT to all imported images and export to a folder (⌘⇧E)")
+            .disabled(viewModel.isExporting)
+        }
     }
 }
 
@@ -310,6 +321,9 @@ struct MenuCommandReceivers: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: .exportImage)) { _ in
                 viewModel.exportDialog()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .exportAll)) { _ in
+                viewModel.batchExportDialog()
+            }
             .onReceive(NotificationCenter.default.publisher(for: .chooseLUTFolder)) { _ in
                 viewModel.chooseLUTFolder()
             }
@@ -330,6 +344,7 @@ struct MenuCommandReceivers: ViewModifier {
 extension Notification.Name {
     static let openImage = Notification.Name("LUTzy.openImage")
     static let exportImage = Notification.Name("LUTzy.exportImage")
+    static let exportAll = Notification.Name("LUTzy.exportAll")
     static let chooseLUTFolder = Notification.Name("LUTzy.chooseLUTFolder")
     static let importFromPhotos = Notification.Name("LUTzy.importFromPhotos")
     static let importFolder = Notification.Name("LUTzy.importFolder")
