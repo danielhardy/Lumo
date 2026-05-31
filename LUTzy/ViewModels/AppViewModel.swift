@@ -34,6 +34,10 @@ final class AppViewModel: ObservableObject {
     @Published var statusMessage: String = "Open an image to get started"
     @Published var exportFormat: ImageProcessor.ExportFormat = .jpeg
 
+    /// Non-nil when a hard failure should be surfaced as a dismissible alert.
+    /// Bound to an `.alert` in ContentView; cleared when the user dismisses it.
+    @Published var errorMessage: String?
+
     @Published var isPhotosPickerPresented: Bool = false
 
     // MARK: - Recipe extractor state (scratch — not saved until the user clicks Save)
@@ -73,6 +77,16 @@ final class AppViewModel: ObservableObject {
         library.restoreFolder()
     }
 
+    // MARK: - Error presentation
+
+    /// Surface a user-facing error both as a dismissible alert and in the
+    /// status bar. Used for hard failures (load / export / derive / save);
+    /// transient preview hiccups stay status-bar-only to avoid alert spam.
+    private func presentError(_ message: String) {
+        statusMessage = message
+        errorMessage = message
+    }
+
     // MARK: - Image loading
 
     func openImage(url: URL) {
@@ -100,7 +114,7 @@ final class AppViewModel: ObservableObject {
                 }
             } catch {
                 self.isLoading = false
-                self.statusMessage = "Error: \(error.localizedDescription)"
+                self.presentError("Error: \(error.localizedDescription)")
             }
         }
     }
@@ -139,7 +153,7 @@ final class AppViewModel: ObservableObject {
                 if selectedLUT != nil { applyLUT() } else { updatePreview(ci) }
             } catch {
                 self.isLoading = false
-                self.statusMessage = "Error: \(error.localizedDescription)"
+                self.presentError("Error: \(error.localizedDescription)")
             }
         }
     }
@@ -319,7 +333,7 @@ final class AppViewModel: ObservableObject {
                 } catch {
                     await MainActor.run {
                         self.isExporting = false
-                        self.statusMessage = "Export failed: \(error.localizedDescription)"
+                        self.presentError("Export failed: \(error.localizedDescription)")
                     }
                 }
             }
@@ -491,7 +505,7 @@ final class AppViewModel: ObservableObject {
                     self.isDeriving = false
                     self.deriveProgress = 0
                     self.deriveStage = ""
-                    self.statusMessage = "Derive failed: \(error.localizedDescription)"
+                    self.presentError("Derive failed: \(error.localizedDescription)")
                 }
             }
         }
@@ -526,7 +540,7 @@ final class AppViewModel: ObservableObject {
                     library.scan(folder)
                 }
             } catch {
-                statusMessage = "Save failed: \(error.localizedDescription)"
+                presentError("Save failed: \(error.localizedDescription)")
             }
         }
     }
