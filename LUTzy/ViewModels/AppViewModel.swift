@@ -18,6 +18,10 @@ final class AppViewModel: ObservableObject {
     @Published var selectedLUT: CubeLUT?
     @Published var processedImage: CIImage?
 
+    /// LUT strength, 0...1 (1 = full LUT, 0 = original). Persists across LUT
+    /// changes so a chosen strength can be auditioned against different looks.
+    @Published var lutIntensity: Double = 1.0
+
     @Published var previewNSImage: NSImage?
     @Published var originalPreviewNSImage: NSImage?
     @Published var isShowingOriginal: Bool = false
@@ -234,7 +238,7 @@ final class AppViewModel: ObservableObject {
         }
 
         previewTask = Task {
-            guard let result = lut.apply(to: source) else {
+            guard let result = lut.apply(to: source, intensity: lutIntensity) else {
                 self.statusMessage = "LUT application failed"
                 return
             }
@@ -242,6 +246,15 @@ final class AppViewModel: ObservableObject {
             self.processedImage = result
             self.updatePreview(result)
         }
+    }
+
+    /// Set the LUT strength (0...1) and re-render the preview. Cheap to call
+    /// repeatedly while dragging — `applyLUT` cancels any in-flight render.
+    func setLUTIntensity(_ value: Double) {
+        let clamped = max(0, min(1, value))
+        guard clamped != lutIntensity else { return }
+        lutIntensity = clamped
+        applyLUT()
     }
 
     // MARK: - Preview

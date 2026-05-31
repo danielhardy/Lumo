@@ -143,6 +143,25 @@ struct CubeLUT: Identifiable, Hashable {
         return filter.outputImage
     }
 
+    /// Apply this LUT at a given strength and return the result.
+    ///
+    /// `intensity` is clamped to 0...1: `1` is the full LUT, `0` is the
+    /// untouched original, and values in between crossfade the graded result
+    /// back toward the original via `CIDissolveTransition`. The graded image
+    /// and the source share the same extent (a color cube is a per-pixel
+    /// remap), so the dissolve is a clean opacity blend.
+    func apply(to image: CIImage, intensity: Double) -> CIImage? {
+        let t = max(0, min(1, intensity))
+        if t <= 0 { return image }
+        guard let graded = apply(to: image) else { return nil }
+        if t >= 1 { return graded }
+        guard let mix = CIFilter(name: "CIDissolveTransition") else { return graded }
+        mix.setValue(image, forKey: kCIInputImageKey)
+        mix.setValue(graded, forKey: kCIInputTargetImageKey)
+        mix.setValue(t, forKey: kCIInputTimeKey)
+        return mix.outputImage ?? graded
+    }
+
     // MARK: - Writing
 
     /// Serialize a cube to .cube text format. Inverse of the parser above.

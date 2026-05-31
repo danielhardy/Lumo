@@ -98,6 +98,29 @@ struct ContentView: View {
 
         Divider()
 
+        // LUT intensity
+        HStack(spacing: 6) {
+            Text("Intensity")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Slider(
+                value: Binding(
+                    get: { viewModel.lutIntensity },
+                    set: { viewModel.setLUTIntensity($0) }
+                ),
+                in: 0...1
+            )
+            .frame(width: 100)
+            Text("\(Int((viewModel.lutIntensity * 100).rounded()))%")
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 36, alignment: .trailing)
+        }
+        .help("LUT intensity (0–100%)")
+        .disabled(viewModel.selectedLUT == nil)
+
+        Divider()
+
         // Import menu
         Menu {
             Button("Open Image...") {
