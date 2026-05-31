@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import AppKit
 
 /// Main window layout: sidebar + preview + toolbar.
 struct ContentView: View {
@@ -71,21 +72,31 @@ struct ContentView: View {
     }
 
     private var detailContent: some View {
-        VStack(spacing: 0) {
-            PreviewView(viewModel: viewModel)
-
-            if viewModel.collection.isActive {
+        HStack(spacing: 0) {
+            if viewModel.isSourceBrowserPresented && !viewModel.collection.items.isEmpty {
+                SourceBrowserView(viewModel: viewModel)
+                    .frame(width: 240)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
                 Divider()
-                FilmstripView(collection: viewModel.collection) { index in
-                    viewModel.selectCollectionImage(at: index)
-                }
-                .frame(height: 100)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            StatusBar(viewModel: viewModel)
+            VStack(spacing: 0) {
+                PreviewView(viewModel: viewModel)
+
+                if viewModel.collection.isActive {
+                    Divider()
+                    FilmstripView(collection: viewModel.collection) { index in
+                        viewModel.selectCollectionImage(at: index)
+                    }
+                    .frame(height: 100)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+
+                StatusBar(viewModel: viewModel)
+            }
         }
         .animation(.easeInOut(duration: 0.25), value: viewModel.collection.isActive)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.isSourceBrowserPresented)
     }
 
     @ViewBuilder
@@ -111,6 +122,15 @@ struct ContentView: View {
             )
         }
         .help("Toggle side-by-side comparison (V)")
+
+        // Source folder browser
+        Button {
+            viewModel.toggleSourceBrowser()
+        } label: {
+            Label("Source", systemImage: "sidebar.leading")
+        }
+        .help("Show the source folder file browser")
+        .disabled(viewModel.collection.items.isEmpty)
 
         // Info inspector (histogram + EXIF)
         Button {
@@ -156,8 +176,13 @@ struct ContentView: View {
             Button("Import from Photos...") {
                 viewModel.importFromPhotos()
             }
-            Button("Import Folder...") {
-                viewModel.importFolder()
+            Button("Open Source Folder...") {
+                viewModel.chooseSourceFolder()
+            }
+            if !viewModel.collection.items.isEmpty {
+                Button("Refresh Source Folder") {
+                    viewModel.refreshSource()
+                }
             }
         } label: {
             Label("Import", systemImage: "photo.on.rectangle")
@@ -209,9 +234,9 @@ struct StatusBar: View {
 
             // Hints
             HStack(spacing: 12) {
-                KeyHint(key: "←→", label: "cycle LUTs")
+                KeyHint(key: "↑↓", label: "cycle LUTs")
                 if viewModel.collection.isActive {
-                    KeyHint(key: "[ ]", label: "cycle images")
+                    KeyHint(key: "←→", label: "cycle images")
                 }
                 KeyHint(key: "V", label: viewModel.isSideBySide ? "single view" : "side-by-side")
                 KeyHint(key: "Space", label: "compare")
@@ -291,22 +316,36 @@ final class KeyMonitor {
         // If a sheet is up, let the sheet's text fields and buttons handle keys.
         if vm.isRecipeSheetPresented { return event }
 
+        // Don't hijack keys while editing text (the search field, etc.) — a
+        // focused SwiftUI TextField makes the window's field editor (an NSText)
+        // the first responder.
+        if NSApp.keyWindow?.firstResponder is NSText { return event }
+
         // Don't consume Command-modified events — those belong to the menu bar.
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if mods.contains(.command) { return event }
 
         let isDown = event.type == .keyDown
 
-        // Hardware key codes (US layout independent for arrows/space)
+        // Hardware key codes (US layout independent for arrows/space).
+        // ↑/↓ cycle LUTs; ←/→ step through the source files.
         switch event.keyCode {
         case 49:  // Space — hold to compare original
             vm.showOriginal(isDown)
             return nil
-        case 123: // Left arrow — previous LUT
+        case 126: // Up arrow — previous LUT
             if isDown { vm.selectPreviousLUT() }
             return nil
-        case 124: // Right arrow — next LUT
+        case 125: // Down arrow — next LUT
             if isDown { vm.selectNextLUT() }
+            return nil
+        case 123: // Left arrow — previous image
+            guard vm.collection.isActive else { return event }
+            if isDown { vm.selectPreviousImage() }
+            return nil
+        case 124: // Right arrow — next image
+            guard vm.collection.isActive else { return event }
+            if isDown { vm.selectNextImage() }
             return nil
         default:
             break
@@ -356,8 +395,11 @@ struct MenuCommandReceivers: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: .importFromPhotos)) { _ in
                 viewModel.importFromPhotos()
             }
-            .onReceive(NotificationCenter.default.publisher(for: .importFolder)) { _ in
-                viewModel.importFolder()
+            .onReceive(NotificationCenter.default.publisher(for: .openSourceFolder)) { _ in
+                viewModel.chooseSourceFolder()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .refreshSourceFolder)) { _ in
+                viewModel.refreshSource()
             }
             .onReceive(NotificationCenter.default.publisher(for: .deriveRecipe)) { _ in
                 viewModel.presentRecipeExtractor()
@@ -373,6 +415,7 @@ extension Notification.Name {
     static let exportAll = Notification.Name("LUTzy.exportAll")
     static let chooseLUTFolder = Notification.Name("LUTzy.chooseLUTFolder")
     static let importFromPhotos = Notification.Name("LUTzy.importFromPhotos")
-    static let importFolder = Notification.Name("LUTzy.importFolder")
+    static let openSourceFolder = Notification.Name("LUTzy.openSourceFolder")
+    static let refreshSourceFolder = Notification.Name("LUTzy.refreshSourceFolder")
     static let deriveRecipe = Notification.Name("LUTzy.deriveRecipe")
 }
