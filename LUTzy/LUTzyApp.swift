@@ -49,10 +49,15 @@ struct LUTzyApp: App {
                 }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
 
-                Button("Import Folder...") {
-                    NotificationCenter.default.post(name: .importFolder, object: nil)
+                Button("Open Source Folder...") {
+                    NotificationCenter.default.post(name: .openSourceFolder, object: nil)
                 }
                 .keyboardShortcut("i", modifiers: [.command, .option])
+
+                Button("Refresh Source Folder") {
+                    NotificationCenter.default.post(name: .refreshSourceFolder, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: [.command])
 
                 Divider()
 

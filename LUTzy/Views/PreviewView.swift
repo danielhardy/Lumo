@@ -129,7 +129,7 @@ struct PreviewView: View {
                 .font(.title3)
                 .foregroundColor(.secondary)
 
-            Text("⌘O open  \u{2022}  ⌘⇧I import from Photos  \u{2022}  ⌘⌥I import folder")
+            Text("⌘O open  \u{2022}  ⌘⇧I import from Photos  \u{2022}  ⌘⌥I source folder")
                 .font(.caption)
                 .foregroundColor(Color(nsColor: .tertiaryLabelColor))
         }
@@ -145,10 +145,7 @@ struct PreviewView: View {
             Task { @MainActor in
                 var isDir: ObjCBool = false
                 if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
-                    viewModel.collection.loadFromFolder(url)
-                    if let first = viewModel.collection.items.first, let fileURL = first.url {
-                        viewModel.openImage(url: fileURL)
-                    }
+                    viewModel.openSourceFolder(url: url)
                 } else {
                     viewModel.collection.clear()
                     viewModel.openImage(url: url)

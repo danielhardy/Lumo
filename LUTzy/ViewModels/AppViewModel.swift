@@ -32,6 +32,8 @@ final class AppViewModel: ObservableObject {
     @Published var isInspectorPresented: Bool = false {
         didSet { if isInspectorPresented { updateHistogram() } }
     }
+    /// Source-folder file browser panel visibility.
+    @Published var isSourceBrowserPresented: Bool = false
     /// EXIF/TIFF/GPS metadata of the loaded image, read at load time.
     @Published var metadata: ImageMetadata = ImageMetadata()
     /// Histogram of the currently displayed image (graded result, or original
@@ -87,6 +89,14 @@ final class AppViewModel: ObservableObject {
             }
         }
         library.restoreFolder()
+
+        // Restore a previously-chosen source folder and open its first image.
+        if collection.restoreSourceFolder() {
+            isSourceBrowserPresented = true
+            if let first = collection.items.first, let fileURL = first.url {
+                openImage(url: fileURL)
+            }
+        }
     }
 
     // MARK: - Error presentation
@@ -189,20 +199,38 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func importFolder() {
+    /// Choose a folder to use as the persistent image source, scan it (incl.
+    /// subfolders), reveal the file browser, and open the first image.
+    func chooseSourceFolder() {
         let panel = NSOpenPanel()
-        panel.title = "Import Image Folder"
+        panel.title = "Choose Source Folder"
+        panel.prompt = "Use Folder"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
 
         if panel.runModal() == .OK, let url = panel.url {
-            collection.loadFromFolder(url)
-            // Load the first image
-            if let first = collection.items.first, let fileURL = first.url {
-                openImage(url: fileURL)
-            }
+            openSourceFolder(url: url)
         }
+    }
+
+    /// Adopt `url` as the source folder (persisted), reveal the browser, and
+    /// open its first image. Shared by the menu/toolbar action and folder drops.
+    func openSourceFolder(url: URL) {
+        collection.setSourceFolder(url)
+        isSourceBrowserPresented = true
+        if let first = collection.items.first, let fileURL = first.url {
+            openImage(url: fileURL)
+        }
+    }
+
+    func toggleSourceBrowser() {
+        isSourceBrowserPresented.toggle()
+    }
+
+    /// Re-scan the current source folder for added/removed files.
+    func refreshSource() {
+        collection.refresh()
     }
 
     func selectCollectionImage(at index: Int) {
