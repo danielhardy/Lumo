@@ -239,9 +239,12 @@ so the README was the only wrong copy of the keymap.
 
 1. ~~**`LUTzyKit` split + test target.**~~ **Done** — see §2.
 2. ~~**Split `AppViewModel` and the rest of `ContentView`.**~~ **Done** — see §3.
-3. **Distil `PHASE2_SPEC.md`** to the decisions, then start Phase 2 against it. This is now the only
-   structural item left, and the one with the most leverage: Phase 2's `EditDocument` spine would
-   subsume `processedImage`/`selectedLUT`/`lutIntensity` and give undo and per-image edits for free.
+3. ~~**Distil `PHASE2_SPEC.md`**~~ **Done** — 292 lines, §6 of it is the ordered migration.
+
+**Phase 2 itself is now the only work left.** Step 0 of its migration is already complete (the library
+split and test harness). Step 1 — the `WorkingSpace` colour seam — is self-contained, changes no output
+values, and closes a real latent bug on its own: `createCGImage` passes no colour space in two places,
+so preview and export rasterize through different spaces. That is the natural next commit.
 
 ### Where coverage is still thin
 
