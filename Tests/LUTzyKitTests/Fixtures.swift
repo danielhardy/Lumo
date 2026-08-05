@@ -3,6 +3,7 @@ import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 import XCTest
+@testable import LUTzyKit
 
 /// Test fixtures are **generated**, never checked in: LUTzy's inputs are RAWs
 /// and LUT files that run to tens of MB, and a repo full of binary fixtures ages
@@ -128,6 +129,29 @@ enum Fixtures {
         CGImageDestinationAddImage(dest, image, properties as CFDictionary)
         guard CGImageDestinationFinalize(dest) else { throw FixtureError.cannotWriteImage }
         return url
+    }
+
+    // MARK: - Local-only RAW
+
+    /// A real RAW file, if this checkout happens to have one.
+    ///
+    /// Everything else here is generated, but a RAW cannot be: a synthetic DNG that `CIRAWFilter`
+    /// will actually decode is a project of its own, and a camera file is tens of MB and not
+    /// license-clean, so `realworldtest/` is gitignored. CI therefore never has one — a test that
+    /// needs a RAW must `XCTSkip` when this is `nil` rather than fail. See `docs/PHASE2_SPEC.md` §8.9.
+    static var localRAWURL: URL? {
+        let repoRoot = URL(fileURLWithPath: #filePath)   // Tests/LUTzyKitTests/Fixtures.swift
+            .deletingLastPathComponent()                 // Tests/LUTzyKitTests
+            .deletingLastPathComponent()                 // Tests
+            .deletingLastPathComponent()                 // repo root
+        let folder = repoRoot.appendingPathComponent("realworldtest")
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: nil
+        ) else { return nil }
+        return entries
+            .filter { ImageProcessor.rawExtensions.contains($0.pathExtension.lowercased()) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .first
     }
 
     /// Dimensions ImageIO reports for a file on disk.

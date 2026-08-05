@@ -145,10 +145,21 @@ Then select the **LUTzy** scheme and **Run** (`⌘R`). For a sandboxed build, ad
 ```bash
 swift test
 ```
-104 tests, no fixtures to download — everything they need is generated into a temp directory. CI runs
+132 tests, no fixtures to download — everything they need is generated into a temp directory. CI runs
 debug build → tests → release build on every push and PR.
 
-**Requirements:** macOS **14.0+**, Swift **5.9+** (Xcode 15+).
+**Requirements:**
+
+|  | |
+|---|---|
+| **To run LUTzy** | macOS **14.0+** — unchanged, and what the deployment target targets |
+| **To build LUTzy** | **Xcode 26+** (macOS 26 SDK) |
+
+Those are deliberately different. Building against a current SDK while deploying to macOS 14 is the
+normal Apple model, and the stricter one: the compiler refuses any API newer than macOS 14 unless it
+is `#available`-guarded. One RAW develop control (`CIRAWFilter`'s highlight recovery) only exists in
+the macOS 26 SDK, so an older Xcode cannot compile the package — while the app it produces still runs
+on macOS 14.
 
 ---
 

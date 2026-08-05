@@ -9,6 +9,20 @@ LUTzy is a native **macOS 14+** app (Swift 5.9, SwiftUI + Core Image, **zero thi
 - Full app (icon + App Sandbox): open `Package.swift` in Xcode and Run.
 - Tests: `swift test`. CI runs debug build → tests → release build.
 
+**SDK and deployment target are different things — don't conflate them.** CI runs on `macos-26`
+(Xcode 26.x, macOS 26 SDK); `Package.swift` deploys to **macOS 14**. Building against a current SDK
+while deploying to 14 is the normal Apple model and is the *stricter* arrangement: the compiler
+refuses any API newer than the deployment target unless it is `#available`-guarded, so the guard is
+enforced rather than remembered. Use newer API behind `#available` — don't avoid it.
+
+**Requires Xcode 26 or newer to build.** That is the cost of the above: `RAWDevelopSettings` references
+`CIRAWFilter.isHighlightRecoveryEnabled`, which only exists in the macOS 26 SDK. On an older Xcode the
+package will not compile, and no availability check can change that — `#available` gates a call at
+runtime; it cannot conjure a symbol the SDK never declared. That distinction cost a red build in Phase 2
+Step 2, when CI still ran `macos-14` (Xcode 15.4 / macOS 14.5 SDK) and the code built clean locally.
+
+If CI ever needs to move back to an older image, that reference is the thing that has to go with it.
+
 ## Layout
 
 The package is split so the app's code is testable (`@testable` can't import an executable target):

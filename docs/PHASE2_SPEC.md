@@ -1,6 +1,6 @@
 # LUTzy Phase 2 — non-destructive render pipeline + RAW develop
 
-**Status:** design, not code. Steps 0–1 of the migration are done; the rest is unbuilt.
+**Status:** design, not code. Steps 0–2 of the migration are done; the rest is unbuilt.
 
 This is a distillation. The original draft ran 4,180 lines of multi-agent output that contradicted
 itself across sections and spent a good fraction of its length arguing with earlier drafts about bugs
@@ -36,7 +36,8 @@ a baked image, which buys four things at once:
 | ✅ `AppViewModel` split into `ExportCoordinator` + `DeriveCoordinator` | the `[processor]`-capture hazard now lives in `ExportCoordinator` |
 | ✅ `ImageProcessor.rawExtensions` internal; `developRAWNeutral` is the one neutral baseline | |
 | ✅ Derive: cancellable, geometry-validated, capped at a 3000 px working resolution | |
-| ❌ No `EditDocument`, no `RenderPipeline`, no `RenderEngine`, no RAW develop UI | the actual Phase 2 work |
+| ✅ The value-state types exist (`EditDocument` and friends) — but nothing uses them yet | Step 2 is **done** |
+| ❌ No `RenderPipeline`, no `RenderEngine`, no RAW develop UI | the actual Phase 2 work |
 
 **Still true and still worth fixing:** `ImageProcessor` is a non-`Sendable` `final class` singleton
 holding a `CIContext`, captured into `Task.detached` in several places. Strict concurrency would reject it.
@@ -213,7 +214,7 @@ leaf by leaf, delete the old path last.
 |---|---|---|
 | ~~0~~ | ~~`LUTzyKit` split + test harness~~ | ✅ **done** — 95 tests, CI green |
 | ~~1~~ | ~~`WorkingSpace`; route all six colour sites through it~~ | ✅ **done** — export, preview pixels and histogram byte-identical at sRGB; parity + lockstep tests added |
-| 2 | `EditDocument`, `RAWDevelopSettings`, `AdjustmentNode`, `LUTSettings`, `LUTID`, `ImageSource` — **defined but unused** | compiles, tests green, runtime unchanged |
+| ~~2~~ | ~~`EditDocument`, `RAWDevelopSettings`, `AdjustmentNode`, `LUTSettings`, `LUTID`, `ImageSource` — **defined but unused**~~ | ✅ **done** — plus `RenderScale`; 132 tests, nothing in the app references them, app launches unchanged |
 | 3 | `RenderPipeline.buildImage` + the actor-side LUT filter cache — **defined but unused** | identity-pipeline and intensity-endpoint tests |
 | 4 | `actor RenderEngine` alongside the old path; a `RenderEngining` protocol so tests inject a fake | both contexts exist briefly; app still runs the old path |
 | 5 | Cut **preview** over. Keep computed `sourceImage`/`selectedLUT` shims so views compile | preview reflects develop + adjustments + intensity |
@@ -283,7 +284,20 @@ least one section, which is most of why it was so long.
 - `gamutMappingEnabled` is settable.
 - EDR is a **single** knob, `extendedDynamicRangeAmount` (0...2), with no availability macro — callable
   **unguarded** on the macOS 14 target. There is no `isEDRModeEnabled` / `enableEDR`.
-- Highlight recovery is the **only** knob needing `#available` (macOS 16).
+- Highlight recovery is the **only** knob needing `#available`. The header marks it `16_0`, which the
+  Swift importer maps onto the renumbered **macOS 26** — `#available(macOS 26, *)` is what the
+  compiler enforces, so that is what the code says. Every *other* property carries no per-property
+  availability macro and dates from `CIRAWFilter` itself (`NS_CLASS_AVAILABLE(12_0, …)`), verified
+  present as far back as the macOS 15.4 SDK.
+- **SDK ≠ deployment target, and the SDK is a CI configuration choice.** Step 2 first shipped with CI
+  on `macos-14` (Xcode 15.4, macOS 14.5 SDK), where the highlight-recovery properties are not in the
+  imported interface *at all* — an availability check gates a call at runtime and cannot conjure a
+  symbol the SDK never declared, so the reference failed to compile there while building clean on a
+  current local Xcode. **Resolved by moving CI to `macos-26`** (which GitHub had deprecated `macos-14`
+  in favour of anyway) while keeping the macOS 14 deployment target. That combination is the stricter
+  one: the compiler now *refuses* newer API unless it is guarded. The cost is that the package
+  requires Xcode 26+ to build; see `CLAUDE.md`. Step 10 is all new `CIRAWFilter` surface and depends
+  on this arrangement.
 - `isDustRemovalSupported` and `isBaselineExposureAvailable` **do not exist** — fabricated.
 
 **This codebase:**

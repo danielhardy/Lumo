@@ -168,6 +168,14 @@ dead, while the browser panel still listed the row. Now `!items.isEmpty`.
   inspects the parsed table directly; the missing-folder test asserted only that *some* error appeared,
   which the empty-folder message also satisfied.
 
+  Phase 2 Step 2 added a third variety of the same weakness, worth naming because it will recur
+  wherever a test drives a framework object: **asserting a value that was already the default.**
+  `RAWDevelopSettings`' round-trip test set `lensCorrectionEnabled` and `highlightRecoveryEnabled` to
+  `true` and asserted `true` — but `CIRAWFilter` defaults both to `true`, so both assertions passed
+  just as happily against an `apply(to:)` that skipped them entirely. A mutation check caught it; the
+  fix is to write a value that *departs* from the decoder default. When a test writes to a framework
+  object, print the defaults for the fixture first and check that each written value actually differs.
+
   Writing them turned up one further bug: **`ImageProcessor.histogram(of:)` trapped on an
   infinite-extent image.** `CGRect.infinite` is built from `greatestFiniteMagnitude`, not `inf`, so the
   existing `isFinite` guard passed and `Int(rect.width)` then crashed. Not reachable from today's UI —
@@ -241,10 +249,11 @@ so the README was the only wrong copy of the keymap.
 2. ~~**Split `AppViewModel` and the rest of `ContentView`.**~~ **Done** — see §3.
 3. ~~**Distil `PHASE2_SPEC.md`**~~ **Done** — 292 lines, §6 of it is the ordered migration.
 
-**Phase 2 itself is now the only work left.** Steps 0–1 of its migration are complete: the library
-split and test harness, and the `WorkingSpace` colour seam (which closed the latent preview/export
-mismatch — `createCGImage` passed no colour space in two places). Step 2, the value-state types, is
-next; it adds code without changing runtime behaviour.
+**Phase 2 itself is now the only work left.** Steps 0–2 of its migration are complete: the library
+split and test harness, the `WorkingSpace` colour seam (which closed the latent preview/export
+mismatch — `createCGImage` passed no colour space in two places), and the value-state types
+(`EditDocument` and friends), which are defined but not yet referenced by anything. Step 3, the
+`RenderPipeline`, is next.
 
 ### Where coverage is still thin
 
@@ -258,3 +267,8 @@ Worth knowing before leaning on the suite:
   loop are not. If real coverage is wanted here, generate a small synthetic DNG rather than committing a
   camera file.
 - **No SwiftUI view tests.** Views are exercised only insofar as the view model is.
+- **The `CIRAWFilter` half of `RAWDevelopSettings` only runs where a RAW exists.** Three tests build a
+  real filter from `Fixtures.localRAWURL` — the untracked `realworldtest/` DNG — and `XCTSkip` when
+  there is none, which includes CI. The value semantics are covered everywhere; the framework wiring
+  is covered only locally. The `is*Supported` gates in `apply(to:)` are not covered at all: that needs
+  a RAW whose decoder *lacks* an adjustment, and the Leica file supports every one of them.

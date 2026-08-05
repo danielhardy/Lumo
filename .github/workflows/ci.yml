@@ -16,13 +16,30 @@ concurrency:
 
 jobs:
   build:
-    name: swift build (macOS 14)
-    runs-on: macos-14
+    # The runner sets the **SDK**; `Package.swift` sets the **deployment target**, and that stays at
+    # macOS 14. Those are different things, and conflating them cost a red build: this job used to run
+    # `macos-14` (Xcode 15.4, macOS 14.5 SDK), where any API newer than the SDK simply does not exist
+    # and `#available` cannot reach it — an availability check gates a call at runtime, it cannot
+    # conjure a symbol the SDK never declared.
+    #
+    # Building against a current SDK while deploying to macOS 14 is the normal Apple model and is the
+    # *stricter* of the two: with a 14.0 deployment target the compiler refuses newer API unless it is
+    # `#available`-guarded, so the guard is enforced rather than merely remembered. `macos-14` is also
+    # deprecated by GitHub.
+    #
+    # Building on a *lower* SDK than the developer's is what silently diverges, so the image default
+    # is deliberate — and "Show toolchain" prints the SDK it resolved, so any future drift is visible
+    # in the log rather than inferred from a failure.
+    name: swift build (macOS 26 SDK, deploys to macOS 14)
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
       - name: Show toolchain
-        run: swift --version
+        run: |
+          swift --version
+          xcodebuild -version
+          echo "SDK: $(xcrun --sdk macosx --show-sdk-version) at $(xcrun --sdk macosx --show-sdk-path)"
 
       - name: Build (debug)
         run: swift build -v
