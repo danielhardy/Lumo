@@ -1,6 +1,6 @@
 # LUTzy Phase 2 — non-destructive render pipeline + RAW develop
 
-**Status:** design, not code. Step 0 of the migration is done; the rest is unbuilt.
+**Status:** design, not code. Steps 0–1 of the migration are done; the rest is unbuilt.
 
 This is a distillation. The original draft ran 4,180 lines of multi-agent output that contradicted
 itself across sections and spent a good fraction of its length arguing with earlier drafts about bugs
@@ -146,11 +146,17 @@ There are **four** explicit `CGColorSpace.sRGB` literals today and **two implici
 | Export encoding | `ImageProcessor.swift:259` | output encoding |
 | Histogram render | `ImageProcessor.swift:188` | analysis only |
 | Derive sampling | `RecipeExtractor.swift:101` | **stays pinned to sRGB, not `.current`** |
-| *implicit* | `ImageProcessor.swift:124` `createCGImage` | **passes no color space** — preview uses the CIContext default while export forces sRGB |
-| *implicit* | `ImageProcessor.swift:158` `createCGImage` | same |
+| *(was implicit)* | `ImageProcessor.renderPreview` `createCGImage` | **passed no colour space** — preview used the CIContext default while export forced sRGB |
+| *(was implicit)* | `ImageProcessor.renderToNSImage` `createCGImage` | same |
 
-The two implicit sites are a **latent preview/export mismatch**. Byte-identical at sRGB today, wrong
-the moment a wide-gamut source or P3 output appears. Always pass `space.cgColorSpace` to `createCGImage`.
+✅ **Step 1 closed all six.** Every `CGColorSpace(name:)` literal in the module now lives in
+`WorkingSpace.swift`; each site takes a `WorkingSpace` defaulting to `.current`.
+
+The two implicit sites were a **latent preview/export mismatch** — byte-identical at sRGB, divergent
+otherwise. Measured: reintroducing the bare `createCGImage` call moves the preview by up to **38/255**
+against the export in Display P3, and by **0** in sRGB. That is exactly why a test asserting only
+today's sRGB behaviour would not have caught it, and why the lockstep tests drive a non-default space
+through both halves of the seam.
 
 **Critical invariant:** LUT-interpolation space and output-encoding space must move in lockstep. They
 are independent literals today that merely both happen to be sRGB. Threading one `WorkingSpace` value
@@ -206,7 +212,7 @@ leaf by leaf, delete the old path last.
 | Step | Work | Ship gate |
 |---|---|---|
 | ~~0~~ | ~~`LUTzyKit` split + test harness~~ | ✅ **done** — 95 tests, CI green |
-| 1 | `WorkingSpace`; route all six color sites through it, values unchanged | identical output at sRGB; parity test asserting preview raster == export bytes |
+| ~~1~~ | ~~`WorkingSpace`; route all six colour sites through it~~ | ✅ **done** — export, preview pixels and histogram byte-identical at sRGB; parity + lockstep tests added |
 | 2 | `EditDocument`, `RAWDevelopSettings`, `AdjustmentNode`, `LUTSettings`, `LUTID`, `ImageSource` — **defined but unused** | compiles, tests green, runtime unchanged |
 | 3 | `RenderPipeline.buildImage` + the actor-side LUT filter cache — **defined but unused** | identity-pipeline and intensity-endpoint tests |
 | 4 | `actor RenderEngine` alongside the old path; a `RenderEngining` protocol so tests inject a fake | both contexts exist briefly; app still runs the old path |

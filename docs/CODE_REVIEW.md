@@ -241,10 +241,10 @@ so the README was the only wrong copy of the keymap.
 2. ~~**Split `AppViewModel` and the rest of `ContentView`.**~~ **Done** — see §3.
 3. ~~**Distil `PHASE2_SPEC.md`**~~ **Done** — 292 lines, §6 of it is the ordered migration.
 
-**Phase 2 itself is now the only work left.** Step 0 of its migration is already complete (the library
-split and test harness). Step 1 — the `WorkingSpace` colour seam — is self-contained, changes no output
-values, and closes a real latent bug on its own: `createCGImage` passes no colour space in two places,
-so preview and export rasterize through different spaces. That is the natural next commit.
+**Phase 2 itself is now the only work left.** Steps 0–1 of its migration are complete: the library
+split and test harness, and the `WorkingSpace` colour seam (which closed the latent preview/export
+mismatch — `createCGImage` passed no colour space in two places). Step 2, the value-state types, is
+next; it adds code without changing runtime behaviour.
 
 ### Where coverage is still thin
 

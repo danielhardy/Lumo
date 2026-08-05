@@ -106,7 +106,11 @@ final class ImageProcessor {
     // MARK: - Preview rendering
 
     /// Render a CIImage to an NSImage at the given maximum size.
-    func renderPreview(_ ciImage: CIImage, maxSize: CGSize) -> NSImage? {
+    ///
+    /// The `space` argument is passed explicitly to `createCGImage`. It used to be omitted, which
+    /// meant the preview rasterized through the `CIContext` default while `export` forced sRGB —
+    /// byte-identical while everything was sRGB, and a silent divergence the moment it wasn't.
+    func renderPreview(_ ciImage: CIImage, maxSize: CGSize, space: WorkingSpace = .current) -> NSImage? {
         let extent = ciImage.extent
         guard extent.isRasterizable else { return nil }
 
@@ -121,7 +125,9 @@ final class ImageProcessor {
         // Scale down via Core Image for quality
         let scaled = ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
 
-        guard let cgImage = context.createCGImage(scaled, from: scaled.extent) else {
+        guard let cgImage = context.createCGImage(
+            scaled, from: scaled.extent, format: .RGBA8, colorSpace: space.cgColorSpace
+        ) else {
             return nil
         }
 
@@ -153,9 +159,12 @@ final class ImageProcessor {
     }
 
     /// Render to NSImage at full extent (for small images / previews).
-    func renderToNSImage(_ ciImage: CIImage) -> NSImage? {
+    func renderToNSImage(_ ciImage: CIImage, space: WorkingSpace = .current) -> NSImage? {
         let extent = ciImage.extent
-        guard let cgImage = context.createCGImage(ciImage, from: extent) else { return nil }
+        guard extent.isRasterizable else { return nil }
+        guard let cgImage = context.createCGImage(
+            ciImage, from: extent, format: .RGBA8, colorSpace: space.cgColorSpace
+        ) else { return nil }
         return NSImage(cgImage: cgImage, size: extent.size)
     }
 
@@ -168,7 +177,13 @@ final class ImageProcessor {
     ///
     /// Safe to call off the main actor (uses the shared `CIContext`, which is
     /// thread-safe). Returns `nil` if the image has no renderable extent.
-    func histogram(of ciImage: CIImage, maxDimension: Int = 512) -> HistogramData? {
+    /// `space` matches the preview raster, so the histogram describes the pixels the user is
+    /// actually looking at rather than a differently-encoded copy of them.
+    func histogram(
+        of ciImage: CIImage,
+        maxDimension: Int = 512,
+        space: WorkingSpace = .current
+    ) -> HistogramData? {
         let extent = ciImage.extent
         guard extent.isRasterizable else { return nil }
 
@@ -185,7 +200,7 @@ final class ImageProcessor {
 
         let bytesPerRow = width * 4
         var bytes = [UInt8](repeating: 0, count: height * bytesPerRow)
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+        let colorSpace = space.cgColorSpace
         bytes.withUnsafeMutableBytes { ptr in
             guard let base = ptr.baseAddress else { return }
             context.render(
@@ -251,12 +266,20 @@ final class ImageProcessor {
     }
 
     /// Export a CIImage to a file at full resolution.
-    func export(_ ciImage: CIImage, to url: URL, format: ExportFormat, quality: CGFloat = 0.95) throws {
+    func export(
+        _ ciImage: CIImage,
+        to url: URL,
+        format: ExportFormat,
+        quality: CGFloat = 0.95,
+        space: WorkingSpace = .current
+    ) throws {
         guard ciImage.extent.isRasterizable else {
             throw ImageError.processingFailed
         }
 
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+        // The output-encoding half of the colour seam. Must be the same
+        // WorkingSpace the LUT interpolated in — see WorkingSpace.
+        let colorSpace = space.cgColorSpace
 
         switch format {
         case .tiff:

@@ -145,7 +145,7 @@ Then select the **LUTzy** scheme and **Run** (`⌘R`). For a sandboxed build, ad
 ```bash
 swift test
 ```
-95 tests, no fixtures to download — everything they need is generated into a temp directory. CI runs
+104 tests, no fixtures to download — everything they need is generated into a temp directory. CI runs
 debug build → tests → release build on every push and PR.
 
 **Requirements:** macOS **14.0+**, Swift **5.9+** (Xcode 15+).
@@ -166,6 +166,7 @@ Sources/
 └── LUTzyKit/                   # everything of substance
     ├── Models/
     │   ├── CubeLUT.swift           # .cube parser + writer → CIColorCube filter (also in-memory init)
+    │   ├── WorkingSpace.swift      # the one colour space: LUT interpolation + output encoding
     │   ├── ImageProcessor.swift    # Singleton: RAW/standard load, preview, thumbnails, histogram, export
     │   ├── LUTLibrary.swift        # Scans LUT folder, groups by category, sandbox bookmark persistence
     │   ├── ImageCollection.swift   # Multi-image set with async thumbnail generation
@@ -194,6 +195,7 @@ Tests/
 └── LUTzyKitTests/              # XCTest; fixtures are generated, never committed
     ├── Fixtures.swift          # builds .cube files and orientation-tagged JPEGs in a temp dir
     ├── CubeLUTTests.swift      # parser, domain handling, index ordering, intensity, round-trip
+    ├── WorkingSpaceTests.swift # preview/export parity, LUT-interp ↔ output lockstep
     ├── ImageLoadingTests.swift # EXIF orientation across load/thumbnail/export, histogram
     ├── LibraryScanTests.swift  # async folder scans, error surfacing, collection navigation
     ├── RecipeExtractorTests.swift   # cube assembly, neighbour smoothing, working resolution
@@ -214,7 +216,7 @@ what is still outstanding.
 - **MVVM with coordinators.** [`AppViewModel`](Sources/LUTzyKit/ViewModels/AppViewModel.swift) holds the image, LUT, and preview state, and owns four collaborators: `LUTLibrary`, `ImageCollection`, [`ExportCoordinator`](Sources/LUTzyKit/ViewModels/ExportCoordinator.swift), and [`DeriveCoordinator`](Sources/LUTzyKit/ViewModels/DeriveCoordinator.swift). The coordinators report *what* happened through `onStatus`/`onError` closures; deciding how to present it stays with the view model. Views observe, and the menu bar talks to it via `NotificationCenter`.
 - **Panels are a seam, not a dependency.** Every operation that needs a file dialog is split into a `perform…` core taking an explicit URL and a thin `…Dialog` wrapper that runs the panel. `NSOpenPanel`/`NSSavePanel` can't run headless, so this is what makes export and save testable at all.
 - **Core Image end to end.** RAW demosaicing (`CIRAWFilter`), LUT application (`CIColorCubeWithColorSpace`), scaling (`CILanczosScaleTransform`), and all export encoding run through one Metal-backed `CIContext`.
-- **Color pipeline is sRGB**, with cube data laid out R-fastest → G → B (matching both the `.cube` spec and Core Image's expected ordering).
+- **One colour seam.** [`WorkingSpace`](Sources/LUTzyKit/Models/WorkingSpace.swift) is the single source of truth for both the LUT interpolation space and the output encoding space, so they cannot drift apart; every render and export site takes it, defaulting to sRGB. Cube data is laid out R-fastest → G → B, matching both the `.cube` spec and Core Image's expected ordering.
 - **Images are rendered upright.** `CIRAWFilter` honors EXIF orientation; plain `CIImage(contentsOf:)` does not, so every non-RAW decode goes through `ImageProcessor.orientedLoadOptions`. Preview, filmstrip thumbnail, reported dimensions, and export all agree.
 - **Work stays off the main actor.** Decoding, preview rasterization, folder scans, LUT parsing, export, and recipe derivation all run detached and publish results back to `@MainActor`; the intensity slider is debounced and each render cancels the one before it. Previews are capped at 1600×1200; exports are always full resolution.
 - **No third-party code.** Everything ships with the system: SwiftUI, Core Image, AppKit, PhotosUI, Swift Charts, ImageIO, Metal, simd.
