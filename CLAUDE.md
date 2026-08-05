@@ -9,6 +9,19 @@ LUTzy is a native **macOS 14+** app (Swift 5.9, SwiftUI + Core Image, **zero thi
 - Full app (icon + App Sandbox): open `Package.swift` in Xcode and Run.
 - Tests: `swift test`. CI runs debug build → tests → release build.
 
+**CI's SDK is the build contract, not yours.** CI is Xcode 15.4 / Swift 5.10 against the **macOS 14.5
+SDK**. A current Xcode will happily compile API that simply does not exist there — and `#available`
+cannot rescue it, because an availability check gates a call at runtime and cannot conjure a symbol
+the SDK never declared. Before pushing anything that touches a system framework, typecheck against
+the oldest SDK on the machine:
+
+```bash
+swiftc -typecheck -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk \
+    -target arm64-apple-macosx14.0 -swift-version 5 $(find Sources/LUTzyKit -name '*.swift')
+```
+
+This caught a `CIRAWFilter` property in Phase 2 Step 2 that built clean locally and broke CI.
+
 ## Layout
 
 The package is split so the app's code is testable (`@testable` can't import an executable target):

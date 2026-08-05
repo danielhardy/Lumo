@@ -36,8 +36,7 @@ final class EditDocumentTests: XCTestCase {
                 sharpnessAmount: 0.3,
                 lensCorrectionEnabled: true,
                 gamutMappingEnabled: false,
-                extendedDynamicRangeAmount: 1.5,
-                highlightRecoveryEnabled: true
+                extendedDynamicRangeAmount: 1.5
             ),
             adjustments: [
                 .exposure(ev: -0.5),

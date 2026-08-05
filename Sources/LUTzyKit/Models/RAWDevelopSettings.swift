@@ -73,8 +73,19 @@ struct RAWDevelopSettings: Codable, Sendable, Equatable {
     /// callable unguarded on the macOS 14 deployment target. There is no `enableEDR` or
     /// `isEDRModeEnabled`; the spec's earlier draft invented both.
     var extendedDynamicRangeAmount: Double?
-    /// The one knob here that is not available on the deployment target — see `apply(to:)`.
-    var highlightRecoveryEnabled: Bool?
+
+    // **Highlight recovery is deliberately absent**, and not because of the deployment target.
+    //
+    // `isHighlightRecoveryEnabled` / `isHighlightRecoverySupported` were added in the macOS 26 SDK.
+    // CI builds this package with Xcode 15.4 against the **macOS 14.5 SDK**, where those properties
+    // do not exist in the imported interface at all — so `#available` cannot help. An availability
+    // check gates a call at *runtime*; it cannot conjure a symbol the SDK never declared. The
+    // reference fails to compile there, full stop.
+    //
+    // Leaving the field stored-but-never-applied would be worse than omitting it: a document would
+    // claim an adjustment that never reaches the decoder. `EditDocument` decodes with
+    // `decodeIfPresent`, so re-adding this the day the toolchain floor moves is a non-breaking
+    // change that needs no migration. See `docs/PHASE2_SPEC.md` §9.
 
     // MARK: - Neutral
 
@@ -134,15 +145,6 @@ struct RAWDevelopSettings: Codable, Sendable, Equatable {
         }
         if let lensCorrectionEnabled, filter.isLensCorrectionSupported {
             filter.isLensCorrectionEnabled = lensCorrectionEnabled
-        }
-
-        // The only knob needing an availability check. The SDK header still marks it `16_0`, which
-        // the Swift importer maps onto the renumbered macOS 26 — `#available(macOS 26, *)` is what
-        // the compiler actually enforces here, so that is what this says. Silently a no-op on
-        // macOS 14/15: the setting is stored in the document either way, so a machine that gains
-        // the API later honours a document written before it.
-        if let highlightRecoveryEnabled, #available(macOS 26, *), filter.isHighlightRecoverySupported {
-            filter.isHighlightRecoveryEnabled = highlightRecoveryEnabled
         }
     }
 }

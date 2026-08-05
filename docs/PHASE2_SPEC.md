@@ -284,10 +284,24 @@ least one section, which is most of why it was so long.
 - `gamutMappingEnabled` is settable.
 - EDR is a **single** knob, `extendedDynamicRangeAmount` (0...2), with no availability macro — callable
   **unguarded** on the macOS 14 target. There is no `isEDRModeEnabled` / `enableEDR`.
-- Highlight recovery is the **only** knob needing `#available`. The header still marks it `16_0`, but
-  the Swift importer maps that onto the renumbered **macOS 26** — which is the version the compiler
-  names in its error and the one `RAWDevelopSettings.apply` guards on. `#available(macOS 16, *)` also
-  compiles, since Swift folds 16 into 26; `26` is written because it is what is actually enforced.
+- Highlight recovery **cannot be used at all**, and `#available` does not help. Corrected in Step 2:
+  the original note said it was "the only knob needing `#available` (macOS 16)". In fact
+  `isHighlightRecoveryEnabled` / `isHighlightRecoverySupported` were added in the **macOS 26** SDK
+  (the header's `16_0` is pre-renumbering; the importer maps it to 26). CI builds this package with
+  **Xcode 15.4 against the macOS 14.5 SDK**, where those properties are not in the imported interface
+  at all — an availability check gates a call at *runtime*, it cannot conjure a symbol the SDK never
+  declared, so the reference simply fails to compile. `RAWDevelopSettings` therefore omits the knob
+  until the toolchain floor moves. Every *other* property it uses carries no per-property availability
+  macro and dates from `CIRAWFilter` itself (`NS_CLASS_AVAILABLE(12_0, …)`), verified present in the
+  macOS 15.4 SDK.
+- **The local SDK is not the build contract; CI's is.** Building on a current Xcode proves nothing
+  about the macOS 14.5 SDK CI uses. Typecheck against the oldest SDK on the machine before pushing:
+  ```
+  swiftc -typecheck -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk \
+      -target arm64-apple-macosx14.0 -swift-version 5 $(find Sources/LUTzyKit -name '*.swift')
+  ```
+  This reproduces the highlight-recovery failure exactly, on a machine whose own SDK accepts it.
+  Expect this to matter again at Step 10, which is all new `CIRAWFilter` surface.
 - `isDustRemovalSupported` and `isBaselineExposureAvailable` **do not exist** — fabricated.
 
 **This codebase:**
