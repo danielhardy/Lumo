@@ -7,7 +7,20 @@ LUTzy is a native **macOS 14+** app (Swift 5.9, SwiftUI + Core Image, **zero thi
 - Build: `swift build`
 - Run (fast iteration; no sandbox/icon): `swift run`
 - Full app (icon + App Sandbox): open `Package.swift` in Xcode and Run.
-- Tests: none yet. When added, a `LUTzyKit` library target + thin `@main` executable are required (`@testable` can't import an executable). See `docs/PHASE2_SPEC.md`.
+- Tests: `swift test`. CI runs debug build → tests → release build.
+
+## Layout
+
+The package is split so the app's code is testable (`@testable` can't import an executable target):
+
+- `Sources/LUTzyKit/` — everything of substance (Models, ViewModels, Views). Only `ContentView` and
+  `LUTzyCommands` are `public`; keep the rest internal.
+- `Sources/LUTzy/` — the `@main` entry point, `AppDelegate`, and the asset catalog. Nothing else belongs here.
+- `Tests/LUTzyKitTests/` — XCTest. **Fixtures are generated, never committed** (`Fixtures.swift` builds
+  `.cube` files and orientation-tagged JPEGs into a temp dir); LUTzy's real inputs are tens of MB.
+
+When a test needs something currently `private`, widen it to internal with a comment saying why —
+`RecipeExtractor.buildCube` and `workingSize` are the precedent.
 
 Constraints that must hold: **macOS 14 minimum**, **zero third-party dependencies** (Apple frameworks only). Don't introduce SPM/CocoaPods/Carthage deps.
 

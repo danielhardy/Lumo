@@ -156,9 +156,23 @@ dead, while the browser panel still listed the row. Now `!items.isEmpty`.
 
 **[open]** unless noted.
 
-- **No tests, anywhere.** CI builds debug and release and stops. `CLAUDE.md` correctly notes the
-  prerequisite: a `LUTzyKit` library target plus a thin `@main` executable, because `@testable` cannot
-  import an executable. This is the single biggest structural gap — it is why B1 and B4 survived ten PRs.
+- ~~**No tests, anywhere.**~~ **[fixed]** — the package is now split into `LUTzyKit` plus a thin `@main`
+  executable, with 61 XCTest cases and `swift test` wired into CI. Fixtures are generated, never
+  committed. Coverage is deliberately concentrated where the review found real defects: the `.cube`
+  parser, the orientation load path, cube assembly, the async scans, and export naming.
+
+  Each regression test was mutation-checked — the fix was reverted and the suite confirmed to fail —
+  so the coverage is known to bite rather than merely to exist. Two tests were too weak on the first
+  pass and were tightened after the mutation run: the degenerate-domain test was asserting on rendered
+  output (Core Image clamps NaN to 0, so a fully corrupt table still rendered "valid" pixels) and now
+  inspects the parsed table directly; the missing-folder test asserted only that *some* error appeared,
+  which the empty-folder message also satisfied.
+
+  Writing them turned up one further bug: **`ImageProcessor.histogram(of:)` trapped on an
+  infinite-extent image.** `CGRect.infinite` is built from `greatestFiniteMagnitude`, not `inf`, so the
+  existing `isFinite` guard passed and `Int(rect.width)` then crashed. Not reachable from today's UI —
+  every image in the app comes from a decoder — but one filter change away, and `renderPreview` and
+  `export` shared the pattern. All three now go through `CGRect.isRasterizable`.
 - `LUTLibrary.scanError` was set but no view ever read it, so folder-scan failures were silent.
   **[fixed]** — the sidebar now shows it.
 - `RecipeReport.alignmentShift` is computed, stored, and documented, but `RecipeReportView` never renders
@@ -185,10 +199,11 @@ dead, while the browser panel still listed the row. Now `!items.isEmpty`.
   `ExportCoordinator` (single + batch + the orphaned `uniqueExportURL` free function currently sitting at
   the bottom of the file) and a `DeriveCoordinator` (derive / save / scratch lifecycle), leaving the view
   model as display state.
-- **`ContentView.swift` (421 lines) holds six unrelated top-level types**: `ContentView`,
-  `StatusBar`/`KeyHint`, `KeyboardShortcuts`, `KeyMonitor`, `MenuCommandReceivers`, and the
-  `Notification.Name` extension. Split into `StatusBar.swift`, `KeyboardShortcuts.swift`,
-  `MenuCommands.swift`.
+- **`ContentView.swift` holds several unrelated top-level types.** The menu commands, their
+  notification names, and `MenuCommandReceivers` moved out to `MenuCommands.swift` **[fixed]** — that
+  much was forced by the executable/library split, since the File menu had to live in the kit for the
+  entry point to stay thin. `StatusBar`/`KeyHint` and `KeyboardShortcuts`/`KeyMonitor` are still there
+  and still want `StatusBar.swift` and `KeyboardShortcuts.swift`.
 - `HistogramChart` lives at the bottom of `InfoInspectorView.swift`, away from `Histogram.swift`.
 - **`docs/PHASE2_SPEC.md` is 4,180 lines** of raw multi-agent output. It contradicts itself across
   sections, and a meaningful fraction of it is meta-commentary arguing with earlier drafts about bugs
@@ -218,9 +233,21 @@ so the README was the only wrong copy of the keymap.
 
 ## 5. Suggested order for the follow-up work
 
-1. **`LUTzyKit` split + test target.** Everything else is easier to land safely afterward, and it is the
-   documented prerequisite in `CLAUDE.md`. First tests worth writing: the `.cube` parser (round-trip,
-   CRLF, degenerate domain, wrong entry count), orientation on the load path, and `buildCube`'s
-   neighbour-fill and identity anchoring.
-2. **Split `AppViewModel` and `ContentView`.** Mechanical once tests exist.
+1. ~~**`LUTzyKit` split + test target.**~~ **Done** — see §2. There is now a safety net to refactor against.
+2. **Split `AppViewModel` (674 lines) and the rest of `ContentView`.** Mechanical now that tests exist.
+   `AppViewModel` wants an `ExportCoordinator` and a `DeriveCoordinator`; `ContentView` wants
+   `StatusBar.swift` and `KeyboardShortcuts.swift`.
 3. **Distil `PHASE2_SPEC.md`** to the decisions, then start Phase 2 against it.
+
+### Where coverage is still thin
+
+Worth knowing before leaning on the suite:
+
+- **`AppViewModel` is untested.** Its methods drive `NSOpenPanel`/`NSSavePanel` directly, so they can't
+  run headless. Factoring the post-panel bodies out (`performExport(to:)`, etc.) is what makes them
+  testable — the same seam the `ExportCoordinator` split needs, which is why (2) above is the unlock.
+- **`RecipeExtractor.derive` end-to-end is untested** — it needs a RAW, and a DNG fixture is tens of MB.
+  The pure pieces (`buildCube`, `workingSize`, the error messages) are covered; alignment and the sample
+  loop are not. If real coverage is wanted here, generate a small synthetic DNG rather than committing a
+  camera file.
+- **No SwiftUI view tests.** Views are exercised only insofar as the view model is.

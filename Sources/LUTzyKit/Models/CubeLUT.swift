@@ -131,6 +131,17 @@ struct CubeLUT: Identifiable, Hashable {
         }
     }
 
+    // MARK: - Inspection
+
+    /// The flattened RGBA float table handed to Core Image, as floats.
+    ///
+    /// Exists for tests: rendering through Core Image clamps NaN to 0, so a
+    /// corrupt table is invisible from the output side and has to be inspected
+    /// directly.
+    var tableFloats: [Float] {
+        tableData.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+    }
+
     // MARK: - Core Image Filter
 
     /// Creates a CIColorCube filter configured with this LUT.
