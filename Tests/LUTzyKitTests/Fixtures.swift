@@ -131,6 +131,57 @@ enum Fixtures {
         return url
     }
 
+    /// A diagonal red→blue ramp as a `CGImage`.
+    ///
+    /// The solid-colour `makeCGImage` above is fine for geometry and orientation, but useless for the
+    /// render pipeline: a flat patch survives a tone curve almost unchanged, so a test built on one
+    /// would pass against a stage that never ran.
+    static func makeGradientCGImage(width: Int, height: Int) throws -> CGImage {
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        guard let ctx = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4, space: space,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { throw FixtureError.cannotCreateContext }
+
+        guard let gradient = CGGradient(
+            colorsSpace: space,
+            colors: [
+                CGColor(colorSpace: space, components: [0.9, 0.1, 0.1, 1])!,
+                CGColor(colorSpace: space, components: [0.1, 0.2, 0.9, 1])!,
+            ] as CFArray,
+            locations: [0, 1]
+        ) else { throw FixtureError.cannotCreateContext }
+
+        ctx.drawLinearGradient(
+            gradient,
+            start: CGPoint(x: 0, y: 0),
+            end: CGPoint(x: CGFloat(width), y: CGFloat(height)),
+            options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
+        )
+        guard let image = ctx.makeImage() else { throw FixtureError.cannotCreateContext }
+        return image
+    }
+
+    /// Write a gradient as **PNG** — lossless, so a test comparing a decode against a decode is
+    /// measuring the pipeline rather than JPEG's ideas about chroma.
+    @discardableResult
+    static func writeGradientPNG(
+        width: Int,
+        height: Int,
+        named name: String,
+        in directory: URL
+    ) throws -> URL {
+        let url = directory.appendingPathComponent(name)
+        let image = try makeGradientCGImage(width: width, height: height)
+        guard let dest = CGImageDestinationCreateWithURL(
+            url as CFURL, UTType.png.identifier as CFString, 1, nil
+        ) else { throw FixtureError.cannotCreateDestination }
+        CGImageDestinationAddImage(dest, image, nil)
+        guard CGImageDestinationFinalize(dest) else { throw FixtureError.cannotWriteImage }
+        return url
+    }
+
     // MARK: - Local-only RAW
 
     /// A real RAW file, if this checkout happens to have one.

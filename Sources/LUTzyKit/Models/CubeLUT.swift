@@ -178,9 +178,26 @@ struct CubeLUT: Identifiable, Hashable {
     /// §8.1; changing it later is a visible look change for every sub-100% render.
     func apply(to image: CIImage, intensity: Double, space: WorkingSpace = .current) -> CIImage? {
         let t = max(0, min(1, intensity))
+        // Build nothing when the LUT contributes nothing — a 65³ cube is ~4.4 MB to hand over.
         if t <= 0 { return image }
-        guard let graded = apply(to: image, space: space) else { return nil }
+        return apply(to: image, intensity: t, using: makeFilter(space: space))
+    }
+
+    /// The shared body of the two `apply` overloads, taking a cube filter rather than making one.
+    ///
+    /// Exists so `RenderPipeline` can pass a filter from `LUTFilterCache` without a second copy of the
+    /// dissolve logic. Two implementations of a crossfade would be two things to keep in step, and
+    /// §8.1 of the spec is explicit that the blend's behaviour is shipping behaviour — a divergence
+    /// here would be a visible look change on one path only.
+    func apply(to image: CIImage, intensity: Double, using cubeFilter: CIFilter?) -> CIImage? {
+        let t = max(0, min(1, intensity))
+        if t <= 0 { return image }
+        guard let cubeFilter else { return nil }
+
+        cubeFilter.setValue(image, forKey: kCIInputImageKey)
+        guard let graded = cubeFilter.outputImage else { return nil }
         if t >= 1 { return graded }
+
         guard let mix = CIFilter(name: "CIDissolveTransition") else { return graded }
         mix.setValue(image, forKey: kCIInputImageKey)
         mix.setValue(graded, forKey: kCIInputTargetImageKey)
