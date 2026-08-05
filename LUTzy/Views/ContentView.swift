@@ -201,7 +201,9 @@ struct ContentView: View {
         } label: {
             Label("Export", systemImage: "square.and.arrow.up")
         }
-        .keyboardShortcut("s")
+        // ⌘S is bound once, on the File ▸ Export menu item (LUTzyApp.swift).
+        // Binding it here too gave the window two competing handlers.
+        .help("Export the graded image (⌘S)")
         .disabled(viewModel.sourceImage == nil)
 
         // Batch export — only when a multi-image set is loaded

@@ -25,6 +25,13 @@ final class ImageCollection: ObservableObject {
 
     private static let bookmarkKey = "imageSourceFolderBookmark"
     private var thumbnailTask: Task<Void, Never>?
+    private var scanTask: Task<Void, Never>?
+    /// Folder whose security scope we hold open, released when we move on.
+    private var scopedURL: URL?
+
+    deinit {
+        scopedURL?.stopAccessingSecurityScopedResource()
+    }
 
     var selectedItem: Item? {
         guard isActive, items.indices.contains(selectedIndex) else { return nil }
@@ -37,22 +44,13 @@ final class ImageCollection: ObservableObject {
     /// bookmark, records the URL, and scans it. Mirrors `LUTLibrary`'s folder
     /// persistence so the source survives relaunches and the App Sandbox.
     func setSourceFolder(_ url: URL) {
-        do {
-            let bookmark = try url.bookmarkData(
-                options: [.withSecurityScope],
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
-            )
-            UserDefaults.standard.set(bookmark, forKey: Self.bookmarkKey)
-        } catch {
-            print("Failed to save source bookmark: \(error)")
-        }
+        saveBookmark(for: url)
         sourceFolderURL = url
         loadFromFolder(url)
     }
 
     /// Restore a previously-chosen source folder on launch. Returns true if a
-    /// folder was resolved and scanned.
+    /// folder was resolved; the scan itself runs asynchronously.
     @discardableResult
     func restoreSourceFolder() -> Bool {
         guard let data = UserDefaults.standard.data(forKey: Self.bookmarkKey) else { return false }
@@ -64,9 +62,29 @@ final class ImageCollection: ObservableObject {
             bookmarkDataIsStale: &isStale
         ), url.startAccessingSecurityScopedResource() else { return false }
 
+        scopedURL?.stopAccessingSecurityScopedResource()
+        scopedURL = url
+
+        // A stale bookmark resolves this once but won't next launch; mint a
+        // fresh one now that access is held.
+        if isStale { saveBookmark(for: url) }
+
         sourceFolderURL = url
         loadFromFolder(url)
         return true
+    }
+
+    private func saveBookmark(for url: URL) {
+        do {
+            let bookmark = try url.bookmarkData(
+                options: [.withSecurityScope],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            UserDefaults.standard.set(bookmark, forKey: Self.bookmarkKey)
+        } catch {
+            print("Failed to save source bookmark: \(error)")
+        }
     }
 
     /// Re-scan the current source folder (e.g. after files change on disk).
@@ -75,26 +93,51 @@ final class ImageCollection: ObservableObject {
         loadFromFolder(url)
     }
 
+    /// Wait for the in-flight folder scan to finish, so callers that need to
+    /// act on `items` (open the first image, say) can do so without racing it.
+    func scanCompletion() async {
+        await scanTask?.value
+    }
+
     /// Scan a folder recursively for supported images, recording each file's
     /// relative subfolder so the browser can group them. Items are ordered by
     /// subfolder, then natural filename order.
+    ///
+    /// The enumeration runs off the main actor — a deep folder on a slow or
+    /// network volume would otherwise stall the window, and this runs during
+    /// app launch when a source folder is restored.
     func loadFromFolder(_ url: URL) {
         thumbnailTask?.cancel()
+        scanTask?.cancel()
         items = []
         selectedIndex = 0
+        isActive = false
 
+        scanTask = Task {
+            let scanned = await Task.detached { Self.scanFolder(url) }.value
+            guard !Task.isCancelled else { return }
+            self.items = scanned
+            self.isActive = !scanned.isEmpty
+            self.generateThumbnails()
+        }
+    }
+
+    /// The blocking half of `loadFromFolder`. `nonisolated` so it can run on a
+    /// background executor — it touches no instance state.
+    private nonisolated static func scanFolder(_ url: URL) -> [Item] {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
             at: url,
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles]
-        ) else { return }
+        ) else { return [] }
 
         // Resolve symlinks on both sides so the prefix math holds even when the
         // root is itself a symlink (e.g. /tmp → /private/tmp).
         let rootPath = url.resolvingSymlinksInPath().path
         var newItems: [Item] = []
         while let fileURL = enumerator.nextObject() as? URL {
+            if Task.isCancelled { return [] }
             let ext = fileURL.pathExtension.lowercased()
             guard ImageProcessor.supportedExtensions.contains(ext) else { continue }
             let name = fileURL.deletingPathExtension().lastPathComponent
@@ -111,9 +154,7 @@ final class ImageCollection: ObservableObject {
             }
             return a.displayName.localizedStandardCompare(b.displayName) == .orderedAscending
         }
-        items = newItems
-        isActive = items.count > 1
-        generateThumbnails()
+        return newItems
     }
 
     // MARK: - Data import (from Photos picker)
@@ -130,7 +171,7 @@ final class ImageCollection: ObservableObject {
             newItems.append(Item(url: nil, displayName: item.name, thumbnail: thumb, imageData: item.data))
         }
         self.items = newItems
-        self.isActive = items.count > 1
+        self.isActive = !items.isEmpty
     }
 
     // MARK: - Navigation
@@ -165,12 +206,18 @@ final class ImageCollection: ObservableObject {
                 guard !Task.isCancelled else { return }
                 guard items[i].thumbnail == nil, let url = items[i].url else { continue }
 
+                // Remember which item this thumbnail belongs to: `items` can be
+                // replaced by a refresh while the decode is in flight, and an
+                // index alone would then point at a different file.
+                let itemID = items[i].id
+
                 let thumb = await Task.detached {
                     processor.generateThumbnail(from: url)
                 }.value
 
-                guard !Task.isCancelled, items.indices.contains(i) else { return }
-                items[i].thumbnail = thumb
+                guard !Task.isCancelled else { return }
+                guard let current = items.firstIndex(where: { $0.id == itemID }) else { continue }
+                items[current].thumbnail = thumb
             }
         }
     }

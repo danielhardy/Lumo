@@ -44,6 +44,15 @@ struct RecipeExtractor {
         var smoothingIterations: Int = 8
         /// Half-window for the alignment search (±N pixels).
         var alignmentSearchRadius: Int = 4
+        /// Longest side, in pixels, that the pair is analyzed at. Sampling is
+        /// statistical — 200k samples off a 3000px render describe the color
+        /// mapping just as well as 200k off a 9000px one, and three
+        /// full-resolution RGBA8 buffers (raw + jpg + blurred) cost ~700 MB on a
+        /// 60 MP pair. Set to 0 to analyze at native resolution.
+        var workingLongEdge: Int = 3000
+        /// Largest relative aspect-ratio difference tolerated between the RAW
+        /// and the JPG before the pair is rejected as mismatched.
+        var aspectTolerance: CGFloat = 0.01
     }
 
     enum ExtractorError: LocalizedError {
@@ -51,6 +60,7 @@ struct RecipeExtractor {
         case cannotLoadJPG(String)
         case renderFailed(String)
         case zeroSamples
+        case geometryMismatch(raw: CGSize, jpg: CGSize)
 
         var errorDescription: String? {
             switch self {
@@ -58,6 +68,13 @@ struct RecipeExtractor {
             case .cannotLoadJPG(let n): return "Cannot load JPG: \(n)"
             case .renderFailed(let s):  return "Render failed: \(s)"
             case .zeroSamples:          return "No usable samples found in the smooth regions of the image"
+            case .geometryMismatch(let raw, let jpg):
+                return """
+                    RAW and JPG have different shapes \
+                    (\(Int(raw.width))×\(Int(raw.height)) vs \(Int(jpg.width))×\(Int(jpg.height))). \
+                    They must be the same frame at the same aspect ratio — check for an in-camera \
+                    crop mode, a rotated JPG, or a mismatched pair.
+                    """
             }
         }
     }
@@ -70,15 +87,22 @@ struct RecipeExtractor {
 
     /// Run the full extraction pipeline. Safe to call from a background task.
     /// `progress` is invoked with values in [0,1] and a short stage label.
+    /// `isCancelled` is polled between stages and inside the sample loop; when
+    /// it returns true the pipeline throws `CancellationError`.
     static func derive(
         rawURL: URL,
         jpgURL: URL,
         options: Options = Options(),
-        progress: ((Double, String) -> Void)? = nil
+        progress: ((Double, String) -> Void)? = nil,
+        isCancelled: (() -> Bool)? = nil
     ) throws -> Result {
 
         let context = makeContext()
         let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+
+        func checkCancelled() throws {
+            if isCancelled?() == true { throw CancellationError() }
+        }
 
         progress?(0.05, "Loading RAW…")
 
@@ -91,35 +115,48 @@ struct RecipeExtractor {
         }
 
         progress?(0.15, "Loading JPG…")
+        try checkCancelled()
 
-        // 2. JPG → CIImage. CIImage interprets the embedded color space.
-        guard let jpgImage = CIImage(contentsOf: jpgURL) else {
+        // 2. JPG → CIImage. CIImage interprets the embedded color space, and
+        //    `orientedLoadOptions` bakes in the EXIF orientation so a portrait
+        //    JPG isn't compared sideways against an upright RAW render
+        //    (CIRAWFilter always applies orientation).
+        guard let jpgImage = CIImage(contentsOf: jpgURL, options: ImageProcessor.orientedLoadOptions) else {
             throw ExtractorError.cannotLoadJPG(jpgURL.lastPathComponent)
         }
 
-        // Both images get aligned to the JPG's extent, in JPG pixel space.
+        // The two files must describe the same frame. If they don't — an
+        // in-camera crop mode, a rotated JPG, or simply the wrong file picked —
+        // the Lanczos step below would silently stretch one onto the other and
+        // produce a garbage cube behind a plausible-looking report. Reject it.
+        let rawSize = rawImage.extent.size
+        let jpgSize = jpgImage.extent.size
+        guard rawSize.width > 0, rawSize.height > 0, jpgSize.width > 0, jpgSize.height > 0 else {
+            throw ExtractorError.geometryMismatch(raw: rawSize, jpg: jpgSize)
+        }
+        let rawAspect = rawSize.width / rawSize.height
+        let jpgAspect = jpgSize.width / jpgSize.height
+        guard abs(rawAspect - jpgAspect) / jpgAspect <= options.aspectTolerance else {
+            throw ExtractorError.geometryMismatch(raw: rawSize, jpg: jpgSize)
+        }
+
+        // Both images get aligned to a common extent, in JPG pixel space,
+        // optionally capped at a working resolution (see Options.workingLongEdge).
         // CIImage extents from RAW filters can have a non-zero origin — we
         // normalize everything into a (0,0)-origin output rectangle.
-        let jpgOrigin = jpgImage.extent
-        let outputSize = CGSize(width: jpgOrigin.width, height: jpgOrigin.height)
+        let outputSize = workingSize(for: jpgSize, longEdge: options.workingLongEdge)
         let outputRect = CGRect(origin: .zero, size: outputSize)
 
         progress?(0.25, "Scaling RAW to JPG resolution…")
+        try checkCancelled()
 
-        // 3. Lanczos-scale the RAW render to JPG dimensions
-        let rawScaled = lanczosScale(rawImage, to: outputSize)
-        let rawTranslated = rawScaled.transformed(
-            by: CGAffineTransform(translationX: -rawScaled.extent.origin.x,
-                                  y: -rawScaled.extent.origin.y)
-        )
-
-        // Move the JPG to a (0,0) origin too
-        let jpgTranslated = jpgImage.transformed(
-            by: CGAffineTransform(translationX: -jpgOrigin.origin.x,
-                                  y: -jpgOrigin.origin.y)
-        )
+        // 3. Lanczos-scale both renders onto the common working extent, each
+        //    normalized to a (0,0) origin.
+        let rawTranslated = originNormalized(lanczosScale(rawImage, to: outputSize))
+        let jpgTranslated = originNormalized(lanczosScale(jpgImage, to: outputSize))
 
         progress?(0.35, "Computing edge mask…")
+        try checkCancelled()
 
         // 4. Box-blur the JPG; |jpg − blurred| becomes the edge proxy
         let jpgBlurred = boxBlur(jpgTranslated, radius: options.blurRadius)
@@ -137,6 +174,7 @@ struct RecipeExtractor {
         }
 
         progress?(0.50, "Aligning…")
+        try checkCancelled()
 
         // 6. Integer-pixel alignment via brute-force cross-correlation
         let alignment = computeAlignment(
@@ -146,6 +184,7 @@ struct RecipeExtractor {
         )
 
         progress?(0.60, "Sampling…")
+        try checkCancelled()
 
         // 7. Random-sample then keep smooth regions.
         // The actual loop lives in `runSampleLoop` so the type-checker doesn't
@@ -155,8 +194,11 @@ struct RecipeExtractor {
             jpgBuf: jpgBuf,
             blurBuf: blurBuf,
             alignment: alignment,
-            options: options
+            options: options,
+            isCancelled: isCancelled
         )
+
+        try checkCancelled()
 
         guard stats.sampleCount > 0 else {
             throw ExtractorError.zeroSamples
@@ -184,7 +226,11 @@ struct RecipeExtractor {
         for c in counts where c > 0 { directlyFilled += 1 }
         let coverage = Float(directlyFilled) / Float(cubeCells) * 100
 
-        // Sharpening ratio with a small floor to avoid divide-by-zero
+        // Sharpening ratio: mean high-frequency energy in the JPG over the same
+        // in the neutral RAW render. Both sums come from the SAME accepted
+        // samples using the SAME operator (squared horizontal neighbor
+        // difference on the aligned pair), so the quotient is a real ratio.
+        // A small floor avoids divide-by-zero on a flat frame.
         let sharpRatio: Float
         if stats.rawHFEnergy > 1 {
             sharpRatio = Float(stats.jpgHFEnergy / stats.rawHFEnergy)
@@ -215,8 +261,6 @@ struct RecipeExtractor {
                 outputB: stats.toneSumB[b]  / n
             ))
         }
-        _ = sampleCount  // keep the local in scope for the report below
-        _ = cubeCells
 
         let report = RecipeReport(
             toneCurve: tonePoints,
@@ -258,7 +302,8 @@ struct RecipeExtractor {
         jpgBuf: ByteBuffer,
         blurBuf: ByteBuffer,
         alignment: (dx: Int, dy: Int),
-        options: Options
+        options: Options,
+        isCancelled: (() -> Bool)?
     ) -> SampleStats {
         let cubeN = options.cubeSize
         let cubeCells = cubeN * cubeN * cubeN
@@ -309,6 +354,7 @@ struct RecipeExtractor {
                         cubeN: cubeN,
                         toneBins: toneBins,
                         options: options,
+                        isCancelled: isCancelled,
                         stats: &stats
                     )
                 }
@@ -333,14 +379,17 @@ struct RecipeExtractor {
         cubeN: Int,
         toneBins: Int,
         options: Options,
+        isCancelled: (() -> Bool)?,
         stats: inout SampleStats
     ) {
         let cubeNF = Float(cubeN - 1)
         let edgeThreshU8 = UInt8(min(255, max(1, Int(options.edgeThreshold * 255))))
         var rng = SystemRandomNumberGenerator()
 
-        for _ in 0..<options.randomDrawCount {
+        for draw in 0..<options.randomDrawCount {
             if stats.sampleCount >= options.samplesTarget { break }
+            // Polling every draw would cost more than the sample itself.
+            if draw & 0xFFFF == 0, isCancelled?() == true { break }
 
             let x = Int.random(in: xMin..<xMax, using: &rng)
             let y = Int.random(in: yMin..<yMax, using: &rng)
@@ -358,14 +407,31 @@ struct RecipeExtractor {
             let dBlu: UInt8 = jb > bb ? jb - bb : bb - jb
             let edge: UInt8 = max(dRed, max(dGrn, dBlu))
 
-            // Sharpening estimator: every drawn pixel, edges included
-            let edgeF = Float(edge)
-            stats.jpgHFEnergy += Double(edgeF * edgeF)
+            // Aligned position in the neutral RAW render.
+            let rawOff = (y + dy) * bpr + (x + dx) * 4
+
+            // Sharpening estimator. Accumulated over EVERY draw — edges
+            // included, since that is precisely where sharpening lives — and
+            // measured on both images with the SAME operator (squared
+            // horizontal neighbor difference in red) at the SAME aligned pixel.
+            // Previously the JPG term was |jpg − blur| over every draw while
+            // the RAW term was a neighbor difference over accepted samples
+            // only: two different operators over two different pixel sets, so
+            // the reported ratio meant nothing.
+            if x > 0 && x < width - 1 {
+                let jLeft = Int(jpgBase[off - 4])
+                let jRight = Int(jpgBase[off + 4])
+                let jDiff = jLeft - jRight
+                stats.jpgHFEnergy += Double(jDiff * jDiff)
+
+                let nLeft = Int(rawBase[rawOff - 4])
+                let nRight = Int(rawBase[rawOff + 4])
+                let nDiff = nLeft - nRight
+                stats.rawHFEnergy += Double(nDiff * nDiff)
+            }
 
             if edge > edgeThreshU8 { continue }
 
-            // Read aligned neutral pixel
-            let rawOff = (y + dy) * bpr + (x + dx) * 4
             let nr: UInt8 = rawBase[rawOff + 0]
             let ng: UInt8 = rawBase[rawOff + 1]
             let nb: UInt8 = rawBase[rawOff + 2]
@@ -405,14 +471,6 @@ struct RecipeExtractor {
                                (jbF - jLuma) * (jbF - jLuma))
             stats.rawChromaSum += Double(nChroma)
             stats.jpgChromaSum += Double(jChroma)
-
-            // Approximate raw HF energy from horizontal neighborhood
-            if x > 0 && x < width - 1 {
-                let l = Int(rawBase[rawOff - 4])
-                let r = Int(rawBase[rawOff + 4])
-                let d = abs(l - r)
-                stats.rawHFEnergy += Double(d * d)
-            }
         }
     }
 
@@ -423,6 +481,28 @@ struct RecipeExtractor {
             return CIContext(mtlDevice: device, options: [.useSoftwareRenderer: false])
         }
         return CIContext()
+    }
+
+    /// The extent both images are analyzed at: `size`, capped so its longest
+    /// side is at most `longEdge`. `longEdge <= 0` means "analyze natively".
+    private static func workingSize(for size: CGSize, longEdge: Int) -> CGSize {
+        guard longEdge > 0 else { return size }
+        let longest = max(size.width, size.height)
+        guard longest > CGFloat(longEdge) else { return size }
+        let scale = CGFloat(longEdge) / longest
+        return CGSize(
+            width: (size.width * scale).rounded(),
+            height: (size.height * scale).rounded()
+        )
+    }
+
+    /// Shift an image so its extent starts at (0,0). RAW filter output and
+    /// scaled images can carry a non-zero origin; every buffer here is indexed
+    /// from zero.
+    private static func originNormalized(_ image: CIImage) -> CIImage {
+        let origin = image.extent.origin
+        guard origin != .zero else { return image }
+        return image.transformed(by: CGAffineTransform(translationX: -origin.x, y: -origin.y))
     }
 
     private static func lanczosScale(_ image: CIImage, to size: CGSize) -> CIImage {
@@ -438,16 +518,17 @@ struct RecipeExtractor {
     }
 
     private static func boxBlur(_ image: CIImage, radius: Float) -> CIImage {
-        let blur = CIFilter.boxBlur()
-        blur.inputImage = image
-        blur.radius = radius
-        // Box blur expands the extent; we'll crop back to the source rect
-        // at the call site. Use clampedToExtent to avoid black edges.
+        // Box blur expands the extent; we crop back to the source rect at the
+        // call site. `clampedToExtent` avoids darkened edges.
         return image.clampedToExtent()
             .applyingFilter("CIBoxBlur", parameters: ["inputRadius": radius])
     }
 
     /// Render a CIImage into a contiguous RGBA8 byte buffer in sRGB.
+    ///
+    /// `CIContext.render(toBitmap:)` reports nothing, so the only failure this
+    /// can detect is a degenerate destination — which is worth catching, since
+    /// otherwise the pipeline would sample a silently all-black buffer.
     private static func render(
         _ image: CIImage,
         to rect: CGRect,
@@ -456,6 +537,8 @@ struct RecipeExtractor {
     ) -> ByteBuffer? {
         let width = Int(rect.width)
         let height = Int(rect.height)
+        guard width > 0, height > 0, image.extent.intersects(rect) else { return nil }
+
         let bytesPerRow = width * 4
         var bytes = [UInt8](repeating: 0, count: height * bytesPerRow)
         bytes.withUnsafeMutableBytes { ptr in

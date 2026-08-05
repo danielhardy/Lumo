@@ -49,19 +49,39 @@ final class ImageProcessor {
 
     // MARK: - Loading
 
-    /// Load any supported image file as a CIImage.
+    /// Load any supported image file as a CIImage, upright.
     func loadImage(from url: URL) throws -> CIImage {
         let ext = url.pathExtension.lowercased()
 
         if Self.rawExtensions.contains(ext) {
             return try loadRAW(from: url)
         } else {
-            guard let image = CIImage(contentsOf: url) else {
+            guard let image = CIImage(contentsOf: url, options: Self.orientedLoadOptions) else {
                 throw ImageError.cannotLoad(url.lastPathComponent)
             }
             return image
         }
     }
+
+    /// Load in-memory image data (Photos imports, drag-and-drop payloads) as an
+    /// upright CIImage.
+    func loadImage(from data: Data, name: String) throws -> CIImage {
+        guard let image = CIImage(data: data, options: Self.orientedLoadOptions) else {
+            throw ImageError.cannotLoad(name)
+        }
+        return image
+    }
+
+    /// Decode options that bake a file's EXIF orientation into the returned
+    /// image's geometry.
+    ///
+    /// `CIImage` does **not** honor the orientation tag by default, but
+    /// `CIRAWFilter` does and so does the thumbnail path
+    /// (`kCGImageSourceCreateThumbnailWithTransform`). Without this a portrait
+    /// JPEG/HEIC previewed *and exported* on its side while its filmstrip
+    /// thumbnail stood upright. Every non-RAW decode in the app goes through
+    /// these options so all three paths agree.
+    static let orientedLoadOptions: [CIImageOption: Any] = [.applyOrientationProperty: true]
 
     /// Develop a RAW/DNG at **neutral / default `CIRAWFilter` settings** — no
     /// user develop adjustments are applied.
