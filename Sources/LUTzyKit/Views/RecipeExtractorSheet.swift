@@ -143,7 +143,7 @@ struct RecipeExtractorSheet: View {
         panel.allowsMultipleSelection = false
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
-        // RAW + DNG types — match what ImageProcessor knows how to load
+        // RAW + DNG types — match what ImageDecoder knows how to load
         var types: [UTType] = [.rawImage]
         if let dng = UTType(filenameExtension: "dng") { types.append(dng) }
         for ext in ["cr2", "cr3", "nef", "arw", "orf", "raf", "rw2", "pef", "srw"] {

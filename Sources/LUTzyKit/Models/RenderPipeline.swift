@@ -124,14 +124,14 @@ enum RenderPipeline {
     }
 
     private static func standardImage(for backing: ImageSource.Backing) -> CIImage? {
-        // `orientedLoadOptions` is shared with `ImageProcessor` on purpose: a portrait JPEG has to
-        // come out of this pipeline the same way up as it comes out of the old one, and `CIImage`
-        // ignores the EXIF tag unless asked.
+        // `orientedLoadOptions` is shared with `ImageDecoder` on purpose: a portrait JPEG has to
+        // come out of this pipeline the same way up as it comes out of the eager decode the view
+        // model does at open, and `CIImage` ignores the EXIF tag unless asked.
         switch backing {
         case .url(let url):
-            return CIImage(contentsOf: url, options: ImageProcessor.orientedLoadOptions)
+            return CIImage(contentsOf: url, options: ImageDecoder.orientedLoadOptions)
         case .data(let data):
-            return CIImage(data: data, options: ImageProcessor.orientedLoadOptions)
+            return CIImage(data: data, options: ImageDecoder.orientedLoadOptions)
         }
     }
 

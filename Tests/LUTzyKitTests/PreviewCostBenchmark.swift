@@ -21,6 +21,32 @@ final class PreviewCostBenchmark: XCTestCase {
 
     private static let previewBox = CGSize(width: 1600, height: 1200)
 
+    /// The shape the app used before the cutover — grade an already-decoded image, then rasterize —
+    /// reproduced here rather than called.
+    ///
+    /// Step 7 deleted `ImageProcessor.renderPreview` and `.export`, which is what these arms used to
+    /// drive. Deleting the comparison with them would have been the easy move and the wrong one: the
+    /// point of these numbers is that the engine stays within reach of a bare grade-and-rasterize,
+    /// and that only stays measurable if the baseline survives its implementation. Six lines of
+    /// Core Image is a cheap price for a regression signal that does not depend on shipped code.
+    fileprivate static func baselineRasterize(
+        _ image: CIImage, maxSize: CGSize, context: CIContext
+    ) -> CGImage? {
+        let extent = image.extent
+        guard extent.isRasterizable else { return nil }
+        let factor = min(maxSize.width / extent.width, maxSize.height / extent.height, 1.0)
+        let scaled = image.transformed(by: CGAffineTransform(scaleX: factor, y: factor))
+        return context.createCGImage(scaled, from: scaled.extent.integral,
+                                     format: .RGBA8, colorSpace: WorkingSpace.current.cgColorSpace)
+    }
+
+    fileprivate static func baselineEncodeJPEG(_ image: CIImage, context: CIContext) -> Data? {
+        context.jpegRepresentation(
+            of: image, colorSpace: WorkingSpace.current.cgColorSpace,
+            options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.95]
+        )
+    }
+
     /// `time` for an async body. Runs the loop on a semaphore-free detached task and waits, so the
     /// per-render figure is comparable with the synchronous one.
     fileprivate func timeAsync(
@@ -68,15 +94,15 @@ final class PreviewCostBenchmark: XCTestCase {
 
         // The old path: decode once up front, then grade + rasterize the decoded image per render.
         let decodeStart = Date()
-        let fullDecoded = try XCTUnwrap(ImageProcessor.developRAWNeutral(at: rawURL))
+        let fullDecoded = try XCTUnwrap(ImageDecoder.developRAWNeutral(at: rawURL))
         _ = context.createCGImage(fullDecoded, from: fullDecoded.extent.integral,
                                   format: .RGBA8, colorSpace: WorkingSpace.current.cgColorSpace)
         let oneOffDecode = Date().timeIntervalSince(decodeStart) * 1000
         print(String(format: "  %-46@ %7.1f ms (once, at open)", "old: full-resolution decode" as NSString, oneOffDecode))
 
-        let old = time("old: grade decoded image + rasterize preview", 5) {
+        let old = time("baseline: grade decoded image + rasterize", 5) {
             guard let graded = lut.apply(to: fullDecoded, intensity: 0.6) else { return }
-            _ = ImageProcessor.shared.renderPreview(graded, maxSize: Self.previewBox)
+            _ = Self.baselineRasterize(graded, maxSize: Self.previewBox, context: context)
         }
 
         // The new path: re-develop at preview scale, grade, rasterize — all per render.
@@ -133,10 +159,10 @@ final class PreviewCostBenchmark: XCTestCase {
         }
 
         print("\n=== per-render preview cost, 6000x4000 PNG ===")
-        let decoded = try XCTUnwrap(ImageProcessor.shared.loadImage(from: url))
-        let old = time("old: grade decoded image + rasterize preview", 5) {
+        let decoded = try XCTUnwrap(ImageDecoder.load(from: url))
+        let old = time("baseline: grade decoded image + rasterize", 5) {
             guard let graded = lut.apply(to: decoded, intensity: 0.6) else { return }
-            _ = ImageProcessor.shared.renderPreview(graded, maxSize: Self.previewBox)
+            _ = Self.baselineRasterize(graded, maxSize: Self.previewBox, context: context)
         }
         let new = time("new: pipeline at preview scale + rasterize", 5) {
             guard let image = RenderPipeline.buildImage(
@@ -206,22 +232,23 @@ final class PreviewCostBenchmark: XCTestCase {
 
         print("\n=== per-export cost, 6000x4000 PNG → JPEG ===")
 
-        // The old path, reproduced: decode once, grade with the LUT only, encode. Note it never saw
-        // `adjustments` at all — that is the divergence Step 6 closed, and it means the new path is
-        // doing strictly more work here, not less.
-        // Two "old" numbers, because the two old paths differed. The single export reused
-        // `AppViewModel.sourceImage`, already decoded at open; the batch loop called `loadImage`
-        // per item and paid for the decode every time. The engine always pays it, so only the
-        // second is an apples-to-apples comparison — the first is the cost the single export moved.
-        let decoded = try XCTUnwrap(ImageProcessor.shared.loadImage(from: url))
-        let oldReusingDecode = time("old single: grade a decoded image + encode", 3) {
-            guard let graded = lut.apply(to: decoded, intensity: 0.6) else { return }
-            try? ImageProcessor.shared.export(graded, to: destination, format: .jpeg)
+        // Two baselines, because the two pre-cutover paths differed. The single export reused
+        // `AppViewModel.sourceImage`, already decoded at open; the batch loop decoded per item and
+        // paid for it every time. The engine always pays it, so only the second is apples to apples
+        // — the first is the cost the single export moved. Note neither baseline sees `adjustments`,
+        // which is the divergence Step 6 closed: the engine is doing strictly more work here.
+        let context = CIContext(mtlDevice: MTLCreateSystemDefaultDevice()!)
+        let decoded = try XCTUnwrap(ImageDecoder.load(from: url))
+        let oldReusingDecode = time("baseline single: grade a decoded image + encode", 3) {
+            guard let graded = lut.apply(to: decoded, intensity: 0.6),
+                  let data = Self.baselineEncodeJPEG(graded, context: context) else { return }
+            try? data.write(to: destination)
         }
-        let old = time("old batch: decode + grade + encode", 3) {
-            guard let fresh = try? ImageProcessor.shared.loadImage(from: url),
-                  let graded = lut.apply(to: fresh, intensity: 0.6) else { return }
-            try? ImageProcessor.shared.export(graded, to: destination, format: .jpeg)
+        let old = time("baseline batch: decode + grade + encode", 3) {
+            guard let fresh = try? ImageDecoder.load(from: url),
+                  let graded = lut.apply(to: fresh, intensity: 0.6),
+                  let data = Self.baselineEncodeJPEG(graded, context: context) else { return }
+            try? data.write(to: destination)
         }
 
         let engine = RenderEngine()
@@ -232,8 +259,8 @@ final class PreviewCostBenchmark: XCTestCase {
             ) else { return }
             try? data.write(to: destination)
         }
-        print(String(format: "\n  engine vs old batch (both decode):  %.2fx", new / old))
-        print(String(format: "  engine vs old single (decode reused): %.2fx", new / oldReusingDecode))
+        print(String(format: "\n  engine vs baseline batch (both decode):   %.2fx", new / old))
+        print(String(format: "  engine vs baseline single (decode reused): %.2fx", new / oldReusingDecode))
 
         // Footprint, both paths, over a run of *distinct* images — a batch export, in other words.
         // The two should track each other; a divergence means one of them started holding on to
@@ -248,9 +275,10 @@ final class PreviewCostBenchmark: XCTestCase {
         let oldStart = Self.footprintMB()
         for item in batch {
             guard case .url(let u) = item.backing,
-                  let decoded = try? ImageProcessor.shared.loadImage(from: u),
-                  let graded = lut.apply(to: decoded, intensity: 0.6) else { continue }
-            try? ImageProcessor.shared.export(graded, to: destination, format: .jpeg)
+                  let decoded = try? ImageDecoder.load(from: u),
+                  let graded = lut.apply(to: decoded, intensity: 0.6),
+                  let data = Self.baselineEncodeJPEG(graded, context: context) else { continue }
+            try? data.write(to: destination)
         }
         let oldEnd = Self.footprintMB()
 
@@ -270,7 +298,7 @@ final class PreviewCostBenchmark: XCTestCase {
         group.wait()
         let newEnd = Self.footprintMB()
 
-        print(String(format: "  old path:  %.0f → %.0f MB  (%+.0f, %.0f MB/export)",
+        print(String(format: "  baseline:  %.0f → %.0f MB  (%+.0f, %.0f MB/export)",
                      oldStart, oldEnd, oldEnd - oldStart, (oldEnd - oldStart) / 8))
         print(String(format: "  engine:    %.0f → %.0f MB  (%+.0f, %.0f MB/export)\n",
                      newStart, newEnd, newEnd - newStart, (newEnd - newStart) / 8))

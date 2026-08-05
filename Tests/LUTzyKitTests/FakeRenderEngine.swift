@@ -26,7 +26,7 @@ actor FakeRenderEngine: RenderEngining {
         let lutID: LUTID?
         let scale: RenderScale
         let space: WorkingSpace
-        let format: ImageProcessor.ExportFormat?
+        let format: ExportFormat?
         /// The `ImageSource` the call named. Recorded so a test can tell *which* image was asked
         /// for — a batch export issues one request per file and they differ only here.
         var source: ImageSource?
@@ -61,7 +61,7 @@ actor FakeRenderEngine: RenderEngining {
         document: EditDocument,
         lut: CubeLUT?,
         scale: RenderScale,
-        format: ImageProcessor.ExportFormat,
+        format: ExportFormat,
         quality: CGFloat,
         space: WorkingSpace
     ) throws -> Data {

@@ -27,7 +27,7 @@ import AppKit
 @MainActor
 final class ExportCoordinator: ObservableObject {
 
-    @Published var format: ImageProcessor.ExportFormat = .jpeg
+    @Published var format: ExportFormat = .jpeg
     @Published private(set) var isExporting: Bool = false
     /// Progress (0...1) during a multi-image "Export All" run.
     @Published private(set) var batchProgress: Double = 0
@@ -85,7 +85,7 @@ final class ExportCoordinator: ObservableObject {
     nonisolated static func defaultFileName(
         source: String,
         lut: CubeLUT?,
-        format: ImageProcessor.ExportFormat
+        format: ExportFormat
     ) -> String {
         exportBaseName(source: source, lut: lut) + "." + format.fileExtension
     }

@@ -157,7 +157,7 @@ final class RenderEngineTests: TempDirectoryTestCase {
 
     func testEveryFormatEncodesToItsOwnType() async throws {
         let engine = RenderEngine()
-        let expected: [ImageProcessor.ExportFormat: UTType] = [
+        let expected: [ExportFormat: UTType] = [
             .png: .png, .jpeg: .jpeg, .tiff: .tiff,
         ]
 
@@ -417,7 +417,7 @@ final class RenderEngineTests: TempDirectoryTestCase {
         let engine = RenderEngine()
 
         let viaEngine = try await render(engine, EditDocument())
-        let viaProcessor = try ImageProcessor.shared.loadImage(from: sourceURL)
+        let viaProcessor = try ImageDecoder.load(from: sourceURL)
         let oldRaster = try Pixels.bytes(of: viaProcessor)
 
         assertPixelsEqual(try Pixels.bytes(of: viaEngine), oldRaster,

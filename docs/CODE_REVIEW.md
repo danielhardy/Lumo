@@ -187,8 +187,10 @@ dead, while the browser panel still listed the row. Now `!items.isEmpty`.
   it. Either show it (it is the one number that tells you the pair was mis-registered) or drop it.
 - `RecipeExtractor.Options` — cube size, sample counts, edge threshold, search radius, and now working
   resolution — has no UI. Cube size is effectively hardcoded at 33.
-- Unused API: `ImageProcessor.renderToNSImage`, `ImageMetadata.hasCameraInfo`, `ImageMetadata.isEmpty`,
-  `ImageCollection.selectedItem`, `HistogramData.Channel: CaseIterable`.
+- Unused API: `ImageMetadata.hasCameraInfo`, `ImageMetadata.isEmpty`, `ImageCollection.selectedItem`,
+  `HistogramData.Channel: CaseIterable`. **[partly fixed]** — `ImageProcessor.renderToNSImage` was on
+  this list and went with the rest of the type in Phase 2 Step 7, along with `renderPreview`,
+  `export` and `histogram`, all of which the engine now owns.
 - `dismissRecipeExtractor` claimed the scratch `.cube` was "cleared … on app exit". Nothing cleared it.
   **[partly fixed]** — a cancelled derive no longer writes one; a completed one is still kept
   deliberately (so the sheet can be reopened) and left to the OS temp sweep.

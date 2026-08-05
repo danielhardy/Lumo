@@ -9,7 +9,7 @@ final class ImageSourceTests: TempDirectoryTestCase {
     // MARK: - Classification
 
     func testFileSourcesAreClassifiedByExtensionLikeTheLoader() {
-        for ext in ImageProcessor.rawExtensions {
+        for ext in ImageDecoder.rawExtensions {
             let url = URL(fileURLWithPath: "/photos/frame.\(ext)")
             XCTAssertEqual(ImageSource(url: url, nativeExtent: .zero).kind, .raw, ext)
         }

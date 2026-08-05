@@ -54,16 +54,38 @@ final class ExportNamingTests: TempDirectoryTestCase {
     // MARK: - Export format mapping
 
     func testExportFormatExtensionsAndTypesAgree() {
-        XCTAssertEqual(ImageProcessor.ExportFormat.jpeg.fileExtension, "jpg")
-        XCTAssertEqual(ImageProcessor.ExportFormat.tiff.fileExtension, "tif")
-        XCTAssertEqual(ImageProcessor.ExportFormat.png.fileExtension, "png")
+        XCTAssertEqual(ExportFormat.jpeg.fileExtension, "jpg")
+        XCTAssertEqual(ExportFormat.tiff.fileExtension, "tif")
+        XCTAssertEqual(ExportFormat.png.fileExtension, "png")
 
-        for format in ImageProcessor.ExportFormat.allCases {
+        for format in ExportFormat.allCases {
             XCTAssertTrue(
                 format.utType.preferredFilenameExtension == format.fileExtension
                     || format.utType.tags[.filenameExtension]?.contains(format.fileExtension) == true,
                 "\(format.rawValue): extension \(format.fileExtension) should belong to \(format.utType.identifier)"
             )
         }
+    }
+
+    /// The promotion contract, pinned in Step 7 when `ExportFormat` moved out of `ImageProcessor`.
+    ///
+    /// `docs/PHASE2_SPEC.md` §7 flagged this move as a risk because everything it depends on fails
+    /// *quietly*: a `Picker` whose rows share an `id` still compiles and still draws, it just stops
+    /// tracking the selection, and a changed raw value only shows up as a wrong label. Nothing else
+    /// in the suite would notice either.
+    func testTheToolbarPickerContractSurvivedThePromotion() {
+        // The order and labels the toolbar segmented control shows.
+        XCTAssertEqual(ExportFormat.allCases.map(\.rawValue), ["TIFF", "JPEG", "PNG"])
+
+        // What the Picker keys its rows by. Duplicates break selection silently.
+        let ids = ExportFormat.allCases.map(\.id)
+        XCTAssertEqual(Set(ids).count, ExportFormat.allCases.count, "Picker row ids must be unique")
+        XCTAssertEqual(ids, ExportFormat.allCases.map(\.rawValue),
+                       "the id is the raw value — changing that changes what a saved selection means")
+
+        // What NSSavePanel filters on.
+        XCTAssertEqual(ExportFormat.jpeg.utType, .jpeg)
+        XCTAssertEqual(ExportFormat.tiff.utType, .tiff)
+        XCTAssertEqual(ExportFormat.png.utType, .png)
     }
 }

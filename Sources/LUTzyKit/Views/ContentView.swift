@@ -111,7 +111,7 @@ public struct ContentView: View {
     private var toolbarContent: some View {
         // Format picker
         Picker("Format", selection: $viewModel.exportFormat) {
-            ForEach(ImageProcessor.ExportFormat.allCases) { fmt in
+            ForEach(ExportFormat.allCases) { fmt in
                 Text(fmt.rawValue).tag(fmt)
             }
         }

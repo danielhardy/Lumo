@@ -38,7 +38,7 @@ protocol RenderEngining: Sendable {
         document: EditDocument,
         lut: CubeLUT?,
         scale: RenderScale,
-        format: ImageProcessor.ExportFormat,
+        format: ExportFormat,
         quality: CGFloat,
         space: WorkingSpace
     ) async throws -> Data
@@ -76,9 +76,12 @@ protocol RenderEngining: Sendable {
 /// differ only in `scale`, which is what makes their agreement structural rather than maintained
 /// (§1).
 ///
-/// Added in Step 4 **alongside** the old `ImageProcessor` path. Both contexts exist for now; the app
-/// still renders through the old one until Steps 5–7 cut over leaf by leaf and `ImageProcessor`'s GPU
-/// duties are deleted.
+/// Added in Step 4 **alongside** the old `ImageProcessor` path, which Steps 5–7 then cut over leaf by
+/// leaf — preview, export, histogram — until nothing was left of it to delete. As of Step 7 this is
+/// the **only** `CIContext` in the render stack. `RecipeExtractor` keeps its own by design (§3): it
+/// sits outside this stack, never imports `EditDocument`, and samples in a space pinned to sRGB
+/// regardless of `WorkingSpace.current`. Two contexts in the module, one in the render path, and
+/// `RenderStackTests` fails if a third appears.
 actor RenderEngine: RenderEngining {
 
     /// The app's engine. One instance, therefore one context.
@@ -130,7 +133,7 @@ actor RenderEngine: RenderEngining {
         document: EditDocument,
         lut: CubeLUT?,
         scale: RenderScale = .full,
-        format: ImageProcessor.ExportFormat,
+        format: ExportFormat,
         quality: CGFloat = 0.95,
         space: WorkingSpace = .current
     ) throws -> Data {

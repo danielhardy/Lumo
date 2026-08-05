@@ -23,7 +23,7 @@ final class RenderPipelineTests: TempDirectoryTestCase {
 
     /// The undecorated decode, for comparing a pipeline result against "the source, untouched".
     private func decodedSource() throws -> CIImage {
-        try XCTUnwrap(CIImage(contentsOf: sourceURL, options: ImageProcessor.orientedLoadOptions))
+        try XCTUnwrap(CIImage(contentsOf: sourceURL, options: ImageDecoder.orientedLoadOptions))
     }
 
     private func build(
@@ -469,7 +469,7 @@ final class RenderPipelineTests: TempDirectoryTestCase {
         let viaPipeline = try XCTUnwrap(RenderPipeline.buildImage(
             source: rawSource, document: EditDocument(), lut: nil, scale: .full
         ))
-        let viaProcessor = try XCTUnwrap(ImageProcessor.developRAWNeutral(at: rawURL))
+        let viaProcessor = try XCTUnwrap(ImageDecoder.developRAWNeutral(at: rawURL))
 
         XCTAssertEqual(viaPipeline.extent, viaProcessor.extent)
         assertPixelsEqual(try Pixels.bytes(of: viaPipeline), try Pixels.bytes(of: viaProcessor),

@@ -190,7 +190,7 @@ extension ImageMetadata {
 
         // Image. ImageIO reports the *stored* buffer dimensions; orientations
         // 5-8 are quarter-turns, so display dimensions are the transpose. The
-        // app renders images upright (see ImageProcessor.orientedLoadOptions),
+        // app renders images upright (see ImageDecoder.orientedLoadOptions),
         // so report what the user actually sees.
         let orientation = (props[kCGImagePropertyOrientation] as? Int)
             ?? (tiff[kCGImagePropertyTIFFOrientation] as? Int)

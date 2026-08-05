@@ -79,12 +79,11 @@ final class AppViewModel: ObservableObject {
     // Convenience passthroughs so views and the menu don't have to know which
     // collaborator owns a given piece of state.
     var isExporting: Bool { export.isExporting }
-    var exportFormat: ImageProcessor.ExportFormat {
+    var exportFormat: ExportFormat {
         get { export.format }
         set { export.format = newValue }
     }
 
-    private let processor = ImageProcessor.shared
     /// The renderer. An `any RenderEngining` rather than the concrete actor so a test can drive the
     /// preview flow without a GPU — the reason Step 4 introduced the protocol.
     private let engine: any RenderEngining
@@ -185,14 +184,14 @@ final class AppViewModel: ObservableObject {
         isLoading = true
         statusMessage = "Loading \(name)..."
 
-        loadTask = Task { [processor] in
+        loadTask = Task {
             let decoded: Result<CIImage, Error> = await Task.detached {
                 do {
                     if let url {
-                        return .success(try processor.loadImage(from: url))
+                        return .success(try ImageDecoder.load(from: url))
                     }
                     if let data {
-                        return .success(try processor.loadImage(from: data, name: name))
+                        return .success(try ImageDecoder.load(from: data, name: name))
                     }
                     return .failure(ImageError.cannotLoad(name))
                 } catch {
@@ -234,7 +233,7 @@ final class AppViewModel: ObservableObject {
     func openImageDialog() {
         let panel = NSOpenPanel()
         panel.title = "Open Image"
-        panel.allowedContentTypes = ImageProcessor.supportedTypes
+        panel.allowedContentTypes = ImageDecoder.supportedTypes
         panel.allowsMultipleSelection = false
 
         if panel.runModal() == .OK, let url = panel.url {
@@ -420,7 +419,7 @@ final class AppViewModel: ObservableObject {
     /// Render the document for display.
     ///
     /// **This is the Step 5 cutover.** The preview no longer grades a baked `CIImage` on the main
-    /// actor and rasterizes it through `ImageProcessor`; it hands the whole document to
+    /// actor and rasterizes it through the old `ImageProcessor`; it hands the whole document to
     /// `RenderEngine`, which builds the graph and evaluates it inside the actor that owns the one
     /// `CIContext`. Develop, adjustments, LUT and intensity all reach the screen through one call.
     ///
