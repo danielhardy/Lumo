@@ -42,11 +42,7 @@ final class AppViewModel: ObservableObject {
     private var histogramTask: Task<Void, Never>?
 
     @Published var isLoading: Bool = false
-    @Published var isExporting: Bool = false
-    /// Progress (0...1) during a multi-image "Export All" run.
-    @Published var batchProgress: Double = 0
     @Published var statusMessage: String = "Open an image to get started"
-    @Published var exportFormat: ImageProcessor.ExportFormat = .jpeg
 
     /// Non-nil when a hard failure should be surfaced as a dismissible alert.
     /// Bound to an `.alert` in ContentView; cleared when the user dismisses it.
@@ -54,44 +50,48 @@ final class AppViewModel: ObservableObject {
 
     @Published var isPhotosPickerPresented: Bool = false
 
-    // MARK: - Recipe extractor state (scratch — not saved until the user clicks Save)
-
-    @Published var isRecipeSheetPresented: Bool = false
-    @Published var isDeriving: Bool = false
-    @Published var deriveProgress: Double = 0
-    @Published var deriveStage: String = ""
-    @Published var derivedLUT: CubeLUT?
-    @Published var derivedReport: RecipeReport?
-    /// Path to the in-memory derived .cube serialized to a temp file so it can
-    /// be saved with a single FileManager.copy. Cleared on dismiss / new derive.
-    private var derivedScratchURL: URL?
+    // MARK: - Owned state
 
     let library = LUTLibrary()
     let collection = ImageCollection()
+    /// Writing images to disk — the single export, the batch run, and naming.
+    let export = ExportCoordinator()
+    /// The "Derive LUT from JPG" flow and its scratch-until-saved result.
+    let derive = DeriveCoordinator()
+
+    // Convenience passthroughs so views and the menu don't have to know which
+    // collaborator owns a given piece of state.
+    var isExporting: Bool { export.isExporting }
+    var exportFormat: ImageProcessor.ExportFormat {
+        get { export.format }
+        set { export.format = newValue }
+    }
 
     private let processor = ImageProcessor.shared
     private var loadTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
     private var originalPreviewTask: Task<Void, Never>?
     private var intensityTask: Task<Void, Never>?
-    private var deriveTask: Task<Void, Never>?
-    private var collectionCancellable: AnyCancellable?
-    private var libraryCancellable: AnyCancellable?
+    private var cancellables: [AnyCancellable] = []
 
     // MARK: - Init
 
     init() {
-        // Forward nested ObservableObject changes so SwiftUI views update
-        libraryCancellable = library.objectWillChange.sink { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.objectWillChange.send()
-            }
+        // Forward nested ObservableObject changes so SwiftUI views update.
+        for child in [
+            library.objectWillChange.eraseToAnyPublisher(),
+            collection.objectWillChange.eraseToAnyPublisher(),
+            export.objectWillChange.eraseToAnyPublisher(),
+            derive.objectWillChange.eraseToAnyPublisher(),
+        ] {
+            cancellables.append(child.sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.objectWillChange.send()
+                }
+            })
         }
-        collectionCancellable = collection.objectWillChange.sink { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.objectWillChange.send()
-            }
-        }
+
+        wireCoordinators()
         library.restoreFolder()
 
         // Restore a previously-chosen source folder and open its first image.
@@ -100,6 +100,28 @@ final class AppViewModel: ObservableObject {
         if collection.restoreSourceFolder() {
             isSourceBrowserPresented = true
             openFirstImageWhenScanned()
+        }
+    }
+
+    /// Point the coordinators' status/error output at this view model, which
+    /// owns the status bar and the alert. They report *what* happened; deciding
+    /// how to show it stays here.
+    private func wireCoordinators() {
+        export.onStatus = { [weak self] in self?.statusMessage = $0 }
+        export.onError = { [weak self] in self?.presentError($0) }
+
+        derive.onStatus = { [weak self] in self?.statusMessage = $0 }
+        derive.onError = { [weak self] in self?.presentError($0) }
+        derive.onDerived = { [weak self] lut in
+            // Preview the new look immediately, if there's something to see.
+            guard let self, self.sourceImage != nil else { return }
+            self.selectLUT(lut)
+        }
+        derive.libraryFolder = { [weak self] in self?.library.folderURL }
+        derive.onSaved = { [weak self] _ in
+            // Re-scan so the new entry appears in the sidebar.
+            guard let self, let folder = self.library.folderURL else { return }
+            self.library.scan(folder)
         }
     }
 
@@ -431,265 +453,51 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Export
 
+    /// The image the user is exporting: the graded result when a LUT is
+    /// active, otherwise the untouched source.
+    private var imageToExport: CIImage? {
+        processedImage ?? sourceImage
+    }
+
     func exportDialog() {
-        guard sourceImage != nil else {
+        guard let image = imageToExport else {
             statusMessage = "Open an image first"
             return
         }
-
-        let imageToExport = processedImage ?? sourceImage!
-        let lutSuffix = selectedLUT.map { "_" + $0.name.replacingOccurrences(of: " ", with: "_") } ?? ""
-        let baseName = sourceURL?.deletingPathExtension().lastPathComponent ?? "image"
-        let defaultName = baseName + lutSuffix + "." + exportFormat.fileExtension
-
-        let panel = NSSavePanel()
-        panel.title = "Export"
-        panel.nameFieldStringValue = defaultName
-        panel.allowedContentTypes = [exportFormat.utType]
-
-        if panel.runModal() == .OK, let url = panel.url {
-            isExporting = true
-            statusMessage = "Exporting..."
-
-            Task.detached { [processor, exportFormat] in
-                do {
-                    try processor.export(imageToExport, to: url, format: exportFormat)
-                    await MainActor.run {
-                        self.isExporting = false
-                        self.statusMessage = "Exported: \(url.lastPathComponent)"
-                    }
-                } catch {
-                    await MainActor.run {
-                        self.isExporting = false
-                        self.presentError("Export failed: \(error.localizedDescription)")
-                    }
-                }
-            }
-        }
+        let base = sourceURL?.deletingPathExtension().lastPathComponent ?? "image"
+        export.exportDialog(
+            image: image,
+            suggestedBaseName: ExportCoordinator.exportBaseName(source: base, lut: selectedLUT)
+        )
     }
 
     /// Apply the current LUT to every imported image and export them all to a
-    /// chosen folder. Runs off the main actor with progress; images that fail
-    /// to load or encode are skipped and counted, never aborting the batch.
+    /// chosen folder.
     func batchExportDialog() {
-        // Snapshot only the Sendable bits we need — avoid carrying NSImage
-        // thumbnails across the actor boundary.
-        let work = collection.items.map {
-            (url: $0.url, data: $0.imageData, name: $0.displayName)
+        // Snapshot only the Sendable bits — avoid carrying NSImage thumbnails
+        // across the actor boundary.
+        let items = collection.items.map {
+            ExportCoordinator.BatchItem(url: $0.url, data: $0.imageData, name: $0.displayName)
         }
-        guard !work.isEmpty else {
-            statusMessage = "Import a set of images first (Export All works on the filmstrip)"
-            return
-        }
-
-        let panel = NSOpenPanel()
-        panel.title = "Choose Export Folder"
-        panel.prompt = "Export Here"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let folder = panel.url else { return }
-
-        isExporting = true
-        batchProgress = 0
-        let total = work.count
-        statusMessage = "Exporting 0 of \(total)…"
-
-        let lut = selectedLUT
-        let fmt = exportFormat
-        let intensity = lutIntensity
-
-        Task.detached { [processor] in
-            var exported = 0
-            var failed = 0
-
-            for (index, item) in work.enumerated() {
-                let source: CIImage?
-                if let url = item.url {
-                    source = try? processor.loadImage(from: url)
-                } else if let data = item.data {
-                    source = CIImage(data: data)
-                } else {
-                    source = nil
-                }
-
-                if let source {
-                    // Honor the intensity slider so Export All matches the preview.
-                    let graded = lut?.apply(to: source, intensity: intensity) ?? source
-                    let suffix = lut.map { "_" + $0.name.replacingOccurrences(of: " ", with: "_") } ?? ""
-                    let dest = uniqueExportURL(in: folder, base: item.name + suffix, ext: fmt.fileExtension)
-                    do {
-                        try processor.export(graded, to: dest, format: fmt)
-                        exported += 1
-                    } catch {
-                        failed += 1
-                    }
-                } else {
-                    failed += 1
-                }
-
-                let done = index + 1
-                await MainActor.run {
-                    self.batchProgress = Double(done) / Double(total)
-                    self.statusMessage = "Exporting \(done) of \(total)…"
-                }
-            }
-
-            let okCount = exported
-            let failCount = failed
-            await MainActor.run {
-                self.isExporting = false
-                self.batchProgress = 0
-                let dest = folder.lastPathComponent
-                if failCount == 0 {
-                    self.statusMessage = "Exported \(okCount) image\(okCount == 1 ? "" : "s") to \(dest)"
-                } else {
-                    self.statusMessage = "Exported \(okCount) of \(total) (\(failCount) failed) to \(dest)"
-                }
-            }
-        }
+        export.batchExportDialog(items: items, lut: selectedLUT, intensity: lutIntensity)
     }
 
     // MARK: - Recipe extractor
 
     func presentRecipeExtractor() {
-        isRecipeSheetPresented = true
+        derive.present()
     }
 
-    /// Close the sheet. A derive still in flight is cancelled — it can run for
-    /// tens of seconds and hold several hundred MB, so leaving it running after
-    /// the user has walked away is never what they want.
-    ///
-    /// A *finished* result is kept: the user may re-open the sheet to inspect
-    /// the report or save the LUT. The scratch file is cleaned up when a new
-    /// derive starts (see `deriveRecipe`).
     func dismissRecipeExtractor() {
-        isRecipeSheetPresented = false
-        if isDeriving {
-            deriveTask?.cancel()
-            deriveTask = nil
-            isDeriving = false
-            deriveProgress = 0
-            deriveStage = ""
-            statusMessage = "Derive cancelled"
-        }
+        derive.dismiss()
     }
 
-    /// Derive a LUT from a (RAW, JPG) pair. Result lives in `derivedLUT` and
-    /// `derivedReport` until the user explicitly Saves it.
     func deriveRecipe(rawURL: URL, jpgURL: URL) {
-        guard !isDeriving else { return }
-        isDeriving = true
-        deriveProgress = 0
-        deriveStage = "Starting…"
-        statusMessage = "Deriving recipe…"
-        derivedLUT = nil
-        derivedReport = nil
-
-        // Clean up any previous scratch file
-        if let prev = derivedScratchURL {
-            try? FileManager.default.removeItem(at: prev)
-            derivedScratchURL = nil
-        }
-
-        deriveTask = Task.detached {
-            do {
-                let result = try RecipeExtractor.derive(
-                    rawURL: rawURL,
-                    jpgURL: jpgURL,
-                    progress: { progress, stage in
-                        Task { @MainActor in
-                            self.deriveProgress = progress
-                            self.deriveStage = stage
-                        }
-                    },
-                    isCancelled: { Task.isCancelled }
-                )
-
-                // Serialize the derived cube to a temp .cube so saving later is
-                // a one-line FileManager.copy. The CubeLUT itself is already
-                // built in-memory via the new init(cube:size:name:...) — the
-                // scratch file is just a save-time convenience.
-                let cubeName = jpgURL.deletingPathExtension().lastPathComponent + "_recipe_\(result.size)_Rec709"
-                let scratchURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("\(cubeName).cube")
-                try CubeLUT.write(
-                    cube: result.cube,
-                    size: result.size,
-                    title: cubeName,
-                    to: scratchURL
-                )
-
-                let lut = CubeLUT(
-                    cube: result.cube,
-                    size: result.size,
-                    name: cubeName,
-                    category: "Derived",
-                    sourceURL: scratchURL
-                )
-
-                await MainActor.run {
-                    self.derivedLUT = lut
-                    self.derivedReport = result.report
-                    self.derivedScratchURL = scratchURL
-                    self.isDeriving = false
-                    self.deriveProgress = 1.0
-                    self.deriveStage = "Done"
-                    self.statusMessage = "Recipe derived (\(result.report.sampleCount) samples)"
-                    // Apply to the current source for live preview
-                    if self.sourceImage != nil {
-                        self.selectLUT(lut)
-                    }
-                }
-            } catch is CancellationError {
-                // Nothing to undo: the scratch .cube is only written after
-                // `derive` returns, and `dismissRecipeExtractor` (the only
-                // thing that cancels) has already reset the UI state.
-                return
-            } catch {
-                await MainActor.run {
-                    self.isDeriving = false
-                    self.deriveProgress = 0
-                    self.deriveStage = ""
-                    self.presentError("Derive failed: \(error.localizedDescription)")
-                }
-            }
-        }
+        derive.derive(rawURL: rawURL, jpgURL: jpgURL)
     }
 
-    /// Save the current scratch LUT to disk. Defaults to the configured LUT
-    /// folder so the LUTLibrary picks it up on next scan.
     func saveDerivedLUT() {
-        guard let lut = derivedLUT, let scratch = derivedScratchURL else {
-            statusMessage = "No derived LUT to save"
-            return
-        }
-        let panel = NSSavePanel()
-        panel.title = "Save Derived LUT"
-        if let cubeType = UTType(filenameExtension: "cube") {
-            panel.allowedContentTypes = [cubeType]
-        }
-        panel.nameFieldStringValue = lut.name + ".cube"
-        if let folder = library.folderURL {
-            panel.directoryURL = folder
-        }
-
-        if panel.runModal() == .OK, let dest = panel.url {
-            do {
-                if FileManager.default.fileExists(atPath: dest.path) {
-                    try FileManager.default.removeItem(at: dest)
-                }
-                try FileManager.default.copyItem(at: scratch, to: dest)
-                statusMessage = "Saved: \(dest.lastPathComponent)"
-                // Re-scan the LUT folder so the new entry appears in the sidebar
-                if let folder = library.folderURL {
-                    library.scan(folder)
-                }
-            } catch {
-                presentError("Save failed: \(error.localizedDescription)")
-            }
-        }
+        derive.saveDialog()
     }
 
     // MARK: - LUT folder
@@ -705,20 +513,4 @@ final class AppViewModel: ObservableObject {
             library.setFolder(url)
         }
     }
-}
-
-// MARK: - Batch export helpers
-
-/// A non-colliding `base.ext` URL inside `folder`, appending " 2", " 3", …
-/// when a file of that name already exists. Free function (not `@MainActor`)
-/// so it can be called from the off-actor batch export task.
-func uniqueExportURL(in folder: URL, base: String, ext: String) -> URL {
-    let fm = FileManager.default
-    var candidate = folder.appendingPathComponent("\(base).\(ext)")
-    var n = 2
-    while fm.fileExists(atPath: candidate.path) {
-        candidate = folder.appendingPathComponent("\(base) \(n).\(ext)")
-        n += 1
-    }
-    return candidate
 }

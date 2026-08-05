@@ -145,7 +145,7 @@ Then select the **LUTzy** scheme and **Run** (`⌘R`). For a sandboxed build, ad
 ```bash
 swift test
 ```
-61 tests, no fixtures to download — everything they need is generated into a temp directory. CI runs
+95 tests, no fixtures to download — everything they need is generated into a temp directory. CI runs
 debug build → tests → release build on every push and PR.
 
 **Requirements:** macOS **14.0+**, Swift **5.9+** (Xcode 15+).
@@ -174,10 +174,14 @@ Sources/
     │   ├── RecipeExtractor.swift   # (RAW, JPG) → 3D LUT derivation pipeline
     │   └── RecipeReport.swift      # Analysis data model (tone curve, ratios, EXIF camera info)
     ├── ViewModels/
-    │   └── AppViewModel.swift      # Central @MainActor state: image, LUT, preview, export, derive
+    │   ├── AppViewModel.swift      # Central @MainActor state: image, LUT, preview, histogram
+    │   ├── ExportCoordinator.swift # Single + batch export, and the naming they share
+    │   └── DeriveCoordinator.swift # "Derive LUT from JPG" flow, scratch-until-saved result
     └── Views/
-        ├── ContentView.swift       # Split-view layout, toolbar, status bar, key monitor  [public]
+        ├── ContentView.swift       # Split-view layout + toolbar                          [public]
         ├── MenuCommands.swift      # File menu + its notification names                   [public]
+        ├── StatusBar.swift         # Status line + key hints along the bottom
+        ├── KeyboardShortcuts.swift # Window-level NSEvent monitor for arrow/letter keys
         ├── LUTSidebar.swift        # Searchable, category-grouped LUT list
         ├── PreviewView.swift       # Side-by-side / single canvas, drag-drop, badges
         ├── FilmstripView.swift     # Horizontal thumbnail strip for batches
@@ -192,7 +196,10 @@ Tests/
     ├── CubeLUTTests.swift      # parser, domain handling, index ordering, intensity, round-trip
     ├── ImageLoadingTests.swift # EXIF orientation across load/thumbnail/export, histogram
     ├── LibraryScanTests.swift  # async folder scans, error surfacing, collection navigation
-    ├── RecipeExtractorTests.swift  # cube assembly, neighbour smoothing, working resolution
+    ├── RecipeExtractorTests.swift   # cube assembly, neighbour smoothing, working resolution
+    ├── ExportCoordinatorTests.swift # single + batch export, failure handling, collisions
+    ├── DeriveCoordinatorTests.swift # derive lifecycle, scratch-until-saved, save
+    ├── AppViewModelTests.swift # coordinator wiring — status, errors, sidebar refresh
     └── ExportNamingTests.swift # batch-export collision handling
 ```
 
@@ -204,7 +211,8 @@ what is still outstanding.
 
 ## 🏗 Architecture notes
 
-- **MVVM.** [`AppViewModel`](Sources/LUTzyKit/ViewModels/AppViewModel.swift) is the single source of truth and owns the `LUTLibrary` and `ImageCollection`; views observe it, and the menu bar talks to it via `NotificationCenter`.
+- **MVVM with coordinators.** [`AppViewModel`](Sources/LUTzyKit/ViewModels/AppViewModel.swift) holds the image, LUT, and preview state, and owns four collaborators: `LUTLibrary`, `ImageCollection`, [`ExportCoordinator`](Sources/LUTzyKit/ViewModels/ExportCoordinator.swift), and [`DeriveCoordinator`](Sources/LUTzyKit/ViewModels/DeriveCoordinator.swift). The coordinators report *what* happened through `onStatus`/`onError` closures; deciding how to present it stays with the view model. Views observe, and the menu bar talks to it via `NotificationCenter`.
+- **Panels are a seam, not a dependency.** Every operation that needs a file dialog is split into a `perform…` core taking an explicit URL and a thin `…Dialog` wrapper that runs the panel. `NSOpenPanel`/`NSSavePanel` can't run headless, so this is what makes export and save testable at all.
 - **Core Image end to end.** RAW demosaicing (`CIRAWFilter`), LUT application (`CIColorCubeWithColorSpace`), scaling (`CILanczosScaleTransform`), and all export encoding run through one Metal-backed `CIContext`.
 - **Color pipeline is sRGB**, with cube data laid out R-fastest → G → B (matching both the `.cube` spec and Core Image's expected ordering).
 - **Images are rendered upright.** `CIRAWFilter` honors EXIF orientation; plain `CIImage(contentsOf:)` does not, so every non-RAW decode goes through `ImageProcessor.orientedLoadOptions`. Preview, filmstrip thumbnail, reported dimensions, and export all agree.

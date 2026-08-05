@@ -194,16 +194,20 @@ dead, while the browser panel still listed the row. Now `!items.isEmpty`.
 
 **[open]** — deliberately not touched in this pass, to keep the correctness diff reviewable.
 
-- **`AppViewModel` (674 lines) is a god object**: loading, LUT selection, preview, histogram, metadata,
-  single export, batch export, derive orchestration, and three folder pickers. The natural seams are an
-  `ExportCoordinator` (single + batch + the orphaned `uniqueExportURL` free function currently sitting at
-  the bottom of the file) and a `DeriveCoordinator` (derive / save / scratch lifecycle), leaving the view
-  model as display state.
-- **`ContentView.swift` holds several unrelated top-level types.** The menu commands, their
-  notification names, and `MenuCommandReceivers` moved out to `MenuCommands.swift` **[fixed]** — that
-  much was forced by the executable/library split, since the File menu had to live in the kit for the
-  entry point to stay thin. `StatusBar`/`KeyHint` and `KeyboardShortcuts`/`KeyMonitor` are still there
-  and still want `StatusBar.swift` and `KeyboardShortcuts.swift`.
+- ~~**`AppViewModel` (674 lines) is a god object**~~ **[fixed]** — split into `ExportCoordinator`
+  (single + batch export and the naming they share, including `uniqueExportURL`) and `DeriveCoordinator`
+  (derive / save / scratch lifecycle). `AppViewModel` drops to ~516 lines holding image, LUT, preview,
+  and histogram state, and wires the coordinators' `onStatus`/`onError` closures to the status bar and
+  alert — they report *what* happened, it decides how that is shown.
+
+  The split was chosen to buy testability, not tidiness: every panel-driven operation is now a
+  `perform…` core taking an explicit URL plus a thin `…Dialog` wrapper, so export and save can run
+  headless. That is what the 34 new tests in `ExportCoordinatorTests`, `DeriveCoordinatorTests`, and
+  `AppViewModelTests` stand on.
+- ~~**`ContentView.swift` holds several unrelated top-level types.**~~ **[fixed]** — the menu commands
+  and `MenuCommandReceivers` moved to `MenuCommands.swift`, `StatusBar`/`KeyHint` to `StatusBar.swift`,
+  and `KeyboardShortcuts`/`KeyMonitor` to `KeyboardShortcuts.swift`. `ContentView.swift` is down to
+  ~231 lines: the layout and the toolbar, nothing else.
 - `HistogramChart` lives at the bottom of `InfoInspectorView.swift`, away from `Histogram.swift`.
 - **`docs/PHASE2_SPEC.md` is 4,180 lines** of raw multi-agent output. It contradicts itself across
   sections, and a meaningful fraction of it is meta-commentary arguing with earlier drafts about bugs
@@ -233,19 +237,19 @@ so the README was the only wrong copy of the keymap.
 
 ## 5. Suggested order for the follow-up work
 
-1. ~~**`LUTzyKit` split + test target.**~~ **Done** — see §2. There is now a safety net to refactor against.
-2. **Split `AppViewModel` (674 lines) and the rest of `ContentView`.** Mechanical now that tests exist.
-   `AppViewModel` wants an `ExportCoordinator` and a `DeriveCoordinator`; `ContentView` wants
-   `StatusBar.swift` and `KeyboardShortcuts.swift`.
-3. **Distil `PHASE2_SPEC.md`** to the decisions, then start Phase 2 against it.
+1. ~~**`LUTzyKit` split + test target.**~~ **Done** — see §2.
+2. ~~**Split `AppViewModel` and the rest of `ContentView`.**~~ **Done** — see §3.
+3. **Distil `PHASE2_SPEC.md`** to the decisions, then start Phase 2 against it. This is now the only
+   structural item left, and the one with the most leverage: Phase 2's `EditDocument` spine would
+   subsume `processedImage`/`selectedLUT`/`lutIntensity` and give undo and per-image edits for free.
 
 ### Where coverage is still thin
 
 Worth knowing before leaning on the suite:
 
-- **`AppViewModel` is untested.** Its methods drive `NSOpenPanel`/`NSSavePanel` directly, so they can't
-  run headless. Factoring the post-panel bodies out (`performExport(to:)`, etc.) is what makes them
-  testable — the same seam the `ExportCoordinator` split needs, which is why (2) above is the unlock.
+- **The panels themselves are untested**, and can't be — `NSOpenPanel`/`NSSavePanel` need a UI session.
+  Everything behind them now is tested; what is not covered is that the wrapper passes the panel's URL
+  to the core, which is a two-line body in each case.
 - **`RecipeExtractor.derive` end-to-end is untested** — it needs a RAW, and a DNG fixture is tens of MB.
   The pure pieces (`buildCube`, `workingSize`, the error messages) are covered; alignment and the sample
   loop are not. If real coverage is wanted here, generate a small synthetic DNG rather than committing a
