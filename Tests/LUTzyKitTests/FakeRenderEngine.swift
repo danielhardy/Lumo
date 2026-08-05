@@ -1,0 +1,82 @@
+import Foundation
+import CoreImage
+import CoreGraphics
+@testable import LUTzyKit
+
+/// A `RenderEngining` that never touches the GPU.
+///
+/// This is the deliverable of Step 4 that is easy to overlook: once the view model renders through
+/// the protocol (Step 5), its tests should be able to assert *what was asked for* — which document,
+/// which scale, how many times — without a Metal device and without comparing pixels. That is only
+/// possible if the protocol is genuinely conformable by something trivial, which is what this proves.
+///
+/// An `actor` for the same reason the real one is: the protocol is `Sendable`, and recording calls is
+/// mutable state.
+actor FakeRenderEngine: RenderEngining {
+
+    /// Every `makeCGImage` call, in order.
+    private(set) var previewRequests: [Request] = []
+    /// Every `encode` call, in order.
+    private(set) var encodeRequests: [Request] = []
+
+    struct Request: Equatable {
+        let document: EditDocument
+        let lutID: LUTID?
+        let scale: RenderScale
+        let space: WorkingSpace
+        let format: ImageProcessor.ExportFormat?
+    }
+
+    /// Swap in a failure to exercise the caller's error path.
+    var shouldFailEncode = false
+    var previewResult: CGImage?
+
+    init(previewResult: CGImage? = FakeRenderEngine.solidImage()) {
+        self.previewResult = previewResult
+    }
+
+    func makeCGImage(
+        source: ImageSource,
+        document: EditDocument,
+        lut: CubeLUT?,
+        scale: RenderScale,
+        space: WorkingSpace
+    ) -> sending CGImage? {
+        previewRequests.append(Request(
+            document: document, lutID: lut?.lutID, scale: scale, space: space, format: nil
+        ))
+        // Rebuilt per call rather than handing out the stored one: the result is `sending`, so it has
+        // to be an image nothing else holds a reference to.
+        return Self.solidImage()
+    }
+
+    func encode(
+        source: ImageSource,
+        document: EditDocument,
+        lut: CubeLUT?,
+        scale: RenderScale,
+        format: ImageProcessor.ExportFormat,
+        quality: CGFloat,
+        space: WorkingSpace
+    ) throws -> Data {
+        encodeRequests.append(Request(
+            document: document, lutID: lut?.lutID, scale: scale, space: space, format: format
+        ))
+        if shouldFailEncode { throw ImageError.exportFailed }
+        return Data("fake-\(format.rawValue)".utf8)
+    }
+
+    func setShouldFailEncode(_ value: Bool) { shouldFailEncode = value }
+
+    /// A 2×2 opaque image — enough to be a real `CGImage`, cheap enough to make per call.
+    static func solidImage() -> CGImage? {
+        let space = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil, width: 2, height: 2, bitsPerComponent: 8, bytesPerRow: 8,
+            space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        ctx.setFillColor(red: 0.5, green: 0.25, blue: 0.75, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+        return ctx.makeImage()
+    }
+}

@@ -43,6 +43,28 @@ enum Pixels {
         return buffer
     }
 
+    /// Rasterize a `CGImage` to raw RGBA8 **in its own colour space**, so the comparison itself
+    /// introduces no conversion.
+    static func bytes(of image: CGImage) throws -> [UInt8] {
+        let width = image.width
+        let height = image.height
+        var buffer = [UInt8](repeating: 0, count: width * height * 4)
+        let space = image.colorSpace ?? CGColorSpaceCreateDeviceRGB()
+        let ctx = try XCTUnwrap(CGContext(
+            data: &buffer, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: space,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return buffer
+    }
+
+    /// Decode encoded bytes (a PNG, say) back to a `CGImage`.
+    static func decode(_ data: Data) throws -> CGImage {
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil))
+        return try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+    }
+
     /// Largest per-byte difference, or `nil` if the buffers are different sizes.
     static func worstDelta(_ a: [UInt8], _ b: [UInt8]) -> (delta: Int, index: Int)? {
         guard a.count == b.count else { return nil }
