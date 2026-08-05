@@ -1,6 +1,6 @@
 # LUTzy Phase 2 — non-destructive render pipeline + RAW develop
 
-**Status:** design, not code. Steps 0–3 of the migration are done; the rest is unbuilt.
+**Status:** design, not code. Steps 0–4 of the migration are done; the rest is unbuilt.
 
 This is a distillation. The original draft ran 4,180 lines of multi-agent output that contradicted
 itself across sections and spent a good fraction of its length arguing with earlier drafts about bugs
@@ -38,10 +38,23 @@ a baked image, which buys four things at once:
 | ✅ Derive: cancellable, geometry-validated, capped at a 3000 px working resolution | |
 | ✅ The value-state types exist (`EditDocument` and friends) — but nothing uses them yet | Step 2 is **done** |
 | ✅ `RenderPipeline.buildImage` and `LUTFilterCache` exist — also unused | Step 3 is **done** |
-| ❌ No `RenderEngine`, nothing wired to the app, no RAW develop UI | the actual Phase 2 work |
+| ✅ `actor RenderEngine` + `RenderEngining` exist, with a fake for tests — still unused | Step 4 is **done** |
+| ❌ Nothing wired to the app; no RAW develop UI | the actual Phase 2 work |
 
 **Still true and still worth fixing:** `ImageProcessor` is a non-`Sendable` `final class` singleton
 holding a `CIContext`, captured into `Task.detached` in several places. Strict concurrency would reject it.
+
+**Step 8's scope is now measured, not guessed.** Compiling `LUTzyKit` with
+`-strict-concurrency=complete` under the macOS 26 SDK reports **one** remaining diagnostic:
+`ImageProcessor.shared`. The whole Phase 2 stack — `EditDocument`, `RenderPipeline`, `LUTFilterCache`,
+`RenderEngine` — is already clean, and `sending CGImage?` typechecks in Swift 5 language mode, so no
+upcoming-feature flag is needed. Step 7 dissolves `ImageProcessor`; Step 8 should then be close to a
+one-line change:
+
+```
+swiftc -typecheck -swift-version 5 -strict-concurrency=complete \
+    -target arm64-apple-macosx14.0 $(find Sources/LUTzyKit -name '*.swift')
+```
 
 ---
 
@@ -217,10 +230,10 @@ leaf by leaf, delete the old path last.
 | ~~1~~ | ~~`WorkingSpace`; route all six colour sites through it~~ | ✅ **done** — export, preview pixels and histogram byte-identical at sRGB; parity + lockstep tests added |
 | ~~2~~ | ~~`EditDocument`, `RAWDevelopSettings`, `AdjustmentNode`, `LUTSettings`, `LUTID`, `ImageSource` — **defined but unused**~~ | ✅ **done** — plus `RenderScale`; 132 tests, nothing in the app references them, app launches unchanged |
 | ~~3~~ | ~~`RenderPipeline.buildImage` + the actor-side LUT filter cache — **defined but unused**~~ | ✅ **done** — 162 tests; identity is pixel-exact, intensity endpoints exact, 21 mutations caught |
-| 4 | `actor RenderEngine` alongside the old path; a `RenderEngining` protocol so tests inject a fake | both contexts exist briefly; app still runs the old path |
+| ~~4~~ | ~~`actor RenderEngine` alongside the old path; a `RenderEngining` protocol so tests inject a fake~~ | ✅ **done** — 175 tests; preview/export parity asserted in both spaces; 12 mutations caught |
 | 5 | Cut **preview** over. Keep computed `sourceImage`/`selectedLUT` shims so views compile | preview reflects develop + adjustments + intensity |
 | 6 | Cut **export** over; delete `processedImage` | export honors develop at full res; parity test on one `EditDocument` |
-| 7 | Move thumbnails (**both** `ImageCollection` sites — `generateThumbnails` *and* `addFromData`); dissolve `ImageProcessor` GPU duties | exactly one `CIContext` in the app |
+| 7 | Move thumbnails (**both** `ImageCollection` sites — `generateThumbnails` *and* `addFromData`); dissolve `ImageProcessor` GPU duties | one `CIContext` **in the render stack** — `RecipeExtractor` keeps its own by design (§3), so the count to assert is 2, not 1 |
 | 8 | Flip strict concurrency on | warning-clean build and test |
 | 9 | Wire derive into the new state: register the derived LUT by ID, keep the scratch-file bookkeeping | derive-baseline invariance test |
 | 10 | RAW develop + adjustments inspector, gated per-image on the real `is*Supported` flags | inspector drives live re-render |

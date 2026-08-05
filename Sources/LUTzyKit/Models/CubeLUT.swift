@@ -2,7 +2,7 @@ import Foundation
 import CoreImage
 
 /// Parses a .cube 3D LUT file and creates a CIFilter for GPU-accelerated color grading.
-struct CubeLUT: Identifiable, Hashable {
+struct CubeLUT: Identifiable, Hashable, Sendable {
     let id: String          // full file path (or a synthetic id for in-memory LUTs)
     let name: String        // display name (cleaned)
     let category: String    // folder name or "General"
@@ -245,7 +245,7 @@ struct CubeLUT: Identifiable, Hashable {
 
 // MARK: - Errors
 
-enum LUTError: LocalizedError {
+enum LUTError: LocalizedError, Sendable {
     case invalidFormat(String)
 
     var errorDescription: String? {

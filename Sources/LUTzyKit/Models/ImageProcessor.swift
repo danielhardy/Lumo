@@ -81,7 +81,12 @@ final class ImageProcessor {
     /// JPEG/HEIC previewed *and exported* on its side while its filmstrip
     /// thumbnail stood upright. Every non-RAW decode in the app goes through
     /// these options so all three paths agree.
-    static let orientedLoadOptions: [CIImageOption: Any] = [.applyOrientationProperty: true]
+    /// Computed rather than stored: a `static let` of `[CIImageOption: Any]` is shared mutable state
+    /// as far as the compiler is concerned (`Any` is not `Sendable`), which is a warning today and an
+    /// error under Swift 6. `RenderPipeline` reads this from inside `actor RenderEngine`, so the fix
+    /// belongs with the code that made it load-bearing rather than with Step 8. Rebuilding a
+    /// one-entry dictionary is free next to decoding an image.
+    static var orientedLoadOptions: [CIImageOption: Any] { [.applyOrientationProperty: true] }
 
     /// Develop a RAW/DNG at **neutral / default `CIRAWFilter` settings** — no
     /// user develop adjustments are applied.
@@ -241,7 +246,7 @@ final class ImageProcessor {
 
     // MARK: - Export
 
-    enum ExportFormat: String, CaseIterable, Identifiable {
+    enum ExportFormat: String, CaseIterable, Identifiable, Sendable {
         case tiff = "TIFF"
         case jpeg = "JPEG"
         case png  = "PNG"
@@ -336,7 +341,7 @@ extension CGRect {
 
 // MARK: - Errors
 
-enum ImageError: LocalizedError {
+enum ImageError: LocalizedError, Sendable {
     case cannotLoad(String)
     case processingFailed
     case exportFailed
