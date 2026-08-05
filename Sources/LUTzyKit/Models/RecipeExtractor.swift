@@ -98,7 +98,19 @@ struct RecipeExtractor {
     ) throws -> Result {
 
         let context = makeContext()
-        let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+
+        // PINNED to .sRGB, deliberately NOT WorkingSpace.current.
+        //
+        // A derived .cube encodes a transform FROM the baseline-render space TO the JPEG's, and is
+        // later applied by CubeLUT.makeFilter in WorkingSpace.current. For the derived LUT to be
+        // self-consistent, the space it is FIT in must equal the space it is APPLIED in. Both are
+        // sRGB today, so this holds trivially.
+        //
+        // If WorkingSpace.current ever moves to P3, do NOT simply thread it through here: the
+        // neutral RAW baseline this fits against is itself an sRGB-default render. Either re-fit
+        // derive in P3, or stamp the build space onto the CubeLUT so apply can match.
+        // See WorkingSpace and docs/PHASE2_SPEC.md §4.4.
+        let sRGB = WorkingSpace.sRGB.cgColorSpace
 
         func checkCancelled() throws {
             if isCancelled?() == true { throw CancellationError() }

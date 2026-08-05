@@ -145,17 +145,21 @@ struct CubeLUT: Identifiable, Hashable {
     // MARK: - Core Image Filter
 
     /// Creates a CIColorCube filter configured with this LUT.
-    func makeFilter() -> CIFilter? {
+    ///
+    /// `space` is the **LUT interpolation space** — one half of the colour seam. It must stay in
+    /// lockstep with the output encoding space; both default to `WorkingSpace.current` so they cannot
+    /// drift apart. See `WorkingSpace`.
+    func makeFilter(space: WorkingSpace = .current) -> CIFilter? {
         guard let filter = CIFilter(name: "CIColorCubeWithColorSpace") else { return nil }
         filter.setValue(size, forKey: "inputCubeDimension")
         filter.setValue(tableData as NSData, forKey: "inputCubeData")
-        filter.setValue(CGColorSpace(name: CGColorSpace.sRGB)!, forKey: "inputColorSpace")
+        filter.setValue(space.cgColorSpace, forKey: "inputColorSpace")
         return filter
     }
 
     /// Apply this LUT to a CIImage and return the result.
-    func apply(to image: CIImage) -> CIImage? {
-        guard let filter = makeFilter() else { return nil }
+    func apply(to image: CIImage, space: WorkingSpace = .current) -> CIImage? {
+        guard let filter = makeFilter(space: space) else { return nil }
         filter.setValue(image, forKey: kCIInputImageKey)
         return filter.outputImage
     }
@@ -167,10 +171,15 @@ struct CubeLUT: Identifiable, Hashable {
     /// back toward the original via `CIDissolveTransition`. The graded image
     /// and the source share the same extent (a color cube is a per-pixel
     /// remap), so the dissolve is a clean opacity blend.
-    func apply(to image: CIImage, intensity: Double) -> CIImage? {
+    ///
+    /// Note the crossfade happens in the `CIContext`'s working space (≈ linear light), **not** in
+    /// `space` — that argument governs cube interpolation only. Measured: a to-black LUT over white
+    /// reads 188 at intensity 0.5, where a perceptual mix would read ~128. See `docs/PHASE2_SPEC.md`
+    /// §8.1; changing it later is a visible look change for every sub-100% render.
+    func apply(to image: CIImage, intensity: Double, space: WorkingSpace = .current) -> CIImage? {
         let t = max(0, min(1, intensity))
         if t <= 0 { return image }
-        guard let graded = apply(to: image) else { return nil }
+        guard let graded = apply(to: image, space: space) else { return nil }
         if t >= 1 { return graded }
         guard let mix = CIFilter(name: "CIDissolveTransition") else { return graded }
         mix.setValue(image, forKey: kCIInputImageKey)
