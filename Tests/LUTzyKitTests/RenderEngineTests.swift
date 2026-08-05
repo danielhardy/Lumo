@@ -222,6 +222,59 @@ final class RenderEngineTests: TempDirectoryTestCase {
         }
     }
 
+    // MARK: - The developed-source memo
+
+    /// The memo exists so an intensity drag does not re-decode the file every frame (measured: 156 ms
+    /// versus 0.6 ms on a 6000×4000 source). It must not be observable in the output.
+    ///
+    /// Two *different preview sizes* on purpose: a memo keyed on everything but the scale would
+    /// serve the first size's image for the second, which a single preview render cannot detect.
+    func testTheMemoIsKeyedOnThePreviewSize() async throws {
+        let engine = RenderEngine()
+
+        let small = try await render(engine, EditDocument(),
+                                     scale: .preview(maxSize: CGSize(width: 32, height: 32)))
+        let large = try await render(engine, EditDocument(),
+                                     scale: .preview(maxSize: CGSize(width: 64, height: 64)))
+
+        XCTAssertLessThanOrEqual(small.width, 32)
+        XCTAssertEqual(large.width, 64, "a second preview size must not reuse the first's image")
+        XCTAssertNotEqual(small.width, large.width)
+    }
+
+    /// And keyed on the image. A memo that ignored which source it held would keep showing the
+    /// previous photo after the user stepped to the next one — invisible to any test that only ever
+    /// opens one image.
+    func testTheMemoIsKeyedOnTheSource() async throws {
+        let engine = RenderEngine()
+        let box = RenderScale.preview(maxSize: CGSize(width: 48, height: 48))
+
+        let firstURL = try Fixtures.writeGradientPNG(width: 96, height: 64, named: "a.png", in: tempDirectory)
+        // A solid patch, so the two images cannot be confused for one another.
+        let secondURL = tempDirectory.appendingPathComponent("b.png")
+        let solid = try Fixtures.makeCGImage(width: 96, height: 64, red: 0.1, green: 0.9, blue: 0.2)
+        let dest = try XCTUnwrap(CGImageDestinationCreateWithURL(
+            secondURL as CFURL, UTType.png.identifier as CFString, 1, nil
+        ))
+        CGImageDestinationAddImage(dest, solid, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(dest))
+
+        let a = ImageSource(url: firstURL, nativeExtent: CGSize(width: 96, height: 64))
+        let b = ImageSource(url: secondURL, nativeExtent: CGSize(width: 96, height: 64))
+
+        let imageA = await engine.makeCGImage(
+            source: a, document: EditDocument(), lut: nil, scale: box, space: .current
+        )
+        let imageB = await engine.makeCGImage(
+            source: b, document: EditDocument(), lut: nil, scale: box, space: .current
+        )
+        let renderedA = try XCTUnwrap(imageA)
+        let renderedB = try XCTUnwrap(imageB)
+
+        assertPixelsDiffer(try Pixels.bytes(of: renderedB), try Pixels.bytes(of: renderedA),
+                           "opening a second image must not keep serving the first")
+    }
+
     // MARK: - The cache lives on the actor
 
     /// The cube filter is built once and reused across renders. Invisible in the output by design, so

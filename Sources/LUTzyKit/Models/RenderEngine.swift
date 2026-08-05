@@ -168,9 +168,67 @@ actor RenderEngine: RenderEngining {
         _ scale: RenderScale,
         _ space: WorkingSpace
     ) -> CIImage? {
-        RenderPipeline.buildImage(
-            source: source, document: document, lut: lut,
-            scale: scale, space: space, lutCache: lutCache
+        guard let developed = developedSource(source, document.rawDevelop, scale) else { return nil }
+        return RenderPipeline.buildImage(
+            developed: developed, document: document, lut: lut, space: space, lutCache: lutCache
         )
+    }
+
+    // MARK: - The developed-source memo
+
+    private struct DevelopedKey: Equatable {
+        let source: ImageSource
+        let rawDevelop: RAWDevelopSettings
+        let scale: RenderScale
+    }
+
+    private var developedKey: DevelopedKey?
+    private var developedImage: CIImage?
+
+    /// The source stage, memoized for **preview** renders.
+    ///
+    /// This exists for one measured reason. Core Image caches decoded intermediates against the
+    /// `CIImage` instance, so handing it a freshly-built source every render means re-decoding the
+    /// file every render. Measured per preview render, rebuilding versus reusing:
+    ///
+    /// | source | rebuild | reuse |
+    /// |---|---|---|
+    /// | 30 MB DNG | 63 ms | 0.7 ms |
+    /// | 6000×4000 | 156 ms | 0.6 ms |
+    ///
+    /// An intensity drag is many renders, so without this the cutover would be a plainly visible
+    /// regression — the one thing Step 5 must not ship.
+    ///
+    /// **Only preview scales are memoized.** Export runs once per user action, so it has nothing to
+    /// gain, and holding a full-resolution developed image between exports would pin Core Image's
+    /// full-resolution intermediates for as long as the engine lives.
+    ///
+    /// A single entry, because the user is looking at one image at a time: changing image, develop
+    /// settings, or preview size replaces it. Nothing is retained once the next image is opened.
+    private func developedSource(
+        _ source: ImageSource,
+        _ rawDevelop: RAWDevelopSettings,
+        _ scale: RenderScale
+    ) -> CIImage? {
+        guard case .preview = scale else {
+            return RenderPipeline.developedSource(source, rawDevelop: rawDevelop, scale: scale)
+        }
+        let key = DevelopedKey(source: source, rawDevelop: rawDevelop, scale: scale)
+        if key == developedKey, let developedImage { return developedImage }
+
+        guard let image = RenderPipeline.developedSource(
+            source, rawDevelop: rawDevelop, scale: scale
+        ) else { return nil }
+
+        developedKey = key
+        developedImage = image
+        return image
+    }
+
+    /// Drop the developed-source memo. Not needed for correctness — the key covers every input — but
+    /// it lets a caller release the intermediates when no image is on screen.
+    func invalidateSourceCache() {
+        developedKey = nil
+        developedImage = nil
     }
 }

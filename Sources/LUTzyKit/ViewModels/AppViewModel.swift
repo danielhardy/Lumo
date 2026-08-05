@@ -15,12 +15,37 @@ final class AppViewModel: ObservableObject {
     @Published var sourceSize: CGSize = .zero
     @Published var sourceURL: URL?
 
-    @Published var selectedLUT: CubeLUT?
-    @Published var processedImage: CIImage?
+    /// **The look, as a value.** Phase 2's spine: everything the user has chosen lives here, and the
+    /// preview is rebuilt from it rather than from a baked image (`docs/PHASE2_SPEC.md` §3).
+    ///
+    /// Kept across image opens rather than reset, per §8.4 — auditioning one look across a folder is
+    /// the common case, and that is what the app already did.
+    @Published private(set) var document = EditDocument()
 
-    /// LUT strength, 0...1 (1 = full LUT, 0 = original). Persists across LUT
-    /// changes so a chosen strength can be auditioned against different looks.
-    @Published var lutIntensity: Double = 1.0
+    /// How to reproduce the open image. Held instead of a decoded `CIImage` because a RAW has to be
+    /// re-developed to honour `document.rawDevelop` (§4.2).
+    private var imageSource: ImageSource?
+
+    /// A freshly derived LUT lives only in memory until the user saves it, so it cannot be resolved
+    /// out of the library the way a file-backed one can. Step 9 replaces this with a real registry.
+    private var scratchLUT: CubeLUT?
+
+    /// **Shim.** The document stores a `LUTID`; views still want the LUT. Resolution is deliberately
+    /// a fresh lookup rather than a cached object — `LUTID` is a file path precisely so a rescan
+    /// cannot break it (§4.3).
+    var selectedLUT: CubeLUT? { resolvedLUT(document.lut.lutID) }
+
+    /// **Shim.** Reads through to the document so the toolbar slider keeps working unchanged.
+    var lutIntensity: Double { document.lut.intensity }
+
+    /// **Shim, and still the old path.** Export and the histogram have *not* been cut over yet — that
+    /// is Step 6 — so this reproduces exactly what they got before: the full-resolution decode with
+    /// the LUT and its intensity applied, and no adjustments or develop. Lazy, so building it costs
+    /// nothing until something rasterizes it.
+    var processedImage: CIImage? {
+        guard let sourceImage, let lut = selectedLUT else { return nil }
+        return lut.apply(to: sourceImage, intensity: document.lut.intensity)
+    }
 
     @Published var previewNSImage: NSImage?
     @Published var originalPreviewNSImage: NSImage?
@@ -68,6 +93,9 @@ final class AppViewModel: ObservableObject {
     }
 
     private let processor = ImageProcessor.shared
+    /// The renderer. An `any RenderEngining` rather than the concrete actor so a test can drive the
+    /// preview flow without a GPU — the reason Step 4 introduced the protocol.
+    private let engine: any RenderEngining
     private var loadTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
     private var originalPreviewTask: Task<Void, Never>?
@@ -76,7 +104,9 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Init
 
-    init() {
+    init(engine: any RenderEngining = RenderEngine.shared) {
+        self.engine = engine
+
         // Forward nested ObservableObject changes so SwiftUI views update.
         for child in [
             library.objectWillChange.eraseToAnyPublisher(),
@@ -189,11 +219,19 @@ final class AppViewModel: ObservableObject {
                 self.sourceURL = url
                 self.sourceName = name
                 self.sourceSize = ci.extent.size
-                self.processedImage = nil
+                // The renderer works from the file, not the decoded image, so a RAW can be
+                // re-developed per render. `nativeExtent` comes from the decode we just did.
+                if let url {
+                    self.imageSource = ImageSource(url: url, nativeExtent: ci.extent.size)
+                } else if let data {
+                    self.imageSource = ImageSource(data: data, nativeExtent: ci.extent.size)
+                } else {
+                    self.imageSource = nil
+                }
                 self.statusMessage = "\(name)  \(Int(ci.extent.width))\u{00D7}\(Int(ci.extent.height))"
                 self.isLoading = false
 
-                self.scheduleOriginalPreview(ci)
+                self.scheduleOriginalPreview()
                 self.schedulePreview()
                 self.refreshMetadata(url: url, data: data)
             }
@@ -294,8 +332,38 @@ final class AppViewModel: ObservableObject {
     // MARK: - LUT selection
 
     func selectLUT(_ lut: CubeLUT?) {
-        selectedLUT = lut
+        // A derived LUT is only reachable through this reference until it is saved to the library.
+        scratchLUT = (lut?.lutID.isDerived == true) ? lut : nil
+        document.lut.lutID = lut?.lutID
         applyLUT()
+    }
+
+    /// Mutate the document and re-render.
+    ///
+    /// The only way to reach `rawDevelop` and `adjustments` today. The inspector that will drive them
+    /// from the UI is Step 10; until it exists this is the seam those fields are tested through, and
+    /// it is what the inspector will call. Keeping `document` `private(set)` behind it means every
+    /// mutation goes through one place that knows to re-render.
+    func updateDocument(_ transform: (inout EditDocument) -> Void) {
+        var updated = document
+        transform(&updated)
+        guard updated != document else { return }
+
+        let developChanged = updated.rawDevelop != document.rawDevelop
+        document = updated
+        // The comparison baseline only moves when develop does — re-rasterizing it on every
+        // adjustment would be work nobody can see.
+        if developChanged { scheduleOriginalPreview() }
+        schedulePreview()
+    }
+
+    /// Resolve a document's LUT reference: the unsaved derived LUT if it matches, otherwise the
+    /// library. A miss returns `nil`, and the render simply comes out ungraded — see
+    /// `RenderPipeline.buildImage`.
+    private func resolvedLUT(_ id: LUTID?) -> CubeLUT? {
+        guard let id else { return nil }
+        if let scratchLUT, scratchLUT.lutID == id { return scratchLUT }
+        return library.allLUTs.first(matching: id)
     }
 
     func selectPreviousLUT() {
@@ -327,8 +395,8 @@ final class AppViewModel: ObservableObject {
     /// pixel of travel.
     func setLUTIntensity(_ value: Double) {
         let clamped = max(0, min(1, value))
-        guard clamped != lutIntensity else { return }
-        lutIntensity = clamped
+        guard clamped != document.lut.intensity else { return }
+        document.lut.intensity = clamped
 
         intensityTask?.cancel()
         intensityTask = Task {
@@ -343,54 +411,75 @@ final class AppViewModel: ObservableObject {
     private let maxPreview = CGSize(width: 1600, height: 1200)
     private static let intensityDebounceMs = 60
 
-    /// Rebuild `processedImage` for the current LUT + intensity and rasterize
-    /// whichever image belongs on screen.
+    /// Render the document for display.
     ///
-    /// Assembling the filter graph stays on the main actor — Core Image is lazy,
-    /// so that part is nearly free. The **rasterization** is the expensive step
-    /// and runs detached; the resulting `NSImage` is published back here. Any
-    /// in-flight render is cancelled first, so rapid LUT/intensity changes drop
-    /// stale work instead of queueing it.
+    /// **This is the Step 5 cutover.** The preview no longer grades a baked `CIImage` on the main
+    /// actor and rasterizes it through `ImageProcessor`; it hands the whole document to
+    /// `RenderEngine`, which builds the graph and evaluates it inside the actor that owns the one
+    /// `CIContext`. Develop, adjustments, LUT and intensity all reach the screen through one call.
+    ///
+    /// Nothing here touches `CIImage` any more — only `Sendable` values cross to the engine and a
+    /// `CGImage` comes back, which is wrapped for AppKit on this actor.
+    ///
+    /// Any in-flight render is cancelled first, so a slider drag drops stale work rather than
+    /// queueing it.
     private func schedulePreview() {
         previewTask?.cancel()
 
-        guard let source = sourceImage else {
-            processedImage = nil
+        guard let imageSource else {
             previewNSImage = nil
             return
         }
 
-        let graded: CIImage?
-        if let lut = selectedLUT {
-            graded = lut.apply(to: source, intensity: lutIntensity)
-            if graded == nil { statusMessage = "LUT application failed" }
-        } else {
-            graded = nil
-        }
-        processedImage = graded
+        // The A/B baseline is the same document with the look removed — develop applied, per §8.5.
+        // Both sides therefore share a `rawDevelop`, so holding Space reuses the engine's developed
+        // source instead of re-developing the RAW.
+        let requested = isShowingOriginal ? document.originalForComparison : document
+        let lut = selectedLUT
+        let box = maxPreview
 
-        let displayed = (isShowingOriginal ? nil : graded) ?? source
-
-        previewTask = Task { [processor, maxPreview] in
-            let rendered = await Task.detached {
-                processor.renderPreview(displayed, maxSize: maxPreview)
-            }.value
+        previewTask = Task { [engine] in
+            let cgImage = await engine.makeCGImage(
+                source: imageSource, document: requested, lut: lut,
+                scale: .preview(maxSize: box), space: .current
+            )
             guard !Task.isCancelled else { return }
-            self.previewNSImage = rendered
+            guard let cgImage else {
+                // Not per-LUT validation — a bad cube is caught and reported at parse time (§7).
+                // This is the render itself failing, which means the source stopped being readable.
+                self.statusMessage = "Could not render \(self.sourceName)"
+                return
+            }
+            self.previewNSImage = NSImage(
+                cgImage: cgImage,
+                size: NSSize(width: cgImage.width, height: cgImage.height)
+            )
             self.updateHistogram()
         }
     }
 
-    /// Rasterize the untouched source for the side-by-side left panel. Only
-    /// needs to run when the image itself changes.
-    private func scheduleOriginalPreview(_ ciImage: CIImage) {
+    /// Rasterize the comparison baseline for the side-by-side left panel. Only needs to re-run when
+    /// the image or the develop settings change — not when the look does.
+    private func scheduleOriginalPreview() {
         originalPreviewTask?.cancel()
-        originalPreviewTask = Task { [processor, maxPreview] in
-            let rendered = await Task.detached {
-                processor.renderPreview(ciImage, maxSize: maxPreview)
-            }.value
-            guard !Task.isCancelled else { return }
-            self.originalPreviewNSImage = rendered
+
+        guard let imageSource else {
+            originalPreviewNSImage = nil
+            return
+        }
+        let baseline = document.originalForComparison
+        let box = maxPreview
+
+        originalPreviewTask = Task { [engine] in
+            let cgImage = await engine.makeCGImage(
+                source: imageSource, document: baseline, lut: nil,
+                scale: .preview(maxSize: box), space: .current
+            )
+            guard !Task.isCancelled, let cgImage else { return }
+            self.originalPreviewNSImage = NSImage(
+                cgImage: cgImage,
+                size: NSSize(width: cgImage.width, height: cgImage.height)
+            )
         }
     }
 

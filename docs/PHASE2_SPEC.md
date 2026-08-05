@@ -1,6 +1,6 @@
 # LUTzy Phase 2 — non-destructive render pipeline + RAW develop
 
-**Status:** design, not code. Steps 0–4 of the migration are done; the rest is unbuilt.
+**Status:** partly built. Steps 0–5 of the migration are done — the preview now renders from the document; export does not yet.
 
 This is a distillation. The original draft ran 4,180 lines of multi-agent output that contradicted
 itself across sections and spent a good fraction of its length arguing with earlier drafts about bugs
@@ -38,8 +38,9 @@ a baked image, which buys four things at once:
 | ✅ Derive: cancellable, geometry-validated, capped at a 3000 px working resolution | |
 | ✅ The value-state types exist (`EditDocument` and friends) — but nothing uses them yet | Step 2 is **done** |
 | ✅ `RenderPipeline.buildImage` and `LUTFilterCache` exist — also unused | Step 3 is **done** |
-| ✅ `actor RenderEngine` + `RenderEngining` exist, with a fake for tests — still unused | Step 4 is **done** |
-| ❌ Nothing wired to the app; no RAW develop UI | the actual Phase 2 work |
+| ✅ `actor RenderEngine` + `RenderEngining` exist, with a fake for tests | Step 4 is **done** |
+| ✅ **The preview renders from `EditDocument`** through the engine — develop, adjustments, LUT, intensity | Step 5 is **done** |
+| ❌ Export and the histogram still run the old `ImageProcessor` path; no RAW develop UI | Steps 6–7, 10 |
 
 **Still true and still worth fixing:** `ImageProcessor` is a non-`Sendable` `final class` singleton
 holding a `CIContext`, captured into `Task.detached` in several places. Strict concurrency would reject it.
@@ -231,7 +232,7 @@ leaf by leaf, delete the old path last.
 | ~~2~~ | ~~`EditDocument`, `RAWDevelopSettings`, `AdjustmentNode`, `LUTSettings`, `LUTID`, `ImageSource` — **defined but unused**~~ | ✅ **done** — plus `RenderScale`; 132 tests, nothing in the app references them, app launches unchanged |
 | ~~3~~ | ~~`RenderPipeline.buildImage` + the actor-side LUT filter cache — **defined but unused**~~ | ✅ **done** — 162 tests; identity is pixel-exact, intensity endpoints exact, 21 mutations caught |
 | ~~4~~ | ~~`actor RenderEngine` alongside the old path; a `RenderEngining` protocol so tests inject a fake~~ | ✅ **done** — 175 tests; preview/export parity asserted in both spaces; 12 mutations caught |
-| 5 | Cut **preview** over. Keep computed `sourceImage`/`selectedLUT` shims so views compile | preview reflects develop + adjustments + intensity |
+| ~~5~~ | ~~Cut **preview** over. Keep computed `sourceImage`/`selectedLUT` shims so views compile~~ | ✅ **done** — 188 tests; 15 mutations caught; needed a **developed-source memo**, see below |
 | 6 | Cut **export** over; delete `processedImage` | export honors develop at full res; parity test on one `EditDocument` |
 | 7 | Move thumbnails (**both** `ImageCollection` sites — `generateThumbnails` *and* `addFromData`); dissolve `ImageProcessor` GPU duties | one `CIContext` **in the render stack** — `RecipeExtractor` keeps its own by design (§3), so the count to assert is 2, not 1 |
 | 8 | Flip strict concurrency on | warning-clean build and test |
@@ -242,6 +243,28 @@ leaf by leaf, delete the old path last.
 
 Debounce **continuous edits only**. Open and filmstrip navigation must render immediately, or stepping
 through a folder picks up latency for no reason.
+
+### The cutover's one real trap, measured at Step 5
+
+Rebuilding the source image per render is a **catastrophic** regression, and not an obvious one:
+Core Image caches decoded intermediates against the `CIImage` *instance*, so a freshly-built source
+each render re-decodes the file every time. Measured per preview render:
+
+| source | rebuilt per render | reusing one instance |
+|---|---|---|
+| 30 MB DNG | 63–76 ms | ~1 ms |
+| 6000×4000 | 151–167 ms | ~0.7 ms |
+
+An intensity drag is many renders, so the naive cutover would have been plainly visible. `RenderEngine`
+therefore memoizes the developed source, keyed on **(source, rawDevelop, scale)** and only for preview
+scales — export runs once per action and would otherwise pin full-resolution intermediates.
+
+With the memo the cutover is a wash per render (~1 ms either way) and *saves* ~200 ms when opening a
+RAW, because the eager full-resolution decode is no longer on the path to first pixels. `swift test
+--filter PreviewCostBenchmark` with `LUTZY_BENCH=1` reproduces the numbers.
+
+**Step 6 inherits this.** Export at `.full` is deliberately not memoized; if export ever renders
+repeatedly, measure before adding a second memo.
 
 ---
 
@@ -271,11 +294,15 @@ through a folder picks up latency for no reason.
    hides the out-of-gamut shifts). *Recommend: defer, CI default for v1.*
 3. **Display P3.** Flipping `WorkingSpace.current` moves LUT-interp and output in lockstep, but derived
    LUTs were fit in sRGB and would mis-map. Prerequisite: a `buildSpace` on `CubeLUT`, or re-fit derive.
-4. **New-image document policy.** Keep the current `EditDocument` across opens (A/B a look across a
-   folder) or reset per open? *Recommend: keep.*
-5. **"Original" for A/B.** Develop-applied-but-no-adjustments-no-LUT, or neutral RAW defaults?
-   *Recommend: develop-applied.* Also decide whether side-by-side triggers on any non-neutral document
-   or stays gated on "a LUT is set" as it is today.
+4. ~~**New-image document policy.**~~ **Decided at Step 5: keep.** The document survives an open, so a
+   look can be auditioned across a folder — which is what the app already did with its LUT selection
+   and intensity, so the cutover changed nothing here.
+5. ~~**"Original" for A/B.**~~ **Decided at Step 5: develop-applied.** `EditDocument.originalForComparison`
+   keeps `rawDevelop` and strips adjustments and the LUT — holding Space shows the same negative
+   without the *look*, not a different rendering of it. Sharing `rawDevelop` also keeps the swap cheap,
+   since both sides hit the same developed-source memo. Invisible until the Step 10 inspector exists,
+   which is why it was worth settling now rather than then. **Still open:** whether side-by-side
+   triggers on any non-neutral document or stays gated on "a LUT is set" as it is today.
 6. **Adjustment list semantics.** Allow duplicate node cases, or one-of-each fixed slots?
    *Recommend: allow duplicates.*
 7. **`CITemperatureAndTint` direction.** Still open, but no longer a guess — **measured** in Step 3 on
