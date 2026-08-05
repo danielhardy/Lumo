@@ -3,9 +3,11 @@ import UniformTypeIdentifiers
 import AppKit
 
 /// Modal sheet for deriving a .cube LUT from a (RAW, JPG) pair.
-/// Scratch-mode: derived LUT lives in `vm.derivedLUT` until the user clicks Save.
+/// Scratch-mode: the derived LUT lives in `coordinator.derivedLUT` until the
+/// user clicks Save. Observes `DeriveCoordinator` directly rather than the
+/// whole app view model — this sheet touches nothing else.
 struct RecipeExtractorSheet: View {
-    @ObservedObject var vm: AppViewModel
+    @ObservedObject var coordinator: DeriveCoordinator
     @Environment(\.dismiss) private var dismiss
 
     @State private var rawURL: URL?
@@ -30,11 +32,11 @@ struct RecipeExtractorSheet: View {
                 )
             }
 
-            if vm.isDeriving {
+            if coordinator.isDeriving {
                 progressBlock
             }
 
-            if let report = vm.derivedReport, !vm.isDeriving {
+            if let report = coordinator.report, !coordinator.isDeriving {
                 Divider()
                 RecipeReportView(report: report)
             }
@@ -45,7 +47,7 @@ struct RecipeExtractorSheet: View {
         }
         .padding(20)
         .frame(width: 540)
-        .frame(minHeight: vm.derivedReport == nil ? 280 : 540)
+        .frame(minHeight: coordinator.report == nil ? 280 : 540)
     }
 
     // MARK: - Header
@@ -97,8 +99,8 @@ struct RecipeExtractorSheet: View {
 
     private var progressBlock: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ProgressView(value: vm.deriveProgress)
-            Text(vm.deriveStage)
+            ProgressView(value: coordinator.progress)
+            Text(coordinator.stage)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -109,27 +111,27 @@ struct RecipeExtractorSheet: View {
     private var footerButtons: some View {
         HStack {
             Button("Close") {
-                vm.dismissRecipeExtractor()
+                coordinator.dismiss()
                 dismiss()
             }
             .keyboardShortcut(.cancelAction)
 
             Spacer()
 
-            if vm.derivedLUT != nil && !vm.isDeriving {
+            if coordinator.derivedLUT != nil && !coordinator.isDeriving {
                 Button("Save to LUT Folder…") {
-                    vm.saveDerivedLUT()
+                    coordinator.saveDialog()
                 }
             }
 
             Button("Derive") {
                 if let r = rawURL, let j = jpgURL {
-                    vm.deriveRecipe(rawURL: r, jpgURL: j)
+                    coordinator.derive(rawURL: r, jpgURL: j)
                 }
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
-            .disabled(rawURL == nil || jpgURL == nil || vm.isDeriving)
+            .disabled(rawURL == nil || jpgURL == nil || coordinator.isDeriving)
         }
     }
 
