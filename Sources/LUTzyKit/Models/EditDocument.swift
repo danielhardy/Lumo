@@ -48,6 +48,24 @@ struct EditDocument: Codable, Sendable, Equatable {
         rawDevelop.isNeutral && adjustments.allSatisfy(\.isIdentity) && lut.isIdentity
     }
 
+    /// What "the original" means for A/B comparison: **develop applied, nothing else**.
+    ///
+    /// `docs/PHASE2_SPEC.md` §8.5 asked whether the comparison baseline should be develop-applied or
+    /// the decoder's neutral defaults, and recommended develop-applied — holding Space should show
+    /// the same photograph without the *look*, not a different rendering of the negative. This
+    /// implements that.
+    ///
+    /// It is invisible today, because nothing sets `rawDevelop` until the Step 10 inspector exists,
+    /// and a neutral develop is exactly the plain decode. It becomes load-bearing the moment that
+    /// inspector ships, which is why it is decided here rather than then.
+    ///
+    /// Sharing `rawDevelop` with the full document is also what keeps the A/B swap cheap: the
+    /// engine's developed-source memo is keyed on it, so both sides of the comparison hit the same
+    /// entry instead of re-developing the RAW on every Space press.
+    var originalForComparison: EditDocument {
+        EditDocument(version: version, rawDevelop: rawDevelop, adjustments: [], lut: .none)
+    }
+
     // MARK: - Codable
 
     enum CodingKeys: String, CodingKey {

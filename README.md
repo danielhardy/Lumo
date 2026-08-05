@@ -145,7 +145,7 @@ Then select the **LUTzy** scheme and **Run** (`⌘R`). For a sandboxed build, ad
 ```bash
 swift test
 ```
-162 tests, no fixtures to download — everything they need is generated into a temp directory. CI runs
+188 tests, no fixtures to download — everything they need is generated into a temp directory. CI runs
 debug build → tests → release build on every push and PR.
 
 **Requirements:**
