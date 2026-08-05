@@ -57,15 +57,22 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
 
     // MARK: - Single export
 
+    /// An `ImageSource` for a real file on disk, so the engine has something to decode.
+    private func makeSource(width: Int = 16, height: Int = 16, named name: String = "src.png") throws -> ImageSource {
+        let url = try Fixtures.writeGradientPNG(width: width, height: height, named: name, in: tempDirectory)
+        return ImageSource(url: url, nativeExtent: CGSize(width: width, height: height))
+    }
+
     func testPerformExportWritesTheFile() async throws {
         let coordinator = ExportCoordinator()
         var statuses: [String] = []
         coordinator.onStatus = { statuses.append($0) }
         coordinator.onError = { XCTFail("unexpected error: \($0)") }
 
-        let image = CIImage(color: .red).cropped(to: CGRect(x: 0, y: 0, width: 16, height: 16))
         let destination = tempDirectory.appendingPathComponent("out.jpg")
-        coordinator.performExport(image, to: destination)
+        coordinator.performExport(
+            source: try makeSource(), document: EditDocument(), lut: nil, to: destination
+        )
 
         try await waitUntil { !coordinator.isExporting }
         XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
@@ -73,21 +80,49 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
         XCTAssertEqual(statuses.last, "Exported: out.jpg")
     }
 
-    func testPerformExportReportsFailureThroughOnError() async throws {
+    func testPerformExportReportsAFailedWriteThroughOnError() async throws {
         let coordinator = ExportCoordinator()
         var errors: [String] = []
         coordinator.onError = { errors.append($0) }
 
-        let image = CIImage(color: .red).cropped(to: CGRect(x: 0, y: 0, width: 16, height: 16))
         // A directory that doesn't exist — the encode succeeds, the write fails.
         let destination = tempDirectory
             .appendingPathComponent("no-such-folder")
             .appendingPathComponent("out.jpg")
-        coordinator.performExport(image, to: destination)
+        coordinator.performExport(
+            source: try makeSource(), document: EditDocument(), lut: nil, to: destination
+        )
 
         try await waitUntil { !coordinator.isExporting }
         XCTAssertEqual(errors.count, 1, "a failed write must surface, not vanish")
         XCTAssertTrue(errors[0].hasPrefix("Export failed:"), errors[0])
+        // Not merely "an error appeared": a *write* failure has to be distinguishable from the
+        // encode failure below, or one message would satisfy both tests.
+        XCTAssertNotEqual(errors[0], "Export failed: Export failed",
+                          "this path should report the filesystem's error, not the encoder's")
+    }
+
+    /// The other half of the failure surface: the *encode* fails rather than the write. A bare
+    /// "some error appeared" assertion would be satisfied by either, and by neither reaching the
+    /// user — this pins that an engine failure gets reported too, and that the busy flag clears.
+    func testPerformExportReportsAFailedEncodeThroughOnError() async throws {
+        let fake = FakeRenderEngine()
+        await fake.setShouldFailEncode(true)
+        let coordinator = ExportCoordinator(engine: fake)
+        var errors: [String] = []
+        coordinator.onError = { errors.append($0) }
+        coordinator.onStatus = { _ in }
+
+        let destination = tempDirectory.appendingPathComponent("out.jpg")
+        coordinator.performExport(
+            source: try makeSource(), document: EditDocument(), lut: nil, to: destination
+        )
+
+        try await waitUntil { !coordinator.isExporting }
+        XCTAssertEqual(errors, ["Export failed: Export failed"],
+                       "a failed encode must surface with the engine's own error")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path),
+                       "a failed encode must not leave a file behind")
     }
 
     // MARK: - Batch export
@@ -100,7 +135,7 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
         let items = try makeSources(["a", "b", "c"])
         let folder = try destinationFolder()
 
-        let outcome = await coordinator.performBatchExport(items, lut: nil, intensity: 1, to: folder)
+        let outcome = await coordinator.performBatchExport(items, document: EditDocument(), lut: nil, to: folder)
 
         XCTAssertEqual(outcome, .init(exported: 3, failed: 0, total: 3))
         for name in ["a", "b", "c"] {
@@ -123,7 +158,7 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
 
         let items = try makeSources(["shot"])
         let folder = try destinationFolder()
-        _ = await coordinator.performBatchExport(items, lut: lut, intensity: 1, to: folder)
+        _ = await coordinator.performBatchExport(items, document: EditDocument(), lut: lut, to: folder)
 
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: folder.appendingPathComponent("shot_My_Look.jpg").path),
@@ -144,7 +179,7 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
         items.insert(ExportCoordinator.BatchItem(url: broken, data: nil, name: "broken"), at: 1)
 
         let folder = try destinationFolder()
-        let outcome = await coordinator.performBatchExport(items, lut: nil, intensity: 1, to: folder)
+        let outcome = await coordinator.performBatchExport(items, document: EditDocument(), lut: nil, to: folder)
 
         XCTAssertEqual(outcome, .init(exported: 2, failed: 1, total: 3))
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("good1.jpg").path))
@@ -171,7 +206,7 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
         ]
 
         let folder = try destinationFolder()
-        let outcome = await coordinator.performBatchExport(items, lut: nil, intensity: 1, to: folder)
+        let outcome = await coordinator.performBatchExport(items, document: EditDocument(), lut: nil, to: folder)
 
         XCTAssertEqual(outcome.exported, 2)
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("DSC001.jpg").path))
@@ -188,30 +223,38 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
 
         let items = try makeSources(["a", "b"])
         let folder = try destinationFolder()
-        _ = await coordinator.performBatchExport(items, lut: nil, intensity: 1, to: folder)
+        _ = await coordinator.performBatchExport(items, document: EditDocument(), lut: nil, to: folder)
 
         XCTAssertTrue(statuses.contains("Exporting 0 of 2…"), "\(statuses)")
         XCTAssertTrue(statuses.contains("Exporting 2 of 2…"), "\(statuses)")
         XCTAssertEqual(statuses.last, "Exported 2 images to out")
     }
 
-    func testBatchExportHonorsIntensity() async throws {
-        // A cube that maps everything to black, applied at 0, must leave the
-        // exported pixels alone — this is what keeps Export All matching the
-        // preview when the slider isn't at 100%.
-        let coordinator = ExportCoordinator()
-        coordinator.format = .png
+    /// A cube that maps everything to black, so both ends of the slider are unmistakable in the
+    /// written file: at full strength the export must be black, at zero it must not. Asserting only
+    /// the zero end would pass against a batch that ignored the LUT entirely.
+    func testBatchExportHonorsTheDocumentsIntensity() async throws {
         let lut = CubeLUT(cube: [SIMD3<Float>](repeating: .zero, count: 8), size: 2, name: "toBlack")
-
-        let items = try makeSources(["subject"])
         let folder = try destinationFolder()
-        _ = await coordinator.performBatchExport(items, lut: lut, intensity: 0, to: folder)
 
-        let exported = folder.appendingPathComponent("subject_toBlack.png")
-        let image = try XCTUnwrap(CIImage(contentsOf: exported))
-        let pixel = try XCTUnwrap(firstPixel(of: image))
-        XCTAssertGreaterThan(pixel.0 + pixel.1 + pixel.2, 30,
-                             "intensity 0 should not have blacked the image out")
+        func exportSum(intensity: Double, named name: String) async throws -> CGFloat {
+            let coordinator = ExportCoordinator()
+            coordinator.format = .png
+            let document = EditDocument(lut: LUTSettings(lutID: lut.lutID, intensity: intensity))
+            _ = await coordinator.performBatchExport(
+                try makeSources([name]), document: document, lut: lut, to: folder
+            )
+            let exported = folder.appendingPathComponent("\(name)_toBlack.png")
+            let image = try XCTUnwrap(CIImage(contentsOf: exported))
+            let pixel = try XCTUnwrap(firstPixel(of: image))
+            return pixel.0 + pixel.1 + pixel.2
+        }
+
+        let atZero = try await exportSum(intensity: 0, named: "slider-off")
+        let atFull = try await exportSum(intensity: 1, named: "slider-on")
+
+        XCTAssertGreaterThan(atZero, 30, "intensity 0 should not have blacked the image out")
+        XCTAssertLessThan(atFull, 6, "intensity 1 of a to-black cube should have blacked it out")
     }
 
     // MARK: - Summary text

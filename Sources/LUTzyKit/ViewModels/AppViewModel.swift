@@ -38,15 +38,6 @@ final class AppViewModel: ObservableObject {
     /// **Shim.** Reads through to the document so the toolbar slider keeps working unchanged.
     var lutIntensity: Double { document.lut.intensity }
 
-    /// **Shim, and still the old path.** Export and the histogram have *not* been cut over yet — that
-    /// is Step 6 — so this reproduces exactly what they got before: the full-resolution decode with
-    /// the LUT and its intensity applied, and no adjustments or develop. Lazy, so building it costs
-    /// nothing until something rasterizes it.
-    var processedImage: CIImage? {
-        guard let sourceImage, let lut = selectedLUT else { return nil }
-        return lut.apply(to: sourceImage, intensity: document.lut.intensity)
-    }
-
     @Published var previewNSImage: NSImage?
     @Published var originalPreviewNSImage: NSImage?
     @Published var isShowingOriginal: Bool = false
@@ -80,7 +71,8 @@ final class AppViewModel: ObservableObject {
     let library = LUTLibrary()
     let collection = ImageCollection()
     /// Writing images to disk — the single export, the batch run, and naming.
-    let export = ExportCoordinator()
+    /// Shares this view model's engine, so an export renders through the same funnel the preview does.
+    let export: ExportCoordinator
     /// The "Derive LUT from JPG" flow and its scratch-until-saved result.
     let derive = DeriveCoordinator()
 
@@ -106,6 +98,7 @@ final class AppViewModel: ObservableObject {
 
     init(engine: any RenderEngining = RenderEngine.shared) {
         self.engine = engine
+        self.export = ExportCoordinator(engine: engine)
 
         // Forward nested ObservableObject changes so SwiftUI views update.
         for child in [
@@ -411,6 +404,19 @@ final class AppViewModel: ObservableObject {
     private let maxPreview = CGSize(width: 1600, height: 1200)
     private static let intensityDebounceMs = 60
 
+    /// What the main preview panel should currently show, as a render request.
+    ///
+    /// While Space is held that is the **comparison baseline** — the same document with the look
+    /// removed and develop kept (§8.5). Both sides therefore share a `rawDevelop`, so the swap reuses
+    /// the engine's developed source instead of re-developing the RAW.
+    ///
+    /// One accessor rather than the same ternary at each call site: the histogram is supposed to
+    /// describe the pixels on screen, and it stopped doing so precisely because it derived its image
+    /// separately. Reading the request from one place is what makes that structural.
+    private var displayRequest: (document: EditDocument, lut: CubeLUT?) {
+        isShowingOriginal ? (document.originalForComparison, nil) : (document, selectedLUT)
+    }
+
     /// Render the document for display.
     ///
     /// **This is the Step 5 cutover.** The preview no longer grades a baked `CIImage` on the main
@@ -431,11 +437,7 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        // The A/B baseline is the same document with the look removed — develop applied, per §8.5.
-        // Both sides therefore share a `rawDevelop`, so holding Space reuses the engine's developed
-        // source instead of re-developing the RAW.
-        let requested = isShowingOriginal ? document.originalForComparison : document
-        let lut = selectedLUT
+        let (requested, lut) = displayRequest
         let box = maxPreview
 
         previewTask = Task { [engine] in
@@ -500,28 +502,35 @@ final class AppViewModel: ObservableObject {
         isInspectorPresented.toggle()
     }
 
-    /// The image the histogram should describe: the original while comparing
-    /// (Space held), the graded result when a LUT is active, otherwise source.
-    private var histogramSourceImage: CIImage? {
-        if isShowingOriginal { return sourceImage }
-        if selectedLUT != nil, let processed = processedImage { return processed }
-        return sourceImage
-    }
-
-    /// Recompute the histogram for the currently displayed image. No-op while
-    /// the inspector is closed. Cheap (downscaled tally) but run off-actor and
-    /// cancellable so dragging the intensity slider stays smooth.
+    /// Recompute the histogram for the currently displayed image. No-op while the inspector is
+    /// closed. Cancellable, so dragging the intensity slider stays smooth.
+    ///
+    /// **Step 6 cut this over with export.** It used to tally `processedImage` — a full-resolution
+    /// neutral decode with only the LUT on it — while the screen showed develop and adjustments as
+    /// well. Deleting `processedImage` forced the choice, and describing the wrong image is not a
+    /// state worth carrying to Step 7: the histogram now renders the *same document at the same
+    /// scale* the preview does, which is what `document(forDisplay:)` exists to guarantee.
+    ///
+    /// Passing the preview box rather than a histogram-sized scale is deliberate — see
+    /// `RenderEngine.histogram`, which shares the developed-source memo with the on-screen render
+    /// instead of evicting it every tally.
     private func updateHistogram() {
         guard isInspectorPresented else { return }
-        guard let image = histogramSourceImage else {
+        guard let imageSource else {
             histogram = nil
             return
         }
+        let (requested, lut) = displayRequest
+        let box = maxPreview
+
         histogramTask?.cancel()
-        histogramTask = Task.detached { [processor] in
-            let result = processor.histogram(of: image)
-            if Task.isCancelled { return }
-            await MainActor.run { self.histogram = result }
+        histogramTask = Task { [engine] in
+            let result = await engine.histogram(
+                source: imageSource, document: requested, lut: lut,
+                scale: .preview(maxSize: box), space: .current, maxDimension: 512
+            )
+            guard !Task.isCancelled else { return }
+            self.histogram = result
         }
     }
 
@@ -542,33 +551,65 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Export
 
-    /// The image the user is exporting: the graded result when a LUT is
-    /// active, otherwise the untouched source.
-    private var imageToExport: CIImage? {
-        processedImage ?? sourceImage
-    }
-
+    /// Export the open image at full resolution.
+    ///
+    /// **The Step 6 cutover.** What goes to disk is now the same `EditDocument` the screen is
+    /// rendering, at `.full` instead of `.preview` — one argument apart, through one funnel. Before,
+    /// this handed over a baked `CIImage` that carried the LUT and nothing else, so develop and
+    /// adjustments reached the preview and silently did not reach the file.
+    ///
+    /// Note it exports `document`, not `displayRequest` — holding Space to compare should not change
+    /// what ⌘S writes.
     func exportDialog() {
-        guard let image = imageToExport else {
+        guard let request = exportRequest else {
             statusMessage = "Open an image first"
             return
         }
-        let base = sourceURL?.deletingPathExtension().lastPathComponent ?? "image"
         export.exportDialog(
-            image: image,
-            suggestedBaseName: ExportCoordinator.exportBaseName(source: base, lut: selectedLUT)
+            source: request.source,
+            document: request.document,
+            lut: request.lut,
+            suggestedBaseName: request.baseName
         )
     }
 
-    /// Apply the current LUT to every imported image and export them all to a
+    /// What ⌘S would export, without running a panel.
+    ///
+    /// Internal rather than private because `NSSavePanel` cannot run headless, so this is the only
+    /// way to assert the part of `exportDialog` that has content — *which* document goes to disk. The
+    /// wrapper around it is the two lines the panel makes untestable, which is the same trade
+    /// `docs/CODE_REVIEW.md` §5 already records for every other panel in the app.
+    var exportRequest: (source: ImageSource, document: EditDocument, lut: CubeLUT?, baseName: String)? {
+        guard let imageSource else { return nil }
+        let base = sourceURL?.deletingPathExtension().lastPathComponent ?? "image"
+        return (
+            source: imageSource,
+            document: document,
+            lut: selectedLUT,
+            baseName: ExportCoordinator.exportBaseName(source: base, lut: selectedLUT)
+        )
+    }
+
+    /// Apply the current look to every imported image and export them all to a
     /// chosen folder.
+    ///
+    /// Cut over with the single export, and for the same reason: `performBatchExport` used to load
+    /// and grade each file itself, so fixing only the single path would have left Export All writing
+    /// the old, develop-less render.
     func batchExportDialog() {
+        let request = batchExportRequest
+        export.batchExportDialog(items: request.items, document: request.document, lut: request.lut)
+    }
+
+    /// What Export All would write, without running a panel. Internal for the same reason
+    /// `exportRequest` is.
+    var batchExportRequest: (items: [ExportCoordinator.BatchItem], document: EditDocument, lut: CubeLUT?) {
         // Snapshot only the Sendable bits — avoid carrying NSImage thumbnails
         // across the actor boundary.
         let items = collection.items.map {
             ExportCoordinator.BatchItem(url: $0.url, data: $0.imageData, name: $0.displayName)
         }
-        export.batchExportDialog(items: items, lut: selectedLUT, intensity: lutIntensity)
+        return (items: items, document: document, lut: selectedLUT)
     }
 
     // MARK: - Recipe extractor

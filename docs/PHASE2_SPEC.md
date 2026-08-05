@@ -1,6 +1,7 @@
 # LUTzy Phase 2 — non-destructive render pipeline + RAW develop
 
-**Status:** partly built. Steps 0–5 of the migration are done — the preview now renders from the document; export does not yet.
+**Status:** partly built. Steps 0–6 of the migration are done — the preview, both export paths and the
+histogram all render from the document. Thumbnails and the develop UI do not yet.
 
 This is a distillation. The original draft ran 4,180 lines of multi-agent output that contradicted
 itself across sections and spent a good fraction of its length arguing with earlier drafts about bugs
@@ -40,7 +41,8 @@ a baked image, which buys four things at once:
 | ✅ `RenderPipeline.buildImage` and `LUTFilterCache` exist — also unused | Step 3 is **done** |
 | ✅ `actor RenderEngine` + `RenderEngining` exist, with a fake for tests | Step 4 is **done** |
 | ✅ **The preview renders from `EditDocument`** through the engine — develop, adjustments, LUT, intensity | Step 5 is **done** |
-| ❌ Export and the histogram still run the old `ImageProcessor` path; no RAW develop UI | Steps 6–7, 10 |
+| ✅ **Export and the histogram render from `EditDocument` too** — single *and* batch; `processedImage` deleted | Step 6 is **done** |
+| ❌ Thumbnails still run the old `ImageProcessor` path; no RAW develop UI | Steps 7, 10 |
 
 **Still true and still worth fixing:** `ImageProcessor` is a non-`Sendable` `final class` singleton
 holding a `CIContext`, captured into `Task.detached` in several places. Strict concurrency would reject it.
@@ -160,7 +162,7 @@ There are **four** explicit `CGColorSpace.sRGB` literals today and **two implici
 |---|---|---|
 | LUT interpolation | `CubeLUT.swift:152` | the space the cube interpolates in |
 | Export encoding | `ImageProcessor.swift:259` | output encoding |
-| Histogram render | `ImageProcessor.swift:188` | analysis only |
+| Histogram render | `ImageProcessor.swift:188` | analysis only — moved to `RenderEngine.histogram` in Step 6 |
 | Derive sampling | `RecipeExtractor.swift:101` | **stays pinned to sRGB, not `.current`** |
 | *(was implicit)* | `ImageProcessor.renderPreview` `createCGImage` | **passed no colour space** — preview used the CIContext default while export forced sRGB |
 | *(was implicit)* | `ImageProcessor.renderToNSImage` `createCGImage` | same |
@@ -233,7 +235,7 @@ leaf by leaf, delete the old path last.
 | ~~3~~ | ~~`RenderPipeline.buildImage` + the actor-side LUT filter cache — **defined but unused**~~ | ✅ **done** — 162 tests; identity is pixel-exact, intensity endpoints exact, 21 mutations caught |
 | ~~4~~ | ~~`actor RenderEngine` alongside the old path; a `RenderEngining` protocol so tests inject a fake~~ | ✅ **done** — 175 tests; preview/export parity asserted in both spaces; 12 mutations caught |
 | ~~5~~ | ~~Cut **preview** over. Keep computed `sourceImage`/`selectedLUT` shims so views compile~~ | ✅ **done** — 188 tests; 15 mutations caught; needed a **developed-source memo**, see below |
-| 6 | Cut **export** over; delete `processedImage` | export honors develop at full res; parity test on one `EditDocument` |
+| ~~6~~ | ~~Cut **export** over; delete `processedImage`~~ | ✅ **done** — 203 tests; 25 mutations caught; **both** export paths cut over, and the histogram came with them (see below) |
 | 7 | Move thumbnails (**both** `ImageCollection` sites — `generateThumbnails` *and* `addFromData`); dissolve `ImageProcessor` GPU duties | one `CIContext` **in the render stack** — `RecipeExtractor` keeps its own by design (§3), so the count to assert is 2, not 1 |
 | 8 | Flip strict concurrency on | warning-clean build and test |
 | 9 | Wire derive into the new state: register the derived LUT by ID, keep the scratch-file bookkeeping | derive-baseline invariance test |
@@ -263,8 +265,34 @@ With the memo the cutover is a wash per render (~1 ms either way) and *saves* ~2
 RAW, because the eager full-resolution decode is no longer on the path to first pixels. `swift test
 --filter PreviewCostBenchmark` with `LUTZY_BENCH=1` reproduces the numbers.
 
-**Step 6 inherits this.** Export at `.full` is deliberately not memoized; if export ever renders
-repeatedly, measure before adding a second memo.
+**Step 6 inherited this, and measured it.** Export at `.full` is deliberately not memoized, so it
+rebuilds its source every time — the exact shape of the regression above. On a 6000×4000 source:
+
+| | per export |
+|---|---|
+| old *batch* (`loadImage` + `apply` + encode, per item) | 156 ms |
+| new (`engine.encode` at `.full`, whole document) | 158 ms |
+| old *single* (re-encoding `sourceImage`, already decoded at open) | 21 ms |
+
+So Export All is a wash — the old batch loop decoded per item too — and a single ⌘S costs one extra
+full decode, which is what buys it develop and adjustments. Footprint over eight distinct exports
+grew 46 MB/export through the engine against 56 MB/export on the old path: both retain roughly one
+full-resolution intermediate per export, neither gives it back, and `CIContext.clearCaches()` does
+not reclaim it. That is Core Image's own accounting and predates the cutover.
+`PreviewCostBenchmark.testMeasureExportCost` reproduces all of it.
+
+### What Step 6 did with the histogram
+
+`histogramSourceImage` read `processedImage`, so deleting the latter forced a decision. It became an
+**engine call**: `RenderEngine.histogram` renders the document and tallies it inside the actor, and
+`AppViewModel` drives it from the same `displayRequest` the preview uses. The old path would have
+left the panel describing a full-resolution neutral decode with only the LUT on it while the screen
+showed develop and adjustments too — the same divergence this step exists to close, one panel over.
+
+It renders at the **preview** scale, not a histogram-sized one, and caps only the tally buffer. A
+private 512 px scale would evict the developed-source memo on every tally and re-develop the RAW on
+the next frame. `ImageProcessor.histogram` is gone; the tally is now a pure
+`HistogramData(rgba8:width:height:bytesPerRow:)`, testable against a hand-built buffer.
 
 ---
 

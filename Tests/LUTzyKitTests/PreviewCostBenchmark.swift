@@ -23,7 +23,9 @@ final class PreviewCostBenchmark: XCTestCase {
 
     /// `time` for an async body. Runs the loop on a semaphore-free detached task and waits, so the
     /// per-render figure is comparable with the synchronous one.
-    fileprivate func timeAsync(_ label: String, _ iterations: Int, _ body: @escaping () async -> Void) -> Double {
+    fileprivate func timeAsync(
+        _ label: String, _ iterations: Int, unit: String = "render", _ body: @escaping () async -> Void
+    ) -> Double {
         func runAll() {
             let group = DispatchGroup()
             group.enter()
@@ -34,7 +36,7 @@ final class PreviewCostBenchmark: XCTestCase {
         let start = Date()
         for _ in 0..<iterations { runAll() }
         let each = Date().timeIntervalSince(start) / Double(iterations) * 1000
-        print(String(format: "  %-46@ %7.1f ms/render", label as NSString, each))
+        print(String(format: "  %-46@ %7.1f ms/%@", label as NSString, each, unit as NSString))
         return each
     }
 
@@ -153,5 +155,138 @@ final class PreviewCostBenchmark: XCTestCase {
         }
         print(String(format: "\n  bare pipeline vs old:  %.2fx", new / old))
         print(String(format: "  engine vs old:         %.2fx\n", viaEngine / old))
+    }
+
+    // MARK: - Export (Step 6)
+
+    /// The same question for **export**, which Step 6 cut over.
+    ///
+    /// The preview cutover's trap was that Core Image caches decoded intermediates per `CIImage`
+    /// instance, so rebuilding the source each render re-decoded the file — 150× on a big image. The
+    /// engine answered that with a developed-source memo, and the memo covers **preview scales only**
+    /// (§6). Export therefore rebuilds its source every time, deliberately, which is the exact shape
+    /// of the regression Step 5 had to fix. Whether that is fine here is a measurement, not an
+    /// argument: an export runs once per user action and already pays for a full-resolution decode
+    /// and an encode, so the rebuild should disappear into the noise.
+    ///
+    /// The footprint reading is the other half, and it is a **comparison**, not a claim that nothing
+    /// is retained. Both paths grow by roughly one full-resolution RGBA intermediate per export
+    /// (~46 MB at 4000×3000) and neither gives it back — `CIContext.clearCaches()` does not reclaim
+    /// it. That is Core Image's own accounting and it predates this cutover: measured back to back on
+    /// twelve distinct images, the old `loadImage` + `apply` + `export` loop grew by exactly the same
+    /// amount per file. What this run has to show is that the engine has not made it *worse*, which
+    /// is what a memo accidentally added at `.full` would do.
+    ///
+    /// `swift test --filter PreviewCostBenchmark` with `LUTZY_BENCH=1`.
+    func testMeasureExportCost() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["LUTZY_BENCH"] != nil,
+            "set LUTZY_BENCH=1 to run the export-cost measurement"
+        )
+        let dir = try Fixtures.makeTempDirectory("bench-export")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = try Fixtures.writeGradientPNG(width: 6000, height: 4000, named: "big.png", in: dir)
+
+        let lut = TestImages.warmLUT()
+        let source = ImageSource(url: url, nativeExtent: CGSize(width: 6000, height: 4000))
+        let document = EditDocument(
+            adjustments: [.exposure(ev: 0.3)],
+            lut: LUTSettings(lutID: lut.lutID, intensity: 0.6)
+        )
+        let destination = dir.appendingPathComponent("out.jpg")
+
+        func time(_ label: String, _ iterations: Int, _ body: () -> Void) -> Double {
+            body()
+            let start = Date()
+            for _ in 0..<iterations { body() }
+            let each = Date().timeIntervalSince(start) / Double(iterations) * 1000
+            print(String(format: "  %-46@ %7.1f ms/export", label as NSString, each))
+            return each
+        }
+
+        print("\n=== per-export cost, 6000x4000 PNG → JPEG ===")
+
+        // The old path, reproduced: decode once, grade with the LUT only, encode. Note it never saw
+        // `adjustments` at all — that is the divergence Step 6 closed, and it means the new path is
+        // doing strictly more work here, not less.
+        // Two "old" numbers, because the two old paths differed. The single export reused
+        // `AppViewModel.sourceImage`, already decoded at open; the batch loop called `loadImage`
+        // per item and paid for the decode every time. The engine always pays it, so only the
+        // second is an apples-to-apples comparison — the first is the cost the single export moved.
+        let decoded = try XCTUnwrap(ImageProcessor.shared.loadImage(from: url))
+        let oldReusingDecode = time("old single: grade a decoded image + encode", 3) {
+            guard let graded = lut.apply(to: decoded, intensity: 0.6) else { return }
+            try? ImageProcessor.shared.export(graded, to: destination, format: .jpeg)
+        }
+        let old = time("old batch: decode + grade + encode", 3) {
+            guard let fresh = try? ImageProcessor.shared.loadImage(from: url),
+                  let graded = lut.apply(to: fresh, intensity: 0.6) else { return }
+            try? ImageProcessor.shared.export(graded, to: destination, format: .jpeg)
+        }
+
+        let engine = RenderEngine()
+        let new = timeAsync("new: engine.encode at .full (whole document)", 3, unit: "export") {
+            guard let data = try? await engine.encode(
+                source: source, document: document, lut: lut, scale: .full,
+                format: .jpeg, quality: 0.95, space: .current
+            ) else { return }
+            try? data.write(to: destination)
+        }
+        print(String(format: "\n  engine vs old batch (both decode):  %.2fx", new / old))
+        print(String(format: "  engine vs old single (decode reused): %.2fx", new / oldReusingDecode))
+
+        // Footprint, both paths, over a run of *distinct* images — a batch export, in other words.
+        // The two should track each other; a divergence means one of them started holding on to
+        // full-resolution intermediates the other doesn't.
+        print("\n=== footprint over 8 distinct 4000x3000 exports ===")
+        var batch: [ImageSource] = []
+        for i in 0..<8 {
+            let u = try Fixtures.writeGradientPNG(width: 4000, height: 3000, named: "b\(i).png", in: dir)
+            batch.append(ImageSource(url: u, nativeExtent: CGSize(width: 4000, height: 3000)))
+        }
+
+        let oldStart = Self.footprintMB()
+        for item in batch {
+            guard case .url(let u) = item.backing,
+                  let decoded = try? ImageProcessor.shared.loadImage(from: u),
+                  let graded = lut.apply(to: decoded, intensity: 0.6) else { continue }
+            try? ImageProcessor.shared.export(graded, to: destination, format: .jpeg)
+        }
+        let oldEnd = Self.footprintMB()
+
+        let engineForBatch = RenderEngine()
+        let newStart = Self.footprintMB()
+        let group = DispatchGroup()
+        group.enter()
+        Task {
+            for item in batch {
+                _ = try? await engineForBatch.encode(
+                    source: item, document: document, lut: lut, scale: .full,
+                    format: .jpeg, quality: 0.95, space: .current
+                )
+            }
+            group.leave()
+        }
+        group.wait()
+        let newEnd = Self.footprintMB()
+
+        print(String(format: "  old path:  %.0f → %.0f MB  (%+.0f, %.0f MB/export)",
+                     oldStart, oldEnd, oldEnd - oldStart, (oldEnd - oldStart) / 8))
+        print(String(format: "  engine:    %.0f → %.0f MB  (%+.0f, %.0f MB/export)\n",
+                     newStart, newEnd, newEnd - newStart, (newEnd - newStart) / 8))
+    }
+
+    /// Resident footprint in MB. Same instrument the derive memory work used — a number, not a
+    /// claim about what Core Image holds.
+    private static func footprintMB() -> Double {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return .nan }
+        return Double(info.phys_footprint) / (1024 * 1024)
     }
 }

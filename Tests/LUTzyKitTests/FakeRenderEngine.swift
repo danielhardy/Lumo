@@ -18,6 +18,8 @@ actor FakeRenderEngine: RenderEngining {
     private(set) var previewRequests: [Request] = []
     /// Every `encode` call, in order.
     private(set) var encodeRequests: [Request] = []
+    /// Every `histogram` call, in order.
+    private(set) var histogramRequests: [Request] = []
 
     struct Request: Equatable {
         let document: EditDocument
@@ -25,6 +27,9 @@ actor FakeRenderEngine: RenderEngining {
         let scale: RenderScale
         let space: WorkingSpace
         let format: ImageProcessor.ExportFormat?
+        /// The `ImageSource` the call named. Recorded so a test can tell *which* image was asked
+        /// for — a batch export issues one request per file and they differ only here.
+        var source: ImageSource?
     }
 
     /// Swap in a failure to exercise the caller's error path.
@@ -43,7 +48,8 @@ actor FakeRenderEngine: RenderEngining {
         space: WorkingSpace
     ) -> sending CGImage? {
         previewRequests.append(Request(
-            document: document, lutID: lut?.lutID, scale: scale, space: space, format: nil
+            document: document, lutID: lut?.lutID, scale: scale, space: space, format: nil,
+            source: source
         ))
         // Rebuilt per call rather than handing out the stored one: the result is `sending`, so it has
         // to be an image nothing else holds a reference to.
@@ -60,10 +66,30 @@ actor FakeRenderEngine: RenderEngining {
         space: WorkingSpace
     ) throws -> Data {
         encodeRequests.append(Request(
-            document: document, lutID: lut?.lutID, scale: scale, space: space, format: format
+            document: document, lutID: lut?.lutID, scale: scale, space: space, format: format,
+            source: source
         ))
         if shouldFailEncode { throw ImageError.exportFailed }
         return Data("fake-\(format.rawValue)".utf8)
+    }
+
+    func histogram(
+        source: ImageSource,
+        document: EditDocument,
+        lut: CubeLUT?,
+        scale: RenderScale,
+        space: WorkingSpace,
+        maxDimension: Int
+    ) -> HistogramData? {
+        histogramRequests.append(Request(
+            document: document, lutID: lut?.lutID, scale: scale, space: space, format: nil,
+            source: source
+        ))
+        // A recognisable tally rather than `nil`: a caller that drops the result would otherwise be
+        // indistinguishable from one that publishes it.
+        var bins = [Int](repeating: 0, count: 256)
+        bins[128] = 1
+        return HistogramData(red: bins, green: bins, blue: bins, luma: bins)
     }
 
     func setShouldFailEncode(_ value: Bool) { shouldFailEncode = value }

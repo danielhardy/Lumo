@@ -169,48 +169,4 @@ final class ImageLoadingTests: TempDirectoryTestCase {
         XCTAssertEqual(preview.size.height, 30)
     }
 
-    // MARK: - Histogram
-
-    func testHistogramTalliesEveryPixel() throws {
-        let image = CIImage(color: CIColor(red: 1, green: 0, blue: 0))
-            .cropped(to: CGRect(x: 0, y: 0, width: 32, height: 16))
-        let histogram = try XCTUnwrap(ImageProcessor.shared.histogram(of: image, maxDimension: 64))
-
-        XCTAssertEqual(histogram.binCount, 256)
-        XCTAssertEqual(histogram.red.reduce(0, +), 32 * 16)
-        XCTAssertEqual(histogram.green.reduce(0, +), 32 * 16)
-
-        // Pure red: red maxed, green and blue at zero.
-        XCTAssertEqual(histogram.red[255], 32 * 16)
-        XCTAssertEqual(histogram.green[0], 32 * 16)
-        XCTAssertEqual(histogram.blue[0], 32 * 16)
-
-        // Rec.709 luma of pure red is 0.2126 → bin 54.
-        XCTAssertEqual(histogram.luma.firstIndex { $0 > 0 }, 54)
-    }
-
-    func testHistogramDownscalesLargeImages() throws {
-        let image = CIImage(color: .gray).cropped(to: CGRect(x: 0, y: 0, width: 4000, height: 3000))
-        let histogram = try XCTUnwrap(ImageProcessor.shared.histogram(of: image, maxDimension: 64))
-        let total = histogram.red.reduce(0, +)
-        XCTAssertLessThan(total, 4000 * 3000, "histogram should tally a downscaled render")
-        XCTAssertGreaterThan(total, 0)
-    }
-
-    func testHistogramRejectsInfiniteExtent() {
-        // A bare CIImage(color:) has an infinite extent; tallying it would try
-        // to allocate an unbounded buffer.
-        XCTAssertNil(ImageProcessor.shared.histogram(of: CIImage(color: .gray)))
-    }
-
-    func testHistogramNormalizationIgnoresClippingSpikes() {
-        // One enormous spike at pure black must not flatten the interior.
-        var red = [Int](repeating: 10, count: 256)
-        red[0] = 1_000_000
-        let data = HistogramData(red: red, green: red, blue: red, luma: red)
-        let normalized = data.normalized(.red)
-        XCTAssertEqual(normalized[1], 1.0, accuracy: 0.001,
-                       "interior bins should scale to the interior max, not the clipping spike")
-        XCTAssertEqual(normalized[0], 1.0, "the spike itself clamps to full height")
-    }
 }

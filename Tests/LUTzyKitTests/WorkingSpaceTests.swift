@@ -154,20 +154,10 @@ final class WorkingSpaceTests: TempDirectoryTestCase {
         )
     }
 
-    // MARK: - Histogram follows the preview
-
-    func testHistogramUsesTheSameSpaceAsThePreview() throws {
-        // Same image, two spaces: the tallies should differ, proving the histogram describes the
-        // pixels actually on screen rather than a fixed sRGB copy of them.
-        let source = try gradientImage(width: 64, height: 64)
-        let processor = ImageProcessor.shared
-
-        let inSRGB = try XCTUnwrap(processor.histogram(of: source, maxDimension: 64, space: .sRGB))
-        let inP3 = try XCTUnwrap(processor.histogram(of: source, maxDimension: 64, space: .displayP3))
-
-        XCTAssertEqual(inSRGB.red.reduce(0, +), inP3.red.reduce(0, +), "both should tally every pixel")
-        XCTAssertNotEqual(inSRGB.red, inP3.red, "the histogram should follow the render space")
-    }
+    // The histogram used to be a third `ImageProcessor` colour site and was pinned here. Step 6 moved
+    // it onto `RenderEngine` along with export, so `testTheHistogramFollowsTheWorkingSpace` in
+    // `HistogramTests` is where that property lives now — asserted against the shipping path rather
+    // than against a `CIImage` the app no longer builds.
 
     // MARK: - Helpers
 
