@@ -86,7 +86,9 @@ struct LUTSidebar: View {
             Divider()
 
             // LUT list
-            if viewModel.library.allLUTs.isEmpty {
+            if viewModel.library.isScanning && viewModel.library.allLUTs.isEmpty {
+                scanningState
+            } else if viewModel.library.allLUTs.isEmpty {
                 emptyState
             } else {
                 lutList
@@ -95,15 +97,31 @@ struct LUTSidebar: View {
         .frame(minWidth: 200, idealWidth: 240, maxWidth: 300)
     }
 
+    private var scanningState: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            ProgressView().controlSize(.small)
+            Text("Scanning LUT folder…")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
     private var emptyState: some View {
         VStack(spacing: 12) {
             Spacer()
-            Image(systemName: "cube.transparent")
+            Image(systemName: viewModel.library.scanError == nil
+                  ? "cube.transparent" : "exclamationmark.triangle")
                 .font(.system(size: 32))
                 .foregroundColor(Color(nsColor: .tertiaryLabelColor))
-            Text("No LUTs loaded")
+            Text(viewModel.library.scanError ?? "No LUTs loaded")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 16)
             Button("Choose Folder...") {
                 viewModel.chooseLUTFolder()
             }

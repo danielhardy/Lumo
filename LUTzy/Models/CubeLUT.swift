@@ -105,8 +105,14 @@ struct CubeLUT: Identifiable, Hashable {
 
         // Build Core Image color cube data: RGBA float32, R varies fastest.
         // .cube format: R fastest, G middle, B slowest — same as Core Image expects.
-        // Normalize from domain to [0,1] if needed.
-        let scale = domainMax - domainMin
+        // Normalize from domain to [0,1] if needed. A degenerate domain (min ==
+        // max on any axis) would divide by zero and fill the table with NaN, so
+        // treat that axis as the default 0…1 range instead.
+        var scale = domainMax - domainMin
+        for axis in 0..<3 where !(scale[axis] > 0) {
+            domainMin[axis] = 0
+            scale[axis] = 1
+        }
         var floats = [Float]()
         floats.reserveCapacity(expected * 4)
 

@@ -7,7 +7,7 @@ Icon
 # Swift Package Manager
 .build/
 .swiftpm/
-# Package.resolved is intentionally committed (LUTzy is an app, for reproducible builds)
+# No Package.resolved: LUTzy has zero third-party dependencies by design.
 
 # Xcode
 *.xcodeproj/*

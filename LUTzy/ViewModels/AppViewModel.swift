@@ -70,7 +70,11 @@ final class AppViewModel: ObservableObject {
     let collection = ImageCollection()
 
     private let processor = ImageProcessor.shared
+    private var loadTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
+    private var originalPreviewTask: Task<Void, Never>?
+    private var intensityTask: Task<Void, Never>?
+    private var deriveTask: Task<Void, Never>?
     private var collectionCancellable: AnyCancellable?
     private var libraryCancellable: AnyCancellable?
 
@@ -91,11 +95,20 @@ final class AppViewModel: ObservableObject {
         library.restoreFolder()
 
         // Restore a previously-chosen source folder and open its first image.
+        // Both the LUT scan above and this one run asynchronously, so the
+        // window paints immediately and fills in as the scans land.
         if collection.restoreSourceFolder() {
             isSourceBrowserPresented = true
-            if let first = collection.items.first, let fileURL = first.url {
-                openImage(url: fileURL)
-            }
+            openFirstImageWhenScanned()
+        }
+    }
+
+    /// Open the first image of the source folder once its scan completes.
+    private func openFirstImageWhenScanned() {
+        Task {
+            await collection.scanCompletion()
+            guard let first = collection.items.first, let fileURL = first.url else { return }
+            openImage(url: fileURL)
         }
     }
 
@@ -112,35 +125,55 @@ final class AppViewModel: ObservableObject {
     // MARK: - Image loading
 
     func openImage(url: URL) {
+        load(name: url.lastPathComponent, url: url, data: nil)
+    }
+
+    /// Decode an image **off the main actor**, then publish it and render the
+    /// previews. RAW demosaicing is expensive enough (hundreds of ms) that
+    /// doing it inline would freeze the window on every ←/→ step.
+    private func load(name: String, url: URL?, data: Data?) {
+        loadTask?.cancel()
+        previewTask?.cancel()
+        originalPreviewTask?.cancel()
+        intensityTask?.cancel()
+
         isLoading = true
-        statusMessage = "Loading \(url.lastPathComponent)..."
+        statusMessage = "Loading \(name)..."
 
-        Task {
-            do {
-                let ci = try processor.loadImage(from: url)
-                self.sourceImage = ci
-                self.sourceURL = url
-                self.sourceName = url.lastPathComponent
-                self.sourceSize = ci.extent.size
-                self.processedImage = nil
-                self.statusMessage = "\(sourceName)  \(Int(sourceSize.width))×\(Int(sourceSize.height))"
-                self.isLoading = false
-
-                // Always render the original preview
-                updateOriginalPreview(ci)
-
-                // Apply current LUT if one is selected
-                if selectedLUT != nil {
-                    applyLUT()
-                } else {
-                    updatePreview(ci)
+        loadTask = Task { [processor] in
+            let decoded: Result<CIImage, Error> = await Task.detached {
+                do {
+                    if let url {
+                        return .success(try processor.loadImage(from: url))
+                    }
+                    if let data {
+                        return .success(try processor.loadImage(from: data, name: name))
+                    }
+                    return .failure(ImageError.cannotLoad(name))
+                } catch {
+                    return .failure(error)
                 }
+            }.value
 
-                refreshMetadata(url: url, data: nil)
-                updateHistogram()
-            } catch {
+            guard !Task.isCancelled else { return }
+
+            switch decoded {
+            case .failure(let error):
                 self.isLoading = false
                 self.presentError("Error: \(error.localizedDescription)")
+
+            case .success(let ci):
+                self.sourceImage = ci
+                self.sourceURL = url
+                self.sourceName = name
+                self.sourceSize = ci.extent.size
+                self.processedImage = nil
+                self.statusMessage = "\(name)  \(Int(ci.extent.width))\u{00D7}\(Int(ci.extent.height))"
+                self.isLoading = false
+
+                self.scheduleOriginalPreview(ci)
+                self.schedulePreview()
+                self.refreshMetadata(url: url, data: data)
             }
         }
     }
@@ -160,32 +193,7 @@ final class AppViewModel: ObservableObject {
     // MARK: - Photo import
 
     func openImage(data: Data, name: String) {
-        isLoading = true
-        statusMessage = "Loading \(name)..."
-
-        Task {
-            do {
-                guard let ci = CIImage(data: data) else {
-                    throw ImageError.cannotLoad(name)
-                }
-                self.sourceImage = ci
-                self.sourceURL = nil
-                self.sourceName = name
-                self.sourceSize = ci.extent.size
-                self.processedImage = nil
-                self.statusMessage = "\(sourceName)  \(Int(sourceSize.width))\u{00D7}\(Int(sourceSize.height))"
-                self.isLoading = false
-
-                updateOriginalPreview(ci)
-                if selectedLUT != nil { applyLUT() } else { updatePreview(ci) }
-
-                refreshMetadata(url: nil, data: data)
-                updateHistogram()
-            } catch {
-                self.isLoading = false
-                self.presentError("Error: \(error.localizedDescription)")
-            }
-        }
+        load(name: name, url: nil, data: data)
     }
 
     func importFromPhotos() {
@@ -219,9 +227,7 @@ final class AppViewModel: ObservableObject {
     func openSourceFolder(url: URL) {
         collection.setSourceFolder(url)
         isSourceBrowserPresented = true
-        if let first = collection.items.first, let fileURL = first.url {
-            openImage(url: fileURL)
-        }
+        openFirstImageWhenScanned()
     }
 
     func toggleSourceBrowser() {
@@ -290,62 +296,87 @@ final class AppViewModel: ObservableObject {
     // MARK: - LUT application
 
     private func applyLUT() {
-        guard let source = sourceImage else { return }
-
-        // Cancel any in-flight preview
-        previewTask?.cancel()
-
-        guard let lut = selectedLUT else {
-            processedImage = nil
-            updatePreview(source)
-            updateHistogram()
-            return
-        }
-
-        previewTask = Task {
-            guard let result = lut.apply(to: source, intensity: lutIntensity) else {
-                self.statusMessage = "LUT application failed"
-                return
-            }
-            guard !Task.isCancelled else { return }
-            self.processedImage = result
-            self.updatePreview(result)
-            self.updateHistogram()
-        }
+        schedulePreview()
     }
 
-    /// Set the LUT strength (0...1) and re-render the preview. Cheap to call
-    /// repeatedly while dragging — `applyLUT` cancels any in-flight render.
+    /// Set the LUT strength (0...1) and re-render the preview. Safe to call on
+    /// every slider tick: the re-render is debounced and the previous one is
+    /// cancelled, so a full-travel drag costs a handful of renders, not one per
+    /// pixel of travel.
     func setLUTIntensity(_ value: Double) {
         let clamped = max(0, min(1, value))
         guard clamped != lutIntensity else { return }
         lutIntensity = clamped
-        applyLUT()
+
+        intensityTask?.cancel()
+        intensityTask = Task {
+            try? await Task.sleep(for: .milliseconds(Self.intensityDebounceMs))
+            guard !Task.isCancelled else { return }
+            self.schedulePreview()
+        }
     }
 
     // MARK: - Preview
 
     private let maxPreview = CGSize(width: 1600, height: 1200)
+    private static let intensityDebounceMs = 60
 
-    private func updatePreview(_ ciImage: CIImage) {
-        previewNSImage = processor.renderPreview(ciImage, maxSize: maxPreview)
+    /// Rebuild `processedImage` for the current LUT + intensity and rasterize
+    /// whichever image belongs on screen.
+    ///
+    /// Assembling the filter graph stays on the main actor — Core Image is lazy,
+    /// so that part is nearly free. The **rasterization** is the expensive step
+    /// and runs detached; the resulting `NSImage` is published back here. Any
+    /// in-flight render is cancelled first, so rapid LUT/intensity changes drop
+    /// stale work instead of queueing it.
+    private func schedulePreview() {
+        previewTask?.cancel()
+
+        guard let source = sourceImage else {
+            processedImage = nil
+            previewNSImage = nil
+            return
+        }
+
+        let graded: CIImage?
+        if let lut = selectedLUT {
+            graded = lut.apply(to: source, intensity: lutIntensity)
+            if graded == nil { statusMessage = "LUT application failed" }
+        } else {
+            graded = nil
+        }
+        processedImage = graded
+
+        let displayed = (isShowingOriginal ? nil : graded) ?? source
+
+        previewTask = Task { [processor, maxPreview] in
+            let rendered = await Task.detached {
+                processor.renderPreview(displayed, maxSize: maxPreview)
+            }.value
+            guard !Task.isCancelled else { return }
+            self.previewNSImage = rendered
+            self.updateHistogram()
+        }
     }
 
-    private func updateOriginalPreview(_ ciImage: CIImage) {
-        originalPreviewNSImage = processor.renderPreview(ciImage, maxSize: maxPreview)
+    /// Rasterize the untouched source for the side-by-side left panel. Only
+    /// needs to run when the image itself changes.
+    private func scheduleOriginalPreview(_ ciImage: CIImage) {
+        originalPreviewTask?.cancel()
+        originalPreviewTask = Task { [processor, maxPreview] in
+            let rendered = await Task.detached {
+                processor.renderPreview(ciImage, maxSize: maxPreview)
+            }.value
+            guard !Task.isCancelled else { return }
+            self.originalPreviewNSImage = rendered
+        }
     }
 
     /// Toggle between original and LUT preview (for Space-hold comparison).
     func showOriginal(_ show: Bool) {
+        guard show != isShowingOriginal else { return }
         isShowingOriginal = show
-        if let source = sourceImage {
-            if show || processedImage == nil {
-                updatePreview(source)
-            } else if let processed = processedImage {
-                updatePreview(processed)
-            }
-        }
-        updateHistogram()
+        schedulePreview()
     }
 
     func toggleSideBySide() {
@@ -526,10 +557,23 @@ final class AppViewModel: ObservableObject {
         isRecipeSheetPresented = true
     }
 
+    /// Close the sheet. A derive still in flight is cancelled — it can run for
+    /// tens of seconds and hold several hundred MB, so leaving it running after
+    /// the user has walked away is never what they want.
+    ///
+    /// A *finished* result is kept: the user may re-open the sheet to inspect
+    /// the report or save the LUT. The scratch file is cleaned up when a new
+    /// derive starts (see `deriveRecipe`).
     func dismissRecipeExtractor() {
         isRecipeSheetPresented = false
-        // Keep the scratch state — user might re-open the sheet to inspect.
-        // It's only cleared when a new derive starts or on app exit.
+        if isDeriving {
+            deriveTask?.cancel()
+            deriveTask = nil
+            isDeriving = false
+            deriveProgress = 0
+            deriveStage = ""
+            statusMessage = "Derive cancelled"
+        }
     }
 
     /// Derive a LUT from a (RAW, JPG) pair. Result lives in `derivedLUT` and
@@ -549,7 +593,7 @@ final class AppViewModel: ObservableObject {
             derivedScratchURL = nil
         }
 
-        Task.detached {
+        deriveTask = Task.detached {
             do {
                 let result = try RecipeExtractor.derive(
                     rawURL: rawURL,
@@ -559,7 +603,8 @@ final class AppViewModel: ObservableObject {
                             self.deriveProgress = progress
                             self.deriveStage = stage
                         }
-                    }
+                    },
+                    isCancelled: { Task.isCancelled }
                 )
 
                 // Serialize the derived cube to a temp .cube so saving later is
@@ -597,6 +642,11 @@ final class AppViewModel: ObservableObject {
                         self.selectLUT(lut)
                     }
                 }
+            } catch is CancellationError {
+                // Nothing to undo: the scratch .cube is only written after
+                // `derive` returns, and `dismissRecipeExtractor` (the only
+                // thing that cancels) has already reset the UI state.
+                return
             } catch {
                 await MainActor.run {
                     self.isDeriving = false

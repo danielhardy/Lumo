@@ -188,11 +188,20 @@ extension ImageMetadata {
         m.flash           = flashLabel(exif[kCGImagePropertyExifFlash] as? Int)
         m.whiteBalance    = whiteBalanceLabel(exif[kCGImagePropertyExifWhiteBalance] as? Int)
 
-        // Image
-        m.pixelWidth   = (props[kCGImagePropertyPixelWidth] as? Int)
+        // Image. ImageIO reports the *stored* buffer dimensions; orientations
+        // 5-8 are quarter-turns, so display dimensions are the transpose. The
+        // app renders images upright (see ImageProcessor.orientedLoadOptions),
+        // so report what the user actually sees.
+        let orientation = (props[kCGImagePropertyOrientation] as? Int)
+            ?? (tiff[kCGImagePropertyTIFFOrientation] as? Int)
+            ?? 1
+        let storedWidth = (props[kCGImagePropertyPixelWidth] as? Int)
             ?? (exif[kCGImagePropertyExifPixelXDimension] as? Int)
-        m.pixelHeight  = (props[kCGImagePropertyPixelHeight] as? Int)
+        let storedHeight = (props[kCGImagePropertyPixelHeight] as? Int)
             ?? (exif[kCGImagePropertyExifPixelYDimension] as? Int)
+        let isQuarterTurned = (5...8).contains(orientation)
+        m.pixelWidth  = isQuarterTurned ? storedHeight : storedWidth
+        m.pixelHeight = isQuarterTurned ? storedWidth : storedHeight
         m.colorModel   = props[kCGImagePropertyColorModel] as? String
         m.colorProfile = props[kCGImagePropertyProfileName] as? String
         m.bitDepth     = props[kCGImagePropertyDepth] as? Int
