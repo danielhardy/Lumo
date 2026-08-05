@@ -3,11 +3,16 @@ import PhotosUI
 import AppKit
 
 /// Main window layout: sidebar + preview + toolbar.
-struct ContentView: View {
+///
+/// One of two entry points LUTzyKit exposes to the executable (the other is
+/// `LUTzyCommands`); everything else in the module stays internal.
+public struct ContentView: View {
     @StateObject private var viewModel = AppViewModel()
     @State private var photosSelection: [PhotosPickerItem] = []
 
-    var body: some View {
+    public init() {}
+
+    public var body: some View {
         mainContent
             .navigationTitle("")
             .toolbar {
@@ -375,49 +380,5 @@ final class KeyMonitor {
     }
 }
 
-// MARK: - Menu command receivers
-
-struct MenuCommandReceivers: ViewModifier {
-    @ObservedObject var viewModel: AppViewModel
-
-    func body(content: Content) -> some View {
-        content
-            .onReceive(NotificationCenter.default.publisher(for: .openImage)) { _ in
-                viewModel.openImageDialog()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .exportImage)) { _ in
-                viewModel.exportDialog()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .exportAll)) { _ in
-                viewModel.batchExportDialog()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .chooseLUTFolder)) { _ in
-                viewModel.chooseLUTFolder()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .importFromPhotos)) { _ in
-                viewModel.importFromPhotos()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .openSourceFolder)) { _ in
-                viewModel.chooseSourceFolder()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .refreshSourceFolder)) { _ in
-                viewModel.refreshSource()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .deriveRecipe)) { _ in
-                viewModel.presentRecipeExtractor()
-            }
-    }
-}
-
-// MARK: - Notification names for menu commands
-
-extension Notification.Name {
-    static let openImage = Notification.Name("LUTzy.openImage")
-    static let exportImage = Notification.Name("LUTzy.exportImage")
-    static let exportAll = Notification.Name("LUTzy.exportAll")
-    static let chooseLUTFolder = Notification.Name("LUTzy.chooseLUTFolder")
-    static let importFromPhotos = Notification.Name("LUTzy.importFromPhotos")
-    static let openSourceFolder = Notification.Name("LUTzy.openSourceFolder")
-    static let refreshSourceFolder = Notification.Name("LUTzy.refreshSourceFolder")
-    static let deriveRecipe = Notification.Name("LUTzy.deriveRecipe")
-}
+// The File menu, its notification names, and `MenuCommandReceivers` live in
+// MenuCommands.swift.

@@ -16,7 +16,7 @@ final class ImageProcessor {
 
     /// Canonical RAW file extensions (lowercased). RAW files are demosaiced via CIRAWFilter.
     /// Add a new RAW format here and it flows to RAW detection and `supportedExtensions`.
-    private static let rawExtensions: Set<String> = [
+    static let rawExtensions: Set<String> = [
         "dng", "cr2", "cr3", "nef", "arw", "orf",
         "raf", "rw2", "pef", "srw", "x3f", "raw",
     ]
@@ -108,7 +108,7 @@ final class ImageProcessor {
     /// Render a CIImage to an NSImage at the given maximum size.
     func renderPreview(_ ciImage: CIImage, maxSize: CGSize) -> NSImage? {
         let extent = ciImage.extent
-        guard extent.width > 0, extent.height > 0 else { return nil }
+        guard extent.isRasterizable else { return nil }
 
         let scale = min(
             maxSize.width / extent.width,
@@ -170,8 +170,7 @@ final class ImageProcessor {
     /// thread-safe). Returns `nil` if the image has no renderable extent.
     func histogram(of ciImage: CIImage, maxDimension: Int = 512) -> HistogramData? {
         let extent = ciImage.extent
-        guard extent.width > 0, extent.height > 0,
-              extent.width.isFinite, extent.height.isFinite else { return nil }
+        guard extent.isRasterizable else { return nil }
 
         let scale = min(
             CGFloat(maxDimension) / extent.width,
@@ -253,8 +252,7 @@ final class ImageProcessor {
 
     /// Export a CIImage to a file at full resolution.
     func export(_ ciImage: CIImage, to url: URL, format: ExportFormat, quality: CGFloat = 0.95) throws {
-        let extent = ciImage.extent
-        guard extent.width > 0, extent.height > 0 else {
+        guard ciImage.extent.isRasterizable else {
             throw ImageError.processingFailed
         }
 
@@ -292,6 +290,24 @@ final class ImageProcessor {
             }
             try data.write(to: url)
         }
+    }
+}
+
+// MARK: - Extent
+
+extension CGRect {
+    /// Whether this extent can actually be turned into a pixel buffer.
+    ///
+    /// Rejects empty, null, and — the one that bites — **infinite** extents.
+    /// `CGRect.infinite` is built from `greatestFiniteMagnitude`, not `inf`, so
+    /// an `isFinite` check on its width passes while `Int(width)` traps at
+    /// runtime. Generator-backed images (`CIImage(color:)` and friends) have
+    /// exactly that extent, so any code path that might meet one has to test
+    /// `isInfinite` explicitly.
+    var isRasterizable: Bool {
+        !isInfinite && !isNull && !isEmpty
+            && width.isFinite && height.isFinite
+            && width >= 1 && height >= 1
     }
 }
 

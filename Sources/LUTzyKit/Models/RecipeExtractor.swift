@@ -485,7 +485,10 @@ struct RecipeExtractor {
 
     /// The extent both images are analyzed at: `size`, capped so its longest
     /// side is at most `longEdge`. `longEdge <= 0` means "analyze natively".
-    private static func workingSize(for size: CGSize, longEdge: Int) -> CGSize {
+    ///
+    /// Internal rather than private so `RecipeExtractorTests` can cover it
+    /// without needing a RAW fixture in the repo.
+    static func workingSize(for size: CGSize, longEdge: Int) -> CGSize {
         guard longEdge > 0 else { return size }
         let longest = max(size.width, size.height)
         guard longest > CGFloat(longEdge) else { return size }
@@ -610,7 +613,11 @@ struct RecipeExtractor {
 
     /// Average filled cells, smooth empty cells from neighbors, anchor leftovers
     /// to the identity cube.
-    private static func buildCube(
+    ///
+    /// Internal rather than private so `RecipeExtractorTests` can drive it with
+    /// hand-built sample distributions — deriving from real files would need a
+    /// RAW fixture in the repo and would test the whole pipeline at once.
+    static func buildCube(
         sums: [SIMD3<Float>],
         counts: [Int32],
         size: Int,

@@ -712,7 +712,7 @@ final class AppViewModel: ObservableObject {
 /// A non-colliding `base.ext` URL inside `folder`, appending " 2", " 3", …
 /// when a file of that name already exists. Free function (not `@MainActor`)
 /// so it can be called from the off-actor batch export task.
-private func uniqueExportURL(in folder: URL, base: String, ext: String) -> URL {
+func uniqueExportURL(in folder: URL, base: String, ext: String) -> URL {
     let fm = FileManager.default
     var candidate = folder.appendingPathComponent("\(base).\(ext)")
     var n = 2

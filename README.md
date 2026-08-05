@@ -139,7 +139,14 @@ Builds and launches the app for fast iteration. Note: the SwiftUI executable tar
 ```bash
 open Package.swift     # or: xed .
 ```
-Then select the **LUTzy** scheme and **Run** (`⌘R`). For a sandboxed build, add the **App Sandbox** capability and point it at the included [`LUTzy.entitlements`](LUTzy/LUTzy.entitlements) (user-selected read/write + app-scope bookmarks).
+Then select the **LUTzy** scheme and **Run** (`⌘R`). For a sandboxed build, add the **App Sandbox** capability and point it at the included [`LUTzy.entitlements`](Sources/LUTzy/LUTzy.entitlements) (user-selected read/write + app-scope bookmarks).
+
+**Tests:**
+```bash
+swift test
+```
+61 tests, no fixtures to download — everything they need is generated into a temp directory. CI runs
+debug build → tests → release build on every push and PR.
 
 **Requirements:** macOS **14.0+**, Swift **5.9+** (Xcode 15+).
 
@@ -147,39 +154,57 @@ Then select the **LUTzy** scheme and **Run** (`⌘R`). For a sandboxed build, ad
 
 ## 🗂 Project structure
 
+LUTzy is split into a `LUTzyKit` library and a thin `@main` executable, so the app's own code can be
+unit-tested — `@testable` cannot import an executable target.
+
 ```
-LUTzy/
-├── LUTzyApp.swift              # @main App — window, default size, File-menu commands
-├── Models/
-│   ├── CubeLUT.swift           # .cube parser + writer → CIColorCube filter (also in-memory init)
-│   ├── ImageProcessor.swift    # Singleton: RAW/standard load, preview, thumbnails, histogram, export (Metal CIContext)
-│   ├── LUTLibrary.swift        # Scans LUT folder, groups by category, sandbox bookmark persistence
-│   ├── ImageCollection.swift   # Multi-image set with async thumbnail generation
-│   ├── ImageMetadata.swift     # EXIF/TIFF/GPS read + display formatting for the inspector
-│   ├── Histogram.swift         # 256-bin per-channel histogram data model
-│   ├── RecipeExtractor.swift   # (RAW, JPG) → 3D LUT derivation pipeline
-│   └── RecipeReport.swift      # Analysis data model (tone curve, ratios, EXIF camera info)
-├── ViewModels/
-│   └── AppViewModel.swift      # Central @MainActor state: image, LUT, preview, export, derive
-├── Views/
-│   ├── ContentView.swift       # Split-view layout, toolbar, status bar, key monitor, menu receivers
-│   ├── LUTSidebar.swift        # Searchable, category-grouped LUT list
-│   ├── PreviewView.swift       # Side-by-side / single canvas, drag-drop, badges
-│   ├── FilmstripView.swift     # Horizontal thumbnail strip for batches
-│   ├── SourceBrowserView.swift # Docked source-folder file list, grouped by subfolder
-│   ├── InfoInspectorView.swift # Histogram canvas + EXIF rows
-│   ├── RecipeExtractorSheet.swift  # "Derive LUT from JPG" modal (pickers, progress, report)
-│   └── RecipeReportView.swift  # Analysis card — Swift Charts tone curve + stat badges
-├── Assets.xcassets/            # App icon + accent color
-└── LUTzy.entitlements          # App Sandbox + user-selected file access
+Sources/
+├── LUTzy/                      # thin entry point only
+│   ├── LUTzyApp.swift          # @main App + AppDelegate — window, default size, commands
+│   ├── Assets.xcassets/        # App icon + accent color
+│   └── LUTzy.entitlements      # App Sandbox + user-selected file access
+└── LUTzyKit/                   # everything of substance
+    ├── Models/
+    │   ├── CubeLUT.swift           # .cube parser + writer → CIColorCube filter (also in-memory init)
+    │   ├── ImageProcessor.swift    # Singleton: RAW/standard load, preview, thumbnails, histogram, export
+    │   ├── LUTLibrary.swift        # Scans LUT folder, groups by category, sandbox bookmark persistence
+    │   ├── ImageCollection.swift   # Multi-image set with async thumbnail generation
+    │   ├── ImageMetadata.swift     # EXIF/TIFF/GPS read + display formatting for the inspector
+    │   ├── Histogram.swift         # 256-bin per-channel histogram data model
+    │   ├── RecipeExtractor.swift   # (RAW, JPG) → 3D LUT derivation pipeline
+    │   └── RecipeReport.swift      # Analysis data model (tone curve, ratios, EXIF camera info)
+    ├── ViewModels/
+    │   └── AppViewModel.swift      # Central @MainActor state: image, LUT, preview, export, derive
+    └── Views/
+        ├── ContentView.swift       # Split-view layout, toolbar, status bar, key monitor  [public]
+        ├── MenuCommands.swift      # File menu + its notification names                   [public]
+        ├── LUTSidebar.swift        # Searchable, category-grouped LUT list
+        ├── PreviewView.swift       # Side-by-side / single canvas, drag-drop, badges
+        ├── FilmstripView.swift     # Horizontal thumbnail strip for batches
+        ├── SourceBrowserView.swift # Docked source-folder file list, grouped by subfolder
+        ├── InfoInspectorView.swift # Histogram canvas + EXIF rows
+        ├── RecipeExtractorSheet.swift  # "Derive LUT from JPG" modal (pickers, progress, report)
+        └── RecipeReportView.swift  # Analysis card — Swift Charts tone curve + stat badges
+
+Tests/
+└── LUTzyKitTests/              # XCTest; fixtures are generated, never committed
+    ├── Fixtures.swift          # builds .cube files and orientation-tagged JPEGs in a temp dir
+    ├── CubeLUTTests.swift      # parser, domain handling, index ordering, intensity, round-trip
+    ├── ImageLoadingTests.swift # EXIF orientation across load/thumbnail/export, histogram
+    ├── LibraryScanTests.swift  # async folder scans, error surfacing, collection navigation
+    ├── RecipeExtractorTests.swift  # cube assembly, neighbour smoothing, working resolution
+    └── ExportNamingTests.swift # batch-export collision handling
 ```
+
+`ContentView` and `LUTzyCommands` are the only `public` symbols — the executable needs exactly those
+two and nothing else.
 
 `docs/CODE_REVIEW.md` records the standing findings from the last full review — what was fixed, and
 what is still outstanding.
 
 ## 🏗 Architecture notes
 
-- **MVVM.** [`AppViewModel`](LUTzy/ViewModels/AppViewModel.swift) is the single source of truth and owns the `LUTLibrary` and `ImageCollection`; views observe it, and the menu bar talks to it via `NotificationCenter`.
+- **MVVM.** [`AppViewModel`](Sources/LUTzyKit/ViewModels/AppViewModel.swift) is the single source of truth and owns the `LUTLibrary` and `ImageCollection`; views observe it, and the menu bar talks to it via `NotificationCenter`.
 - **Core Image end to end.** RAW demosaicing (`CIRAWFilter`), LUT application (`CIColorCubeWithColorSpace`), scaling (`CILanczosScaleTransform`), and all export encoding run through one Metal-backed `CIContext`.
 - **Color pipeline is sRGB**, with cube data laid out R-fastest → G → B (matching both the `.cube` spec and Core Image's expected ordering).
 - **Images are rendered upright.** `CIRAWFilter` honors EXIF orientation; plain `CIImage(contentsOf:)` does not, so every non-RAW decode goes through `ImageProcessor.orientedLoadOptions`. Preview, filmstrip thumbnail, reported dimensions, and export all agree.
@@ -190,7 +215,7 @@ what is still outstanding.
 
 ## 📦 Preparing for the App Store
 
-1. Drop a 1024×1024 source icon into [`Assets.xcassets/AppIcon.appiconset`](LUTzy/Assets.xcassets/AppIcon.appiconset).
+1. Drop a 1024×1024 source icon into [`Assets.xcassets/AppIcon.appiconset`](Sources/LUTzy/Assets.xcassets/AppIcon.appiconset).
 2. Set your **Bundle Identifier** and **Team** in the target's Signing & Capabilities.
 3. Keep **App Sandbox** enabled (the included entitlements already grant user-selected file access + app-scope bookmarks).
 4. **Product ▸ Archive ▸ Distribute App ▸ App Store Connect.**
