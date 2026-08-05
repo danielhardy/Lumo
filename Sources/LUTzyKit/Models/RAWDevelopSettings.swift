@@ -74,18 +74,12 @@ struct RAWDevelopSettings: Codable, Sendable, Equatable {
     /// `isEDRModeEnabled`; the spec's earlier draft invented both.
     var extendedDynamicRangeAmount: Double?
 
-    // **Highlight recovery is deliberately absent**, and not because of the deployment target.
-    //
-    // `isHighlightRecoveryEnabled` / `isHighlightRecoverySupported` were added in the macOS 26 SDK.
-    // CI builds this package with Xcode 15.4 against the **macOS 14.5 SDK**, where those properties
-    // do not exist in the imported interface at all — so `#available` cannot help. An availability
-    // check gates a call at *runtime*; it cannot conjure a symbol the SDK never declared. The
-    // reference fails to compile there, full stop.
-    //
-    // Leaving the field stored-but-never-applied would be worse than omitting it: a document would
-    // claim an adjustment that never reaches the decoder. `EditDocument` decodes with
-    // `decodeIfPresent`, so re-adding this the day the toolchain floor moves is a non-breaking
-    // change that needs no migration. See `docs/PHASE2_SPEC.md` §9.
+    /// The one knob here that is newer than the deployment target — see `apply(to:)`. Default: true.
+    ///
+    /// Stored unconditionally, applied only where the OS has it. A document is a value, not a
+    /// capability probe: the same edit opened on macOS 26 and on macOS 14 should be the same
+    /// document, so a machine that gains the API honours a document written before it.
+    var highlightRecoveryEnabled: Bool?
 
     // MARK: - Neutral
 
@@ -145,6 +139,20 @@ struct RAWDevelopSettings: Codable, Sendable, Equatable {
         }
         if let lensCorrectionEnabled, filter.isLensCorrectionSupported {
             filter.isLensCorrectionEnabled = lensCorrectionEnabled
+        }
+
+        // The only knob newer than the macOS 14 deployment target, so the only one needing
+        // `#available`. The SDK header still marks it `16_0`, which the Swift importer maps onto the
+        // renumbered macOS 26 — `26` is written because that is the version the compiler enforces.
+        //
+        // This guard is not optional politeness: with a 14.0 deployment target the compiler *refuses*
+        // the reference without it. That is the point of building against a current SDK — the
+        // requirement is checked rather than remembered. (It also means this file needs Xcode 26 or
+        // newer to compile at all; see CLAUDE.md.)
+        //
+        // A no-op on macOS 14/15, where the document keeps the setting and the decoder never sees it.
+        if let highlightRecoveryEnabled, #available(macOS 26, *), filter.isHighlightRecoverySupported {
+            filter.isHighlightRecoveryEnabled = highlightRecoveryEnabled
         }
     }
 }

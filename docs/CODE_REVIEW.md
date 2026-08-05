@@ -168,6 +168,14 @@ dead, while the browser panel still listed the row. Now `!items.isEmpty`.
   inspects the parsed table directly; the missing-folder test asserted only that *some* error appeared,
   which the empty-folder message also satisfied.
 
+  Phase 2 Step 2 added a third variety of the same weakness, worth naming because it will recur
+  wherever a test drives a framework object: **asserting a value that was already the default.**
+  `RAWDevelopSettings`' round-trip test set `lensCorrectionEnabled` and `highlightRecoveryEnabled` to
+  `true` and asserted `true` — but `CIRAWFilter` defaults both to `true`, so both assertions passed
+  just as happily against an `apply(to:)` that skipped them entirely. A mutation check caught it; the
+  fix is to write a value that *departs* from the decoder default. When a test writes to a framework
+  object, print the defaults for the fixture first and check that each written value actually differs.
+
   Writing them turned up one further bug: **`ImageProcessor.histogram(of:)` trapped on an
   infinite-extent image.** `CGRect.infinite` is built from `greatestFiniteMagnitude`, not `inf`, so the
   existing `isFinite` guard passed and `Int(rect.width)` then crashed. Not reachable from today's UI —

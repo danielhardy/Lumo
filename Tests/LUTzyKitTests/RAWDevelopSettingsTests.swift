@@ -41,6 +41,7 @@ final class RAWDevelopSettingsTests: XCTestCase {
         XCTAssertNil(neutral.lensCorrectionEnabled)
         XCTAssertNil(neutral.gamutMappingEnabled)
         XCTAssertNil(neutral.extendedDynamicRangeAmount)
+        XCTAssertNil(neutral.highlightRecoveryEnabled)
     }
 
     /// Every field has to break neutrality on its own — a knob that isn't compared is a knob whose
@@ -70,15 +71,16 @@ final class RAWDevelopSettingsTests: XCTestCase {
         vary("lensCorrectionEnabled") { $0.lensCorrectionEnabled = true }
         vary("gamutMappingEnabled") { $0.gamutMappingEnabled = false }
         vary("extendedDynamicRangeAmount") { $0.extendedDynamicRangeAmount = 1 }
+        vary("highlightRecoveryEnabled") { $0.highlightRecoveryEnabled = false }
 
-        XCTAssertEqual(mutations.count, 17, "a new property needs a case here")
+        XCTAssertEqual(mutations.count, 18, "a new property needs a case here")
         for (name, settings) in mutations {
             XCTAssertFalse(settings.isNeutral, "\(name) should count as an edit")
             XCTAssertNotEqual(settings, .neutral, "\(name) should be part of equality")
         }
         // And no two of them collide, which would mean one field is being compared as another.
         let encoded = try mutations.map { try JSONEncoder().encode($0.1) }
-        XCTAssertEqual(Set(encoded).count, 17)
+        XCTAssertEqual(Set(encoded).count, 18)
     }
 
     func testSettingsRoundTripAndOmitNilFields() throws {
@@ -123,9 +125,14 @@ final class RAWDevelopSettingsTests: XCTestCase {
             localToneMapAmount: 0.3,
             luminanceNoiseReductionAmount: 0.7,
             colorNoiseReductionAmount: 0.8,
-            lensCorrectionEnabled: true,
+            // Both booleans are written as `false` on purpose. `CIRAWFilter` defaults them to
+            // *true* for this file, so a test that set `true` and asserted `true` would pass just as
+            // happily against an `apply(to:)` that skipped them entirely — which is exactly what a
+            // mutation check caught it doing.
+            lensCorrectionEnabled: false,
             gamutMappingEnabled: false,
-            extendedDynamicRangeAmount: 1.0
+            extendedDynamicRangeAmount: 1.0,
+            highlightRecoveryEnabled: false
         )
         settings.apply(to: filter)
 
@@ -153,7 +160,10 @@ final class RAWDevelopSettingsTests: XCTestCase {
         if filter.isColorNoiseReductionSupported {
             XCTAssertEqual(filter.colorNoiseReductionAmount, 0.8, accuracy: 0.0001)
         }
-        if filter.isLensCorrectionSupported { XCTAssertTrue(filter.isLensCorrectionEnabled) }
+        if filter.isLensCorrectionSupported { XCTAssertFalse(filter.isLensCorrectionEnabled) }
+        if #available(macOS 26, *), filter.isHighlightRecoverySupported {
+            XCTAssertFalse(filter.isHighlightRecoveryEnabled)
+        }
 
         XCTAssertNotNil(filter.outputImage, "a configured filter must still produce an image")
     }
@@ -187,6 +197,9 @@ final class RAWDevelopSettingsTests: XCTestCase {
         XCTAssertEqual(subject.isLensCorrectionEnabled, reference.isLensCorrectionEnabled)
         XCTAssertEqual(subject.isGamutMappingEnabled, reference.isGamutMappingEnabled)
         XCTAssertEqual(subject.extendedDynamicRangeAmount, reference.extendedDynamicRangeAmount)
+        if #available(macOS 26, *) {
+            XCTAssertEqual(subject.isHighlightRecoveryEnabled, reference.isHighlightRecoveryEnabled)
+        }
     }
 
     // The `is*Supported` gates in `apply(to:)` are deliberately not covered by a test. Exercising one

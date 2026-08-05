@@ -9,18 +9,19 @@ LUTzy is a native **macOS 14+** app (Swift 5.9, SwiftUI + Core Image, **zero thi
 - Full app (icon + App Sandbox): open `Package.swift` in Xcode and Run.
 - Tests: `swift test`. CI runs debug build → tests → release build.
 
-**CI's SDK is the build contract, not yours.** CI is Xcode 15.4 / Swift 5.10 against the **macOS 14.5
-SDK**. A current Xcode will happily compile API that simply does not exist there — and `#available`
-cannot rescue it, because an availability check gates a call at runtime and cannot conjure a symbol
-the SDK never declared. Before pushing anything that touches a system framework, typecheck against
-the oldest SDK on the machine:
+**SDK and deployment target are different things — don't conflate them.** CI runs on `macos-26`
+(Xcode 26.x, macOS 26 SDK); `Package.swift` deploys to **macOS 14**. Building against a current SDK
+while deploying to 14 is the normal Apple model and is the *stricter* arrangement: the compiler
+refuses any API newer than the deployment target unless it is `#available`-guarded, so the guard is
+enforced rather than remembered. Use newer API behind `#available` — don't avoid it.
 
-```bash
-swiftc -typecheck -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk \
-    -target arm64-apple-macosx14.0 -swift-version 5 $(find Sources/LUTzyKit -name '*.swift')
-```
+**Requires Xcode 26 or newer to build.** That is the cost of the above: `RAWDevelopSettings` references
+`CIRAWFilter.isHighlightRecoveryEnabled`, which only exists in the macOS 26 SDK. On an older Xcode the
+package will not compile, and no availability check can change that — `#available` gates a call at
+runtime; it cannot conjure a symbol the SDK never declared. That distinction cost a red build in Phase 2
+Step 2, when CI still ran `macos-14` (Xcode 15.4 / macOS 14.5 SDK) and the code built clean locally.
 
-This caught a `CIRAWFilter` property in Phase 2 Step 2 that built clean locally and broke CI.
+If CI ever needs to move back to an older image, that reference is the thing that has to go with it.
 
 ## Layout
 
