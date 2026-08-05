@@ -275,6 +275,60 @@ final class CubeLUTTests: TempDirectoryTestCase {
 
     // MARK: - In-memory init
 
+    /// Step 3 split the intensity blend into a shared body that takes a cube filter, so
+    /// `RenderPipeline` could pass a cached one instead of a second copy of the dissolve existing.
+    /// That refactor must not have moved a pixel: §8.1 is explicit that this blend is *shipping*
+    /// behaviour, and a change here is a visible look change on every sub-100% render.
+    ///
+    /// Both formulations are rendered back-to-back in one process on purpose — Core Image is not
+    /// bit-reproducible across time-separated runs, so a before/after comparison spanning a code
+    /// change would report phantom differences.
+    func testIntensityPathStillEqualsGradeThenDissolve() throws {
+        let lut = TestImages.warmLUT()
+        let source = try TestImages.gradient(width: 48, height: 32)
+
+        for intensity in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let viaAPI = try XCTUnwrap(lut.apply(to: source, intensity: intensity))
+
+            // The pre-refactor formulation, written out: grade fully, then crossfade.
+            let expected: CIImage
+            if intensity <= 0 {
+                expected = source
+            } else {
+                let graded = try XCTUnwrap(lut.apply(to: source))
+                if intensity >= 1 {
+                    expected = graded
+                } else {
+                    let mix = try XCTUnwrap(CIFilter(name: "CIDissolveTransition"))
+                    mix.setValue(source, forKey: kCIInputImageKey)
+                    mix.setValue(graded, forKey: kCIInputTargetImageKey)
+                    mix.setValue(intensity, forKey: kCIInputTimeKey)
+                    expected = try XCTUnwrap(mix.outputImage)
+                }
+            }
+
+            assertPixelsEqual(try Pixels.bytes(of: viaAPI), try Pixels.bytes(of: expected),
+                              "intensity \(intensity) moved when the dissolve was factored out")
+        }
+    }
+
+    /// And the two overloads agree — a caller passing its own filter gets what the convenience
+    /// overload would have produced.
+    func testPassingACachedFilterMatchesBuildingOneInline() throws {
+        let lut = TestImages.warmLUT()
+        let source = try TestImages.gradient(width: 48, height: 32)
+        let cache = LUTFilterCache()
+
+        for intensity in [0.0, 0.4, 1.0] {
+            let inline = try XCTUnwrap(lut.apply(to: source, intensity: intensity))
+            let cached = try XCTUnwrap(lut.apply(
+                to: source, intensity: intensity, using: cache.filter(for: lut)
+            ))
+            assertPixelsEqual(try Pixels.bytes(of: inline), try Pixels.bytes(of: cached),
+                              "the cached-filter overload diverged at intensity \(intensity)")
+        }
+    }
+
     func testInMemoryLUTGetsSyntheticIDWhenNotFileBacked() {
         let cube = [SIMD3<Float>](repeating: .zero, count: 8)
         let a = CubeLUT(cube: cube, size: 2, name: "derived")

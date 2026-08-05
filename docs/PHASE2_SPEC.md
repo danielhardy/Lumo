@@ -1,6 +1,6 @@
 # LUTzy Phase 2 — non-destructive render pipeline + RAW develop
 
-**Status:** design, not code. Steps 0–2 of the migration are done; the rest is unbuilt.
+**Status:** design, not code. Steps 0–3 of the migration are done; the rest is unbuilt.
 
 This is a distillation. The original draft ran 4,180 lines of multi-agent output that contradicted
 itself across sections and spent a good fraction of its length arguing with earlier drafts about bugs
@@ -37,7 +37,8 @@ a baked image, which buys four things at once:
 | ✅ `ImageProcessor.rawExtensions` internal; `developRAWNeutral` is the one neutral baseline | |
 | ✅ Derive: cancellable, geometry-validated, capped at a 3000 px working resolution | |
 | ✅ The value-state types exist (`EditDocument` and friends) — but nothing uses them yet | Step 2 is **done** |
-| ❌ No `RenderPipeline`, no `RenderEngine`, no RAW develop UI | the actual Phase 2 work |
+| ✅ `RenderPipeline.buildImage` and `LUTFilterCache` exist — also unused | Step 3 is **done** |
+| ❌ No `RenderEngine`, nothing wired to the app, no RAW develop UI | the actual Phase 2 work |
 
 **Still true and still worth fixing:** `ImageProcessor` is a non-`Sendable` `final class` singleton
 holding a `CIContext`, captured into `Task.detached` in several places. Strict concurrency would reject it.
@@ -215,7 +216,7 @@ leaf by leaf, delete the old path last.
 | ~~0~~ | ~~`LUTzyKit` split + test harness~~ | ✅ **done** — 95 tests, CI green |
 | ~~1~~ | ~~`WorkingSpace`; route all six colour sites through it~~ | ✅ **done** — export, preview pixels and histogram byte-identical at sRGB; parity + lockstep tests added |
 | ~~2~~ | ~~`EditDocument`, `RAWDevelopSettings`, `AdjustmentNode`, `LUTSettings`, `LUTID`, `ImageSource` — **defined but unused**~~ | ✅ **done** — plus `RenderScale`; 132 tests, nothing in the app references them, app launches unchanged |
-| 3 | `RenderPipeline.buildImage` + the actor-side LUT filter cache — **defined but unused** | identity-pipeline and intensity-endpoint tests |
+| ~~3~~ | ~~`RenderPipeline.buildImage` + the actor-side LUT filter cache — **defined but unused**~~ | ✅ **done** — 162 tests; identity is pixel-exact, intensity endpoints exact, 21 mutations caught |
 | 4 | `actor RenderEngine` alongside the old path; a `RenderEngining` protocol so tests inject a fake | both contexts exist briefly; app still runs the old path |
 | 5 | Cut **preview** over. Keep computed `sourceImage`/`selectedLUT` shims so views compile | preview reflects develop + adjustments + intensity |
 | 6 | Cut **export** over; delete `processedImage` | export honors develop at full res; parity test on one `EditDocument` |
@@ -264,9 +265,19 @@ through a folder picks up latency for no reason.
    or stays gated on "a LUT is set" as it is today.
 6. **Adjustment list semantics.** Allow duplicate node cases, or one-of-each fixed slots?
    *Recommend: allow duplicates.*
-7. **`CITemperatureAndTint` direction.** As a creative slider it inverts against Lightroom convention —
-   only `targetNeutral` is set against a fixed 6500 source, so raising Kelvin *cools*. Decide the
-   mapping before shipping that node; identity at (6500, 0) is a safe seed either way.
+7. **`CITemperatureAndTint` direction.** Still open, but no longer a guess — **measured** in Step 3 on
+   a mid grey, with `neutral` pinned at D65 and only `targetNeutral` moving:
+
+   | target | result | |
+   |---|---|---|
+   | 3200 K | (158, 121, 74) | warmer |
+   | 6500 K | (128, 128, 128) | identity |
+   | 9000 K | (119, 128, 144) | cooler |
+
+   So raising Kelvin *cools*, inverting the Lightroom convention, exactly as suspected. Decide the
+   mapping before shipping the node; identity at (6500, 0) is a safe seed either way.
+   `testRaisingKelvinCoolsTheImage` pins today's direction, so flipping it later is a deliberate act
+   with a failing test attached rather than a silent look change.
 8. **Edit persistence across launches.** `EditDocument` is `Codable` to enable it; v1 in-memory only.
 9. **RAW fixtures in CI.** Derive-invariance and RAW-parity tests need a license-clean small `.dng`+`.jpg`
    pair, else `XCTSkip`. Everything else in the suite generates its fixtures.

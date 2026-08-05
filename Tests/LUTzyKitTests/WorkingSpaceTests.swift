@@ -171,36 +171,13 @@ final class WorkingSpaceTests: TempDirectoryTestCase {
 
     // MARK: - Helpers
 
-    /// A horizontal red→blue ramp: exercises the whole gamut rather than one flat colour, so a
-    /// colour-space difference actually shows up.
+    // The gradient, the warm cube and the pixel comparison now live in `PixelAssertions.swift`,
+    // shared with the Step 3 render tests — one tolerance, one fixture, no drift between suites.
     private func gradientImage(width: Int, height: Int) throws -> CIImage {
-        let filter = try XCTUnwrap(CIFilter(name: "CILinearGradient"))
-        filter.setValue(CIVector(x: 0, y: 0), forKey: "inputPoint0")
-        filter.setValue(CIVector(x: CGFloat(width), y: 0), forKey: "inputPoint1")
-        filter.setValue(CIColor(red: 0.9, green: 0.1, blue: 0.1), forKey: "inputColor0")
-        filter.setValue(CIColor(red: 0.1, green: 0.2, blue: 0.9), forKey: "inputColor1")
-        let output = try XCTUnwrap(filter.outputImage)
-        return output.cropped(to: CGRect(x: 0, y: 0, width: width, height: height))
+        try TestImages.gradient(width: width, height: height)
     }
 
-    /// A non-identity cube that warms the image, so interpolation space matters.
-    private func warmLUT() throws -> CubeLUT {
-        let size = 4
-        var cube = [SIMD3<Float>]()
-        let denom = Float(size - 1)
-        for b in 0..<size {
-            for g in 0..<size {
-                for r in 0..<size {
-                    cube.append(SIMD3(
-                        min(1, Float(r) / denom * 1.2),
-                        Float(g) / denom,
-                        Float(b) / denom * 0.8
-                    ))
-                }
-            }
-        }
-        return CubeLUT(cube: cube, size: size, name: "warm")
-    }
+    private func warmLUT() throws -> CubeLUT { TestImages.warmLUT() }
 
     private func cgImage(from nsImage: NSImage) -> CGImage? {
         var rect = CGRect(origin: .zero, size: nsImage.size)
@@ -229,24 +206,4 @@ final class WorkingSpaceTests: TempDirectoryTestCase {
         return bytes
     }
 
-    /// Compare with a small tolerance: both paths go through the GPU, and rounding at the 8-bit
-    /// boundary can differ by a unit without meaning the spaces disagree.
-    private func assertPixelsEqual(
-        _ a: [UInt8], _ b: [UInt8], tolerance: Int, _ message: String,
-        file: StaticString = #filePath, line: UInt = #line
-    ) {
-        guard a.count == b.count else {
-            return XCTFail("\(message) — byte counts differ (\(a.count) vs \(b.count))", file: file, line: line)
-        }
-        var worst = 0
-        var worstIndex = -1
-        for i in a.indices {
-            let delta = abs(Int(a[i]) - Int(b[i]))
-            if delta > worst { worst = delta; worstIndex = i }
-        }
-        XCTAssertLessThanOrEqual(
-            worst, tolerance,
-            "\(message) — worst delta \(worst) at byte \(worstIndex)", file: file, line: line
-        )
-    }
 }

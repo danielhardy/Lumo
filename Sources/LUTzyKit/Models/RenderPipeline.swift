@@ -1,0 +1,196 @@
+import Foundation
+import CoreImage
+import CoreImage.CIFilterBuiltins
+import CoreGraphics
+
+/// Turns an `EditDocument` into one lazy `CIImage`. A pure function — no `CIContext`, no rasterizing,
+/// no state.
+///
+/// This is the middle layer of Phase 2: the document describes the look, this folds it into a filter
+/// graph, and `actor RenderEngine` (Step 4) evaluates that graph at one of two scales. **Preview and
+/// export call this same function and differ only in `scale`**, which is what makes their agreement
+/// structural rather than a coincidence that two code paths currently maintain. See
+/// `docs/PHASE2_SPEC.md` §1 and §3.
+///
+/// Nothing here is rasterized. Every stage hands the next a lazy `CIImage`, so the whole chain costs
+/// one GPU pass when the engine finally renders it.
+enum RenderPipeline {
+
+    /// Build the graph for `document` over `source`.
+    ///
+    /// - Parameters:
+    ///   - source: how to reproduce the source. A RAW is re-developed here, from the bytes, because
+    ///     `CIRAWFilter` must be configured before it yields an image (§4.2).
+    ///   - document: the look.
+    ///   - lut: the LUT `document.lut.lutID` resolves to, or `nil`.
+    ///   - scale: preview or full. Applied **early** — see `developedSource`.
+    ///   - space: the LUT interpolation space. Output *encoding* is the engine's half of the seam;
+    ///     both read one `WorkingSpace` so they cannot drift (§4.4).
+    ///   - lutCache: reusable cube filters. `nil` builds one per call, which is correct but wasteful.
+    ///
+    /// - Returns: the graph, or `nil` if the source could not be decoded.
+    ///
+    /// **An unresolved LUT renders without the LUT rather than failing.** If `document.lut.lutID` is
+    /// set but `lut` is `nil` — the file was deleted, the library has not finished scanning — this
+    /// returns the ungraded image. Resolution is the caller's job and the caller is the layer that can
+    /// report it; blanking the preview on every render would turn a missing file into a broken app,
+    /// and reporting it per render would mean reporting it sixty times a second. Validate at load and
+    /// report there (§7).
+    static func buildImage(
+        source: ImageSource,
+        document: EditDocument,
+        lut: CubeLUT?,
+        scale: RenderScale,
+        space: WorkingSpace = .current,
+        lutCache: LUTFilterCache? = nil
+    ) -> CIImage? {
+        guard let developed = developedSource(source, rawDevelop: document.rawDevelop, scale: scale) else {
+            return nil
+        }
+        let adjusted = applyAdjustments(document.adjustments, to: developed)
+        return applyLUT(document.lut, lut: lut, to: adjusted, space: space, cache: lutCache)
+    }
+
+    // MARK: - Source
+
+    /// Decode the source at the requested scale.
+    ///
+    /// **Downscaling happens here, before anything else touches the pixels.** For RAW that means
+    /// `CIRAWFilter.scaleFactor`, set before `outputImage`, so the decoder itself demosaics small; for
+    /// a standard image it is a Lanczos step immediately after load. Either way the adjustment and LUT
+    /// stages then operate on a preview-sized image rather than a 60-megapixel one.
+    ///
+    /// That is the whole reason every `AdjustmentNode` must use normalized units (§5): the graph a
+    /// preview runs is the graph an export runs, at a different number of pixels.
+    ///
+    /// The scale is computed from the **decoder's** idea of the source size — `CIRAWFilter.nativeSize`
+    /// or the decoded extent — not from `ImageSource.nativeExtent`. Both should agree, but only one of
+    /// them is authoritative, and a caller that measured wrong should not be able to produce a
+    /// mis-scaled render.
+    static func developedSource(
+        _ source: ImageSource,
+        rawDevelop: RAWDevelopSettings,
+        scale: RenderScale
+    ) -> CIImage? {
+        switch source.kind {
+        case .raw:
+            guard let filter = rawFilter(for: source.backing) else { return nil }
+            rawDevelop.apply(to: filter)
+
+            let factor = scale.factor(for: filter.nativeSize)
+            if factor < 1 {
+                filter.scaleFactor = Float(factor)
+            }
+            return filter.outputImage
+
+        case .standard:
+            guard let image = standardImage(for: source.backing) else { return nil }
+            let factor = scale.factor(for: image.extent.size)
+            guard factor < 1 else { return image }
+            return lanczosScaled(image, by: factor)
+        }
+    }
+
+    private static func rawFilter(for backing: ImageSource.Backing) -> CIRAWFilter? {
+        switch backing {
+        case .url(let url):
+            return CIRAWFilter(imageURL: url)
+        case .data(let data):
+            // No filename to hint with — the decoder identifies the format from the bytes, which is
+            // the same thing `ImageSource.kind(forData:)` already did to classify it as RAW.
+            return CIRAWFilter(imageData: data, identifierHint: nil)
+        }
+    }
+
+    private static func standardImage(for backing: ImageSource.Backing) -> CIImage? {
+        // `orientedLoadOptions` is shared with `ImageProcessor` on purpose: a portrait JPEG has to
+        // come out of this pipeline the same way up as it comes out of the old one, and `CIImage`
+        // ignores the EXIF tag unless asked.
+        switch backing {
+        case .url(let url):
+            return CIImage(contentsOf: url, options: ImageProcessor.orientedLoadOptions)
+        case .data(let data):
+            return CIImage(data: data, options: ImageProcessor.orientedLoadOptions)
+        }
+    }
+
+    private static func lanczosScaled(_ image: CIImage, by factor: CGFloat) -> CIImage {
+        let lanczos = CIFilter.lanczosScaleTransform()
+        lanczos.inputImage = image
+        lanczos.scale = Float(factor)
+        lanczos.aspectRatio = 1
+        return lanczos.outputImage ?? image
+    }
+
+    // MARK: - Adjustments
+
+    /// Fold the ordered nodes over the image.
+    ///
+    /// Nodes at their identity values are skipped. That is an optimization, not a behaviour change:
+    /// all five filters are bit-exact pass-throughs at the values `AdjustmentNode.isIdentity` names —
+    /// measured, and pinned by `testSkippingIdentityNodesChangesNothing`.
+    static func applyAdjustments(_ nodes: [AdjustmentNode], to image: CIImage) -> CIImage {
+        nodes.reduce(image) { partial, node in
+            node.isIdentity ? partial : (filter(for: node, input: partial) ?? partial)
+        }
+    }
+
+    /// The node → `CIFilter` mapping. Built through `CIFilterBuiltins`, so the parameter names are
+    /// checked by the compiler rather than spelled as strings.
+    private static func filter(for node: AdjustmentNode, input: CIImage) -> CIImage? {
+        switch node {
+        case .exposure(let ev):
+            let f = CIFilter.exposureAdjust()
+            f.inputImage = input
+            f.ev = Float(ev)
+            return f.outputImage
+
+        case .colorControls(let brightness, let contrast, let saturation):
+            let f = CIFilter.colorControls()
+            f.inputImage = input
+            f.brightness = Float(brightness)
+            f.contrast = Float(contrast)
+            f.saturation = Float(saturation)
+            return f.outputImage
+
+        case .highlightShadow(let highlights, let shadows):
+            let f = CIFilter.highlightShadowAdjust()
+            f.inputImage = input
+            f.highlightAmount = Float(highlights)
+            f.shadowAmount = Float(shadows)
+            return f.outputImage
+
+        case .temperatureTint(let temp, let tint):
+            let f = CIFilter.temperatureAndTint()
+            f.inputImage = input
+            // Source neutral is pinned at D65; only the target moves. This is what makes identity
+            // land at (6500, 0) — and also what inverts the slider against the Lightroom
+            // convention, which §8.7 leaves open. Changing the mapping later means changing this
+            // line, not the node.
+            f.neutral = CIVector(x: 6500, y: 0)
+            f.targetNeutral = CIVector(x: temp, y: tint)
+            return f.outputImage
+
+        case .vibrance(let amount):
+            let f = CIFilter.vibrance()
+            f.inputImage = input
+            f.amount = Float(amount)
+            return f.outputImage
+        }
+    }
+
+    // MARK: - LUT
+
+    private static func applyLUT(
+        _ settings: LUTSettings,
+        lut: CubeLUT?,
+        to image: CIImage,
+        space: WorkingSpace,
+        cache: LUTFilterCache?
+    ) -> CIImage {
+        guard !settings.isIdentity, let lut else { return image }
+
+        let cubeFilter = cache?.filter(for: lut, space: space) ?? lut.makeFilter(space: space)
+        return lut.apply(to: image, intensity: settings.intensity, using: cubeFilter) ?? image
+    }
+}
