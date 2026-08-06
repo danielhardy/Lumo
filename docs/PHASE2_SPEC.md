@@ -268,7 +268,8 @@ leaf by leaf, delete the old path last.
 | ~~7~~ | ~~Move thumbnails (**both** `ImageCollection` sites); dissolve `ImageProcessor` GPU duties~~ | ✅ **done** — 208 tests; 18 mutations caught, 2 shown equivalent by measurement; `RenderStackTests` asserts the context count |
 | ~~8~~ | ~~Flip strict concurrency on~~ | ✅ **done** — full **Swift 6 language mode** (errors, not warnings) on all three targets; 214 tests; 9 mutations caught, 1 untestable and named |
 | ~~9~~ | ~~Wire derive into the new state: register the derived LUT by ID, keep the scratch-file bookkeeping~~ | ✅ **done** — 230 tests; 19 mutations caught, 1 shown equivalent by inspection; fixed a **shipped** bug where a derived LUT never resolved (see below) |
-| 10 | RAW develop + adjustments inspector, gated per-image on the real `is*Supported` flags | inspector drives live re-render |
+| ~~10a~~ | ~~RAW develop inspector + the per-image capability probe~~ | ✅ **done** — `RAWCapabilities` crosses the actor boundary carrying nine gates and twelve per-image seeds; the probe measures **~25 ms warm** against **~183 ms** for a full develop, so it runs once per open and never per render. 33 mutations, 32 caught on the first run and the one survivor closed with the test it exposed. **The RAW-gated tests `XCTSkip` on CI**, which has no DNG — a green tick there says nothing about them |
+| 10b | Adjustments inspector — fixed slots, one node of each, canonical pipeline order | inspector drives live re-render |
 | 11 | Per-image undo keyed by `Item.id`, plus an `EditDocumentStore` | ⌘Z scoped per image |
 | 12 | *(deferred)* export descriptor, metadata/ICC | — |
 

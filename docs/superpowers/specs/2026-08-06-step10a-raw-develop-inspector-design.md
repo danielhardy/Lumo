@@ -47,8 +47,19 @@ sharpness ✓  contrast ✓  detail ✓  moiré ✓
 localToneMap ✗  lumaNR ✓  colorNR ✓  lensCorrection ✓
 ```
 
-`isLocalToneMapSupported` is **false**. The gate branch is testable locally today. Step 10a covers it
-and corrects the claim in `CODE_REVIEW.md`.
+`isLocalToneMapSupported` is **false**, so the claim's stated reason is wrong and there is a gated
+branch to aim at.
+
+**As built, with the overclaim removed.** Aiming at it on pixels is not enough. Writing
+`localToneMapAmount` against this decoder does render byte-identically to leaving it unset — but so
+does the same test with our gate *deleted from `apply(to:)`*, at a worst pixel delta of exactly 0:
+`CIRAWFilter` silently discards writes to properties its decoder does not implement, so the
+framework's own gate absorbs the write whether ours ran or not. The pixel test therefore pins the
+end-to-end behaviour and nothing about our code, and is named
+`testAValueWrittenToAnUnsupportedAdjustmentChangesNothing` to say so. Our gate is covered instead by
+`RAWDevelopSettingsTests.testEveryGatedAdjustmentIsAppliedOnlyBehindItsOwnSupportedFlag`, which reads
+the source text of `apply(to:)` and checks each of the eight properties is written only behind its own
+flag. `CODE_REVIEW.md` §5 is corrected to say exactly that, and no more.
 
 **2. The probe cannot return only flags.** As-shot white balance on this file is
 `temp = 5842.2, tint = 14.04` — not a round default. Every `RAWDevelopSettings` property is
@@ -84,6 +95,30 @@ struct RAWCapabilities: Sendable, Equatable {
     var shadowBias: Double
 }
 ```
+
+**As built: twelve seeds, not four.** The four above are the ones this design anticipated. Eight more
+shipped with the panel, because `RAWDevelopSettings`' own type doc is explicit that the
+noise-reduction and sharpening defaults **vary per image** too, and the panel was otherwise binding
+those sliders to guessed constants — a hardcoded `0`, and `true` for lens correction. The added
+fields are `sharpnessAmount`, `contrastAmount`, `detailAmount`, `moireReductionAmount`,
+`localToneMapAmount`, `luminanceNoiseReductionAmount`, `colorNoiseReductionAmount` and
+`lensCorrectionEnabled`. Each is read in `RenderEngine.rawCapabilities(for:)` **only behind its own
+`is*Supported` flag** — asking a decoder for a sharpening amount it does not offer answers nothing —
+which is a property with no runtime trace, so
+`RAWCapabilitiesTests.testEveryGatedSeedIsReadBehindItsOwnSupportedFlag` reads source text to keep it.
+
+The finding in one number: the Leica's real `sharpnessAmount` is **0.7349015474319458**. That slider
+was opening at 0 — three quarters of the way from where the picture actually was — so the first touch
+of it jumped the image hard. `colorNoiseReductionAmount` at 0.5 is the same defect, smaller, and
+`lensCorrectionEnabled` is `true` on this file where the old getter said `false`.
+
+**And one seed did not fit the slider it was meant to fill.** `shadowBias` seeds at **5.0**, against a
+range this plan had invented as `-1...1` — that control opened pinned at its maximum on this camera
+and could only be dragged down. It is now `-10...10`: round and symmetric like the other two
+undocumented ranges, with 5.0 well clear of either edge. Recorded as **observational, from a single
+camera**, not as a documented `CIRAWFilter` bound — `DevelopControl.range`'s doc comment says so, and
+`RAWCapabilitiesTests.testEveryPerImageSeedLandsStrictlyInsideItsSliderRange` re-checks every seed
+against its range whenever a real DNG is present, which is the check that would have caught it first.
 
 Probed through a new protocol method, so a test can supply capabilities without a RAW:
 
@@ -156,9 +191,18 @@ exposure is the actual workflow.
 Gating has two levels, and they are different things:
 
 - **Source kind.** `RenderPipeline.developedSource` switches on `source.kind` and ignores
-  `rawDevelop` entirely for a standard image. On a non-RAW the Develop segment is disabled with a
-  one-line explanation. Offering the controls would be offering a lie — the model would accept the
-  value and the renderer would drop it.
+  `rawDevelop` entirely for a standard image. Offering the controls would be offering a lie — the
+  model would accept the value and the renderer would drop it.
+
+  **Changed deliberately during implementation.** This section originally said the Develop segment
+  would be *disabled* on a non-RAW. What shipped is the opposite: the segment stays live, and
+  selecting it shows a full explanation panel — an aperture glyph, "No develop stage", and "Develop
+  controls come from the RAW decoder. This image is already rendered." (`DevelopInspectorView.notRAW`).
+  A disabled segment says *no* without saying *why*, which is the same complaint that got unsupported
+  adjustments hidden rather than greyed out one bullet below; a panel that answers the question is
+  strictly better, and costs a dozen lines. The one case where nothing is offered is **no image at
+  all** — `InfoInspectorView` hides the switcher entirely then, because both tabs describe a picture
+  and there isn't one.
 - **Per-adjustment support.** Within a RAW, an unsupported control is **hidden**, not disabled — a
   greyed-out slider invites the user to wonder what they did wrong, where absence reads correctly as
   "this camera's decoder does not do that". This mirrors exactly what `apply(to:)` already enforces.
@@ -193,6 +237,14 @@ this rides on `FakeRenderEngine` recording requests. Two things need real pixels
 
 The last three are RAW-gated and **skip on CI**, which has no DNG. That will be said in the skip
 messages and the PR body rather than left to look like coverage.
+
+**As built, the names drifted and one row split.** `testOpeningThePanelWritesNothing` is
+`testReadingEveryControlWritesNothing` (the panel is a view, and this repo has no view tests, so the
+assertion drives every binding's getter — the thing that could write). `testUnsupportedAdjustmentsAreNotOffered`
+became three: `availableControls` gating against a synthetic capability value, the real decoder's
+flags through the probe, and — because the pixel half of that row turned out to prove nothing about
+our own gate (§1) — a source-text test over `apply(to:)`. The seed table grew its own tests with the
+eight extra seeds (§2), including a range check that catches a seed opening a slider pinned.
 
 Every regression test is mutation-checked with a harness reporting *caught*, *survived*, *did not
 compile*, *no tests ran* and *skipped* separately — `scripts/mutate-step9.sh` is the template, and

@@ -292,8 +292,26 @@ Worth knowing before leaning on the suite:
   everywhere; alignment and the sample loop are covered locally only. A small synthetic DNG remains
   the only way to close that, and is still not worth the effort of generating one.
 - **No SwiftUI view tests.** Views are exercised only insofar as the view model is.
-- **The `CIRAWFilter` half of `RAWDevelopSettings` only runs where a RAW exists.** Three tests build a
-  real filter from `Fixtures.localRAWURL` — the untracked `realworldtest/` DNG — and `XCTSkip` when
+- **The `CIRAWFilter` half of `RAWDevelopSettings` only runs where a RAW exists.** Several tests build
+  a real filter from `Fixtures.localRAWURL` — the untracked `realworldtest/` DNG — and `XCTSkip` when
   there is none, which includes CI. The value semantics are covered everywhere; the framework wiring
-  is covered only locally. The `is*Supported` gates in `apply(to:)` are not covered at all: that needs
-  a RAW whose decoder *lacks* an adjustment, and the Leica file supports every one of them.
+  is covered only locally.
+
+  This entry used to claim the `is*Supported` gates "are not covered at all: that needs a RAW whose
+  decoder *lacks* an adjustment, and the Leica file supports every one of them." **Measured in Phase 2
+  Step 10a, the second half of that is wrong** — `isLocalToneMapSupported` is `false` on that file, so
+  there was a gated branch to aim at all along.
+
+  What replaced it, stated exactly. The `is*Supported` gates in `apply(to:)` are covered two ways: a
+  real-pixel test on the Leica DNG in `realworldtest/` shows that writing a value for an unsupported
+  adjustment changes nothing end to end (because `CIRAWFilter` itself silently discards the write,
+  independent of our own gate — measured worst pixel delta: 0), and a source-text test
+  (`RAWDevelopSettingsTests.testEveryGatedAdjustmentIsAppliedOnlyBehindItsOwnSupportedFlag`)
+  independently verifies that `apply(to:)` itself writes each of the eight gated properties only
+  behind its own `is*Supported` flag, which is the part the pixel test cannot see.
+
+  Two patterns worth carrying forward. The original claim was plausible, went unchecked for several
+  steps, and cost nothing to disprove once someone printed the flags. And the obvious replacement —
+  "the pixel test covers it now" — would have been the same mistake a second time: removing the gate
+  from `apply(to:)` leaves that test green, because the framework's own discard absorbs the write. A
+  test that passes either way is not coverage, however real its pixels are.
