@@ -28,15 +28,28 @@ final class DevelopInspectorTests: TempDirectoryTestCase {
     // MARK: - Probing
 
     func testCapabilitiesArePublishedAfterOpeningAnImage() async throws {
+        // Not `.everythingSupported`: that value is also `FakeRenderEngine.stubbedCapabilities`'
+        // own field default, so an `AppViewModel` that hardcoded `.everythingSupported` and never
+        // called the engine would pass this test just as happily. This is the "wrote a value that
+        // equals the default" weakness (docs/CODE_REVIEW.md §2) — use a distinctive value, with a
+        // mixed set of flags and non-round seeds, so the test can only pass if the engine's answer
+        // actually made it through.
+        let distinctiveCapabilities = RAWCapabilities(
+            isSharpnessSupported: true,
+            isDetailSupported: true,
+            isLocalToneMapSupported: false,
+            asShotTemperature: 5842.2,
+            asShotTint: 14.04
+        )
         let fake = FakeRenderEngine()
-        await fake.setStubbedCapabilities(.everythingSupported)
+        await fake.setStubbedCapabilities(distinctiveCapabilities)
         let viewModel = AppViewModel(engine: fake)
         XCTAssertNil(viewModel.rawCapabilities, "nothing open yet")
 
         try await openStandardImage(viewModel)
         try await waitUntil("capabilities to arrive") { viewModel.rawCapabilities != nil }
 
-        XCTAssertEqual(viewModel.rawCapabilities, .everythingSupported)
+        XCTAssertEqual(viewModel.rawCapabilities, distinctiveCapabilities)
     }
 
     /// The probe costs ~25 ms. Paying that once per image is fine; paying it per render would put it
@@ -69,6 +82,12 @@ final class DevelopInspectorTests: TempDirectoryTestCase {
         try await openStandardImage(viewModel)
         try await Task.sleep(for: .milliseconds(200))
 
+        // `nil` alone is also `AppViewModel.rawCapabilities`' pre-open default, so on its own this
+        // assertion cannot tell "the engine was consulted and answered nil" apart from "the engine
+        // was never consulted at all." Assert the probe count too, so the test can only pass if the
+        // engine actually ran.
+        let probeCount = await fake.capabilityProbeCount
+        XCTAssertEqual(probeCount, 1, "the engine must still be consulted even with no develop stage")
         XCTAssertNil(viewModel.rawCapabilities)
     }
 }
