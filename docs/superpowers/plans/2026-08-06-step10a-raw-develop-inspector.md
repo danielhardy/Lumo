@@ -1428,6 +1428,9 @@ mutate "RAWCapabilities: offer every control regardless of support" "$RC" \
 mutate "RAWCapabilities: a gated control reports supported" "$RC" \
   's/case \.localToneMap: return isLocalToneMapSupported/case .localToneMap: return true/' \
   "RAWCapabilitiesTests"
+mutate "RAWCapabilities: two gated arms swapped" "$RC" \
+  's/case \.contrast: return isContrastSupported\n        case \.detail: return isDetailSupported/case .contrast: return isDetailSupported\n        case .detail: return isContrastSupported/' \
+  "RAWCapabilitiesTests"
 mutate "RAWCapabilities: an ungated control reports unsupported" "$RC" \
   's/             \.whiteBalance, \.gamutMapping, \.extendedDynamicRange:\n            \/\/ Ungated.*\n            return true/             .whiteBalance, .gamutMapping, .extendedDynamicRange:\n            return false/' \
   "RAWCapabilitiesTests"
