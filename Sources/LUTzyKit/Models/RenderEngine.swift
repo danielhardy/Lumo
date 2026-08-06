@@ -71,6 +71,13 @@ protocol RenderEngining: Sendable {
     /// saving a second derive over the same `.cube` path yields the same `LUTID`, so without this the
     /// cache keeps serving the first cube and the second save silently does nothing on screen.
     func invalidateLUTCache() async
+
+    /// What this source's RAW decoder can do, and where its own defaults sit. `nil` for a non-RAW.
+    ///
+    /// On the protocol because the develop inspector needs it and cannot reach a `CIRAWFilter`:
+    /// the flags live on a non-`Sendable` type confined to the actor (§4.5). Returning a value is
+    /// the only way the panel can be gated on what the decoder actually supports.
+    func rawCapabilities(for source: ImageSource) async -> RAWCapabilities?
 }
 
 /// The one `CIContext`.
@@ -226,6 +233,59 @@ actor RenderEngine: RenderEngining {
             )
         }
         return HistogramData(rgba8: bytes, width: width, height: height, bytesPerRow: bytesPerRow)
+    }
+
+    // MARK: - RAW capabilities
+
+    /// Build a throwaway `CIRAWFilter` and read its flags and its own defaults.
+    ///
+    /// **`outputImage` is deliberately never touched.** That is the difference between ~25 ms and
+    /// ~183 ms on a 30 MB DNG (measured; see the Step 10a design doc), and it is why this can run on
+    /// every image open without being felt. It also leaves the developed-source memo alone — a
+    /// capability question must not evict the image the user is looking at.
+    ///
+    /// **A gated seed is read only when its gate is open.** Every property below the `is*Supported`
+    /// line is a knob this particular decoder may not offer, and what an unoffered property returns is
+    /// not a default the panel should show — it is nothing at all. Where the gate is shut the seed
+    /// stays at `RAWCapabilities`' own default, which no control can reach anyway: `supports(_:)`
+    /// withdraws the control on the same flag.
+    func rawCapabilities(for source: ImageSource) -> RAWCapabilities? {
+        guard case .raw = source.kind else { return nil }
+        guard let filter = RenderPipeline.rawFilter(for: source.backing) else { return nil }
+
+        var highlightRecovery = false
+        if #available(macOS 26, *) {
+            highlightRecovery = filter.isHighlightRecoverySupported
+        }
+
+        return RAWCapabilities(
+            isSharpnessSupported: filter.isSharpnessSupported,
+            isContrastSupported: filter.isContrastSupported,
+            isDetailSupported: filter.isDetailSupported,
+            isMoireReductionSupported: filter.isMoireReductionSupported,
+            isLocalToneMapSupported: filter.isLocalToneMapSupported,
+            isLuminanceNoiseReductionSupported: filter.isLuminanceNoiseReductionSupported,
+            isColorNoiseReductionSupported: filter.isColorNoiseReductionSupported,
+            isLensCorrectionSupported: filter.isLensCorrectionSupported,
+            isHighlightRecoverySupported: highlightRecovery,
+            asShotTemperature: Double(filter.neutralTemperature),
+            asShotTint: Double(filter.neutralTint),
+            baselineExposure: Double(filter.baselineExposure),
+            shadowBias: Double(filter.shadowBias),
+            sharpnessAmount: filter.isSharpnessSupported ? Double(filter.sharpnessAmount) : 0,
+            contrastAmount: filter.isContrastSupported ? Double(filter.contrastAmount) : 0,
+            detailAmount: filter.isDetailSupported ? Double(filter.detailAmount) : 0,
+            moireReductionAmount:
+                filter.isMoireReductionSupported ? Double(filter.moireReductionAmount) : 0,
+            localToneMapAmount:
+                filter.isLocalToneMapSupported ? Double(filter.localToneMapAmount) : 0,
+            luminanceNoiseReductionAmount: filter.isLuminanceNoiseReductionSupported
+                ? Double(filter.luminanceNoiseReductionAmount) : 0,
+            colorNoiseReductionAmount: filter.isColorNoiseReductionSupported
+                ? Double(filter.colorNoiseReductionAmount) : 0,
+            lensCorrectionEnabled:
+                filter.isLensCorrectionSupported ? filter.isLensCorrectionEnabled : false
+        )
     }
 
     // MARK: - Cache

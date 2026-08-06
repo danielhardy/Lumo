@@ -51,6 +51,58 @@ final class RenderPipelineTests: TempDirectoryTestCase {
                           "an empty document must render the source unchanged")
     }
 
+    /// **`rawDevelop` is inert for a standard image**, however loudly it is set.
+    ///
+    /// `developedSource` switches on `source.kind` and hands `rawDevelop` to `CIRAWFilter` on the
+    /// `.raw` arm only; the `.standard` arm decodes and scales and never looks at it. That is the
+    /// premise `DevelopInspectorView`'s "No develop stage — this image is already rendered" rests
+    /// on: if a JPEG's render quietly *did* respond to a develop setting, withholding the controls
+    /// would be hiding a real effect rather than declining to offer a missing one. It is also the
+    /// premise behind keeping `document.rawDevelop` across image opens (§8.4) — a look auditioned on
+    /// a RAW must not smear onto the next JPEG in the folder.
+    ///
+    /// Needs no RAW, which is the point: it is a claim about the *standard* branch, so it runs
+    /// everywhere including CI. Written because the design doc's §6 test table listed a row for it
+    /// that was never built, and nothing else in the suite asserted it.
+    func testDevelopEditsAreInertForAStandardImage() throws {
+        XCTAssertEqual(source.kind, .standard, "precondition: this fixture is a PNG")
+
+        // Every develop knob the panel can reach, at a value far from its decoder default — if any
+        // of it leaked into the standard path, a 2000 K white balance alone would recolour the frame.
+        var loud = RAWDevelopSettings()
+        loud.exposure = 3
+        loud.baselineExposure = -2
+        loud.shadowBias = 8
+        loud.boostAmount = 0
+        loud.boostShadowAmount = 2
+        loud.neutralTemperature = 2000
+        loud.neutralTint = -150
+        loud.sharpnessAmount = 1
+        loud.contrastAmount = 1
+        loud.detailAmount = 3
+        loud.moireReductionAmount = 1
+        loud.localToneMapAmount = 1
+        loud.luminanceNoiseReductionAmount = 1
+        loud.colorNoiseReductionAmount = 1
+        loud.lensCorrectionEnabled = true
+        loud.gamutMappingEnabled = false
+        loud.extendedDynamicRangeAmount = 2
+        loud.highlightRecoveryEnabled = false
+        XCTAssertFalse(loud.isNeutral, "precondition: this would change a RAW")
+
+        // Interleaved rather than sequential: Core Image is not bit-reproducible across
+        // time-separated runs (see `Pixels.bytes`).
+        let neutral = try build(EditDocument())
+        let developed = try build(EditDocument(rawDevelop: loud))
+
+        XCTAssertEqual(developed.extent, neutral.extent, "develop must not resize a standard image")
+        assertPixelsEqual(
+            try Pixels.bytes(of: developed), try Pixels.bytes(of: neutral),
+            "rawDevelop reached a standard image's render — the develop panel is withheld for these "
+            + "files on the grounds that there is nothing for it to drive"
+        )
+    }
+
     /// The identity has to survive the stages *running* rather than only being skipped: a document
     /// whose nodes are all at their defaults, and a LUT that is the identity cube, must still come out
     /// pixel-for-pixel the same.

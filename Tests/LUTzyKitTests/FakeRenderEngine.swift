@@ -3,6 +3,44 @@ import CoreImage
 import CoreGraphics
 @testable import LUTzyKit
 
+extension RAWCapabilities {
+
+    /// Every gate open, and **every seed a different value that is not the field default**.
+    ///
+    /// `.everyGateOpen` cannot serve as the stub for seed tests: it leaves all twelve seeds at
+    /// 0/false, which is exactly what a getter falling back to a hardcoded constant returns, so
+    /// "the seed was read" and "a constant was guessed" are literally the same number. Every value
+    /// here is distinct from every other, so a getter wired to the *wrong* seed field also fails
+    /// rather than coincidentally matching its neighbour.
+    ///
+    /// `lensCorrectionEnabled` is deliberately `false` while every other flag is on: the getter it
+    /// replaced returned a hardcoded `true`, so `false` is the only value that can catch a
+    /// regression to it. Likewise the numbers below avoid 0 and 1.
+    static let distinctivelySeeded = RAWCapabilities(
+        isSharpnessSupported: true,
+        isContrastSupported: true,
+        isDetailSupported: true,
+        isMoireReductionSupported: true,
+        isLocalToneMapSupported: true,
+        isLuminanceNoiseReductionSupported: true,
+        isColorNoiseReductionSupported: true,
+        isLensCorrectionSupported: true,
+        isHighlightRecoverySupported: true,
+        asShotTemperature: 5842.2,
+        asShotTint: 14.04,
+        baselineExposure: 0.37,
+        shadowBias: -0.21,
+        sharpnessAmount: 0.11,
+        contrastAmount: 0.22,
+        detailAmount: 1.33,
+        moireReductionAmount: 0.44,
+        localToneMapAmount: 0.55,
+        luminanceNoiseReductionAmount: 0.66,
+        colorNoiseReductionAmount: 0.77,
+        lensCorrectionEnabled: false
+    )
+}
+
 /// A `RenderEngining` that never touches the GPU.
 ///
 /// This is the deliverable of Step 4 that is easy to overlook: once the view model renders through
@@ -99,6 +137,52 @@ actor FakeRenderEngine: RenderEngining {
     private(set) var invalidateCount = 0
 
     func invalidateLUTCache() { invalidateCount += 1 }
+
+    /// How many times the app asked for capabilities. The probe costs ~25 ms, so "once per image
+    /// open" is a requirement, not a detail — a count is the only way to see it.
+    private(set) var capabilityProbeCount = 0
+
+    /// What the fake reports. `nil` models a standard image.
+    ///
+    /// Distinctively seeded rather than `.everyGateOpen`: that value leaves every seed at its
+    /// field default, so a getter reading a seed and a getter returning a hardcoded constant produce
+    /// the same number and no test can tell them apart. See `RAWCapabilities.distinctivelySeeded`.
+    var stubbedCapabilities: RAWCapabilities? = .distinctivelySeeded
+
+    /// Whether an incoming probe should park until `releaseProbe()` is called.
+    ///
+    /// **The in-flight state is a real state, and a state you cannot hold still is a state you
+    /// cannot assert.** `AppViewModel.developPanelState` is `.probing` between "the image opened"
+    /// and "the probe answered" — 25–170 ms in the app, and effectively zero against this fake, so a
+    /// test racing it would be a flake either way it landed. Gating the probe makes that window last
+    /// as long as the test needs.
+    private var probeIsGated = false
+    private var parkedProbe: CheckedContinuation<Void, Never>?
+
+    func gateProbe() { probeIsGated = true }
+
+    /// Let a parked probe finish, and stop parking new ones.
+    ///
+    /// Ordering note for callers: wait until `capabilityProbeCount` has moved before releasing. The
+    /// count is incremented and the continuation stored in the same actor-synchronous run as the
+    /// suspension, so an *external* read of the count that returns 1 can only have been serviced
+    /// after this actor reached that suspension point — the continuation is therefore already
+    /// stored, and `releaseProbe()` cannot no-op past a probe that has not parked yet.
+    func releaseProbe() {
+        probeIsGated = false
+        parkedProbe?.resume()
+        parkedProbe = nil
+    }
+
+    func rawCapabilities(for source: ImageSource) async -> RAWCapabilities? {
+        capabilityProbeCount += 1
+        if probeIsGated {
+            await withCheckedContinuation { parkedProbe = $0 }
+        }
+        return stubbedCapabilities
+    }
+
+    func setStubbedCapabilities(_ value: RAWCapabilities?) { stubbedCapabilities = value }
 
     func setShouldFailEncode(_ value: Bool) { shouldFailEncode = value }
 

@@ -2,6 +2,7 @@ import Foundation
 import CoreImage
 import AppKit
 import Combine
+import SwiftUI
 import UniformTypeIdentifiers
 
 /// Central state for the LUTzy app.
@@ -20,11 +21,98 @@ final class AppViewModel: ObservableObject {
     ///
     /// Kept across image opens rather than reset, per §8.4 — auditioning one look across a folder is
     /// the common case, and that is what the app already did.
+    ///
+    /// That reasoning covers the LUT and its intensity; it does not cover `rawDevelop`, whose fields
+    /// are per-file decoder defaults, not a portable look. Step 10a is the first thing that writes to
+    /// `rawDevelop`, and carrying it forward means a value set on one RAW silently overrides the next
+    /// RAW's own probed as-shot seed. Known, and deliberately deferred to Step 11 — see §8.4 for the
+    /// worked example and why that step is the right place to settle it.
     @Published private(set) var document = EditDocument()
 
     /// How to reproduce the open image. Held instead of a decoded `CIImage` because a RAW has to be
     /// re-developed to honour `document.rawDevelop` (§4.2).
     private var imageSource: ImageSource?
+
+    /// What the open image's RAW decoder can do, and where its own defaults sit. `nil` for a
+    /// standard image, which has no develop stage at all — **and also `nil` while the probe is still
+    /// running on a RAW**, which is why the panel switches on `developPanelState` rather than on
+    /// this. See that property.
+    ///
+    /// Probed once per open rather than per render: the probe builds a `CIRAWFilter`, which measures
+    /// ~25 ms on a 30 MB DNG. Not memoized across images — one entry would save that on returning to
+    /// an image, at the cost of another cache whose invalidation nobody will remember.
+    @Published private(set) var rawCapabilities: RAWCapabilities?
+
+    /// What the develop panel should be showing right now. **Three states, not two.**
+    ///
+    /// `rawCapabilities` is `nil` in two situations that mean opposite things, and the panel used to
+    /// treat them as one. `refreshCapabilities()` clears it **synchronously** on every open and
+    /// refills it 25–170 ms later, so a RAW opened with the Develop tab already showing spent the
+    /// whole probe reading "No develop stage — Develop controls come from the RAW decoder. This image
+    /// is already rendered." That is a false statement about the file, and because `inspectorTab` is
+    /// not reset on open it was shown again on every ←/→ step through a folder of RAWs.
+    ///
+    /// Deriving the state here rather than in the view is what makes it testable: this repo has no
+    /// SwiftUI view tests, so a distinction that lives only in a `ViewBuilder` cannot be asserted.
+    /// `DevelopInspectorView` is a `switch` over this value and nothing else.
+    ///
+    /// This — rather than a widened `imageSource` — is the whole of what the panel needs from the
+    /// source: not the backing bytes, not the native extent, only whether a develop stage exists at
+    /// all. See `sourceIsRAW` for the widening that does happen, and why it is a `Bool`.
+    var developPanelState: DevelopPanelState {
+        DevelopPanelState(sourceIsRAW: sourceIsRAW, capabilities: rawCapabilities)
+    }
+
+    /// Whether the open image goes through the RAW decoder at all.
+    ///
+    /// **Widened from `private` deliberately, and narrowly.** `imageSource` itself stays `private`:
+    /// the develop panel has no business with the backing bytes or the native extent, and the one
+    /// fact it needs — is there a decode stage that could offer develop controls — is a `Bool`.
+    /// Publishing the `Bool` instead of the struct keeps the reason for the widening legible and
+    /// stops anything else reaching through it. It is also the input the state mapping is tested
+    /// against directly.
+    ///
+    /// Not `@Published`: it only ever changes inside `load()`, which writes several `@Published`
+    /// properties in the same main-actor turn (`sourceImage` among them), so any view observing this
+    /// view model is already being invalidated when it moves.
+    var sourceIsRAW: Bool { imageSource?.kind == .raw }
+
+    /// The three states of the develop panel. See `AppViewModel.developPanelState`.
+    enum DevelopPanelState: Equatable, Sendable {
+        /// Not a RAW (or nothing open): there is no develop stage to offer, and saying so is honest.
+        case noDevelopStage
+        /// A RAW whose capability probe has not landed yet. The controls are coming, so the panel
+        /// must not claim there are none.
+        case probing
+        /// A RAW, probed. The panel draws `capabilities.availableControls`.
+        case ready(RAWCapabilities)
+
+        /// **The mapping, in one place, as a pure function of two inputs.** Written as an
+        /// initializer rather than inlined into the computed property so the whole table — two
+        /// inputs, three outcomes — can be asserted on any machine, including CI, which has no RAW
+        /// to open (`DevelopInspectorTests.testThePanelStateMappingCoversAllThreeStates`).
+        init(sourceIsRAW: Bool, capabilities: RAWCapabilities?) {
+            if let capabilities {
+                self = .ready(capabilities)
+            } else {
+                self = sourceIsRAW ? .probing : .noDevelopStage
+            }
+        }
+    }
+
+    private var capabilitiesTask: Task<Void, Never>?
+    private var developTask: Task<Void, Never>?
+
+    /// Whether any call since the last fired render changed `rawDevelop`.
+    ///
+    /// A coalesced burst of `updateDocument(debounced:)` calls shares one `developTask` — only the
+    /// last call in the burst survives to fire. If that flag were captured per call (as it was
+    /// before this existed), an earlier call in the burst that touched `rawDevelop` would have its
+    /// `developChanged == true` thrown away the moment a later call in the same burst cancelled its
+    /// task, even though the comparison baseline genuinely needs to move. Accumulating the flag here
+    /// instead — OR'd in by every call, read and cleared by whichever call actually fires the render —
+    /// means the baseline re-renders if *any* call in the burst touched develop, not just the last.
+    private var pendingDevelopChange = false
 
     /// LUTs a document can reference that no folder scan produces — a freshly derived LUT, and the
     /// file it becomes once saved. See `DerivedLUTRegistry`; this is the Step 9 replacement for the
@@ -44,10 +132,31 @@ final class AppViewModel: ObservableObject {
     @Published var isShowingOriginal: Bool = false
     @Published var isSideBySide: Bool = true
 
-    /// Info inspector (EXIF + histogram) visibility. Computing the histogram is
-    /// gated on this so we don't tally pixels for a panel nobody's looking at.
+    /// Inspector visibility. Computing the histogram is gated on this — plus on the Info tab being
+    /// the one on screen — so we don't tally pixels for a panel nobody's looking at.
     @Published var isInspectorPresented: Bool = false {
         didSet { if isInspectorPresented { updateHistogram() } }
+    }
+
+    /// Which half of the inspector is showing.
+    ///
+    /// The histogram lives on `.info` only, so this gates it exactly as `isInspectorPresented` does:
+    /// an open inspector showing Develop is as much "a panel nobody's looking at" as a closed one,
+    /// and without this every settled render of a develop drag would tally an off-screen histogram.
+    /// Switching **back** recomputes, or the panel would return blank (or stale) after a detour
+    /// through Develop.
+    @Published var inspectorTab: InspectorTab = .info {
+        didSet { if inspectorTab == .info { updateHistogram() } }
+    }
+
+    enum InspectorTab: String, CaseIterable, Sendable {
+        case info, develop
+        var title: String {
+            switch self {
+            case .info: return "Info"
+            case .develop: return "Develop"
+            }
+        }
     }
     /// Source-folder file browser panel visibility.
     @Published var isSourceBrowserPresented: Bool = false
@@ -220,6 +329,12 @@ final class AppViewModel: ObservableObject {
         previewTask?.cancel()
         originalPreviewTask?.cancel()
         intensityTask?.cancel()
+        capabilitiesTask?.cancel()
+        developTask?.cancel()
+        // A pending develop flag describes the image being left; it must not survive onto whatever
+        // opens next, or an unrelated first edit on the new image would render a comparison baseline
+        // for develop settings that were never actually touched on it.
+        pendingDevelopChange = false
 
         isLoading = true
         statusMessage = "Loading \(name)..."
@@ -266,6 +381,7 @@ final class AppViewModel: ObservableObject {
                 self.scheduleOriginalPreview()
                 self.schedulePreview()
                 self.refreshMetadata(url: url, data: data)
+                self.refreshCapabilities()
             }
         }
     }
@@ -379,16 +495,195 @@ final class AppViewModel: ObservableObject {
     /// it is what the inspector will call. Keeping `document` `private(set)` behind it means every
     /// mutation goes through one place that knows to re-render.
     func updateDocument(_ transform: (inout EditDocument) -> Void) {
+        updateDocument(debounced: false, transform)
+    }
+
+    /// Mutate the document and re-render, optionally coalescing a burst of edits into one render.
+    ///
+    /// **`debounced: true` is for continuous controls only** — a slider drag, where the user
+    /// produces tens of values per second and only the one they settle on matters. `PHASE2_SPEC.md`
+    /// §6 is explicit that open and filmstrip navigation must stay immediate, and discrete controls
+    /// (toggles, resets) should too: a checkbox that lagged 60 ms would feel broken.
+    ///
+    /// The document itself is updated **immediately** either way. Only the render is deferred, so
+    /// the control stays glued to the pointer and `document` is always the truth. Deferring the
+    /// document as well would mean a read-back mid-drag saw a stale value.
+    ///
+    /// Worth the machinery because a develop change costs *two* renders — `scheduleOriginalPreview`
+    /// as well as `schedulePreview`, since the comparison baseline moves with develop.
+    func updateDocument(debounced: Bool, _ transform: (inout EditDocument) -> Void) {
         var updated = document
         transform(&updated)
         guard updated != document else { return }
 
         let developChanged = updated.rawDevelop != document.rawDevelop
         document = updated
-        // The comparison baseline only moves when develop does — re-rasterizing it on every
-        // adjustment would be work nobody can see.
-        if developChanged { scheduleOriginalPreview() }
-        schedulePreview()
+        // OR'd in rather than assigned: a call earlier in a coalesced burst may have changed
+        // `rawDevelop` even though *this* call didn't, and only the last call's task survives to
+        // fire (see `pendingDevelopChange`'s doc comment).
+        pendingDevelopChange = pendingDevelopChange || developChanged
+
+        developTask?.cancel()
+
+        guard debounced else {
+            let shouldRenderBaseline = pendingDevelopChange
+            pendingDevelopChange = false
+            if shouldRenderBaseline { scheduleOriginalPreview() }
+            schedulePreview()
+            return
+        }
+
+        developTask = Task {
+            try? await Task.sleep(for: .milliseconds(Self.intensityDebounceMs))
+            guard !Task.isCancelled else { return }
+            if self.pendingDevelopChange {
+                self.pendingDevelopChange = false
+                self.scheduleOriginalPreview()
+            }
+            self.schedulePreview()
+        }
+    }
+
+    // MARK: - RAW develop
+
+    /// A two-way binding for one develop control.
+    ///
+    /// **Reading never writes.** Every `RAWDevelopSettings` property is `Optional`, with `nil`
+    /// meaning "leave `CIRAWFilter` at its decoder default", and `.neutral` is byte-identical to
+    /// `ImageDecoder.developRAWNeutral` precisely *because it sets nothing*. So the getter falls back
+    /// to the decoder's own value — a fixed default where there is one, otherwise the per-image seed
+    /// from `rawCapabilities` — and only the setter stores anything. Seeding every field when the
+    /// panel opened would silently make every document non-neutral.
+    ///
+    /// **Writes for a toggle control are immediate, not debounced.** `updateDocument(debounced:)`'s
+    /// own doc comment is explicit that debouncing is for continuous controls only — "a checkbox that
+    /// lagged 60 ms would feel broken" — and this binding backs both sliders and the three Bool
+    /// controls (`lensCorrection`, `gamutMapping`, `highlightRecovery`), routed through `Toggle` in
+    /// the view. Only sliders get the 60 ms coalescing.
+    func developBinding(for control: DevelopControl) -> Binding<Double> {
+        Binding(
+            get: { self.developValue(for: control) },
+            set: { newValue in
+                self.updateDocument(debounced: !control.isToggle) { document in
+                    Self.setDevelop(control, to: newValue, in: &document.rawDevelop)
+                }
+            }
+        )
+    }
+
+    /// What a control should display: the stored setting, else the decoder's own starting point.
+    ///
+    /// **A literal appears here only where `CIRAWFilter` documents a fixed default** — `exposure` 0,
+    /// `boost`/`boostShadow` 1, `extendedDynamicRange` 0, `gamutMapping`/`highlightRecovery` true.
+    /// Everything else reads a per-image seed off `rawCapabilities`, because everything else *has* no
+    /// fixed default: `RAWDevelopSettings`' type doc says outright that the baseline exposure, shadow
+    /// bias, noise-reduction and sharpening defaults vary per image, and as-shot white balance on the
+    /// Leica in `realworldtest/` is 5842.2 K, not a round number. Guessing 0 for those would open the
+    /// slider away from where the picture actually is, and the first nudge would jump it — the exact
+    /// defect the white-balance seed was added to prevent.
+    ///
+    /// The trailing `?? 0` after each seed is only the no-image / not-a-RAW case: `rawCapabilities`
+    /// is `nil` until the probe lands, and while it is nil the panel is showing
+    /// `DevelopPanelState.probing` or `.noDevelopStage`, neither of which draws a control.
+    ///
+    /// **That `0` is uniform, including white balance.** It used to be `?? 6500` for
+    /// `neutralTemperature` alone — D65, a plausible-looking Kelvin — which made the sentence above
+    /// untrue for exactly one line and, worse, made the unreachable branch return a number that
+    /// *looks* like a real answer. Nothing distinguishes a seed that failed to arrive from a decoder
+    /// that genuinely reports 6500 K. Every seeded control now falls back the same way, so the
+    /// fallback is legible as "no answer" wherever it surfaces.
+    func developValue(for control: DevelopControl) -> Double {
+        let develop = document.rawDevelop
+        let seed = rawCapabilities
+        switch control {
+        case .exposure: return develop.exposure ?? 0
+        case .baselineExposure: return develop.baselineExposure ?? seed?.baselineExposure ?? 0
+        case .shadowBias: return develop.shadowBias ?? seed?.shadowBias ?? 0
+        case .boost: return develop.boostAmount ?? 1
+        case .boostShadow: return develop.boostShadowAmount ?? 1
+        case .whiteBalance: return develop.neutralTemperature ?? seed?.asShotTemperature ?? 0
+        case .sharpness: return develop.sharpnessAmount ?? seed?.sharpnessAmount ?? 0
+        case .contrast: return develop.contrastAmount ?? seed?.contrastAmount ?? 0
+        case .detail: return develop.detailAmount ?? seed?.detailAmount ?? 0
+        case .moireReduction:
+            return develop.moireReductionAmount ?? seed?.moireReductionAmount ?? 0
+        case .localToneMap: return develop.localToneMapAmount ?? seed?.localToneMapAmount ?? 0
+        case .luminanceNoiseReduction:
+            return develop.luminanceNoiseReductionAmount ?? seed?.luminanceNoiseReductionAmount ?? 0
+        case .colorNoiseReduction:
+            return develop.colorNoiseReductionAmount ?? seed?.colorNoiseReductionAmount ?? 0
+        case .lensCorrection:
+            return (develop.lensCorrectionEnabled ?? seed?.lensCorrectionEnabled ?? false) ? 1 : 0
+        case .gamutMapping: return (develop.gamutMappingEnabled ?? true) ? 1 : 0
+        case .extendedDynamicRange: return develop.extendedDynamicRangeAmount ?? 0
+        case .highlightRecovery: return (develop.highlightRecoveryEnabled ?? true) ? 1 : 0
+        }
+    }
+
+    /// The tint half of white balance. Separate because `whiteBalance` is one row with two sliders.
+    func developTintBinding() -> Binding<Double> {
+        Binding(
+            get: { self.document.rawDevelop.neutralTint ?? self.rawCapabilities?.asShotTint ?? 0 },
+            set: { newValue in
+                self.updateDocument(debounced: true) { $0.rawDevelop.neutralTint = newValue }
+            }
+        )
+    }
+
+    private static func setDevelop(
+        _ control: DevelopControl, to value: Double, in develop: inout RAWDevelopSettings
+    ) {
+        switch control {
+        case .exposure: develop.exposure = value
+        case .baselineExposure: develop.baselineExposure = value
+        case .shadowBias: develop.shadowBias = value
+        case .boost: develop.boostAmount = value
+        case .boostShadow: develop.boostShadowAmount = value
+        case .whiteBalance: develop.neutralTemperature = value
+        case .sharpness: develop.sharpnessAmount = value
+        case .contrast: develop.contrastAmount = value
+        case .detail: develop.detailAmount = value
+        case .moireReduction: develop.moireReductionAmount = value
+        case .localToneMap: develop.localToneMapAmount = value
+        case .luminanceNoiseReduction: develop.luminanceNoiseReductionAmount = value
+        case .colorNoiseReduction: develop.colorNoiseReductionAmount = value
+        case .lensCorrection: develop.lensCorrectionEnabled = value != 0
+        case .gamutMapping: develop.gamutMappingEnabled = value != 0
+        case .extendedDynamicRange: develop.extendedDynamicRangeAmount = value
+        case .highlightRecovery: develop.highlightRecoveryEnabled = value != 0
+        }
+    }
+
+    /// Return one control to "decoder default" — `nil`, not zero.
+    func resetDevelop(_ control: DevelopControl) {
+        updateDocument { document in
+            switch control {
+            case .exposure: document.rawDevelop.exposure = nil
+            case .baselineExposure: document.rawDevelop.baselineExposure = nil
+            case .shadowBias: document.rawDevelop.shadowBias = nil
+            case .boost: document.rawDevelop.boostAmount = nil
+            case .boostShadow: document.rawDevelop.boostShadowAmount = nil
+            case .whiteBalance:
+                document.rawDevelop.neutralTemperature = nil
+                document.rawDevelop.neutralTint = nil
+            case .sharpness: document.rawDevelop.sharpnessAmount = nil
+            case .contrast: document.rawDevelop.contrastAmount = nil
+            case .detail: document.rawDevelop.detailAmount = nil
+            case .moireReduction: document.rawDevelop.moireReductionAmount = nil
+            case .localToneMap: document.rawDevelop.localToneMapAmount = nil
+            case .luminanceNoiseReduction: document.rawDevelop.luminanceNoiseReductionAmount = nil
+            case .colorNoiseReduction: document.rawDevelop.colorNoiseReductionAmount = nil
+            case .lensCorrection: document.rawDevelop.lensCorrectionEnabled = nil
+            case .gamutMapping: document.rawDevelop.gamutMappingEnabled = nil
+            case .extendedDynamicRange: document.rawDevelop.extendedDynamicRangeAmount = nil
+            case .highlightRecovery: document.rawDevelop.highlightRecoveryEnabled = nil
+            }
+        }
+    }
+
+    /// Return every develop control to the decoder's defaults.
+    func resetAllDevelop() {
+        updateDocument { $0.rawDevelop = .neutral }
     }
 
     /// Resolve a document's LUT reference: the registry first, then the library. A miss returns
@@ -547,8 +842,8 @@ final class AppViewModel: ObservableObject {
         isInspectorPresented.toggle()
     }
 
-    /// Recompute the histogram for the currently displayed image. No-op while the inspector is
-    /// closed. Cancellable, so dragging the intensity slider stays smooth.
+    /// Recompute the histogram for the currently displayed image. No-op unless the Info tab of an
+    /// open inspector is on screen. Cancellable, so dragging the intensity slider stays smooth.
     ///
     /// **Step 6 cut this over with export.** It used to tally `processedImage` — a full-resolution
     /// neutral decode with only the LUT on it — while the screen showed develop and adjustments as
@@ -560,7 +855,9 @@ final class AppViewModel: ObservableObject {
     /// `RenderEngine.histogram`, which shares the developed-source memo with the on-screen render
     /// instead of evicting it every tally.
     private func updateHistogram() {
-        guard isInspectorPresented else { return }
+        // Both halves of the gate: an inspector parked on Develop shows no histogram, so tallying
+        // one on every settled render of a slider drag is pure waste.
+        guard isInspectorPresented, inspectorTab == .info else { return }
         guard let imageSource else {
             histogram = nil
             return
@@ -591,6 +888,22 @@ final class AppViewModel: ObservableObject {
                 meta = ImageMetadata()
             }
             await MainActor.run { self.metadata = meta }
+        }
+    }
+
+    /// Ask the engine what this image's decoder supports.
+    ///
+    /// Runs alongside the preview render rather than in front of it: the panel can appear a frame
+    /// late, but first pixels should not wait on a capability question.
+    private func refreshCapabilities() {
+        capabilitiesTask?.cancel()
+        rawCapabilities = nil
+
+        guard let imageSource else { return }
+        capabilitiesTask = Task { [engine] in
+            let capabilities = await engine.rawCapabilities(for: imageSource)
+            guard !Task.isCancelled else { return }
+            self.rawCapabilities = capabilities
         }
     }
 
