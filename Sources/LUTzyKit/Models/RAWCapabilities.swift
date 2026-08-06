@@ -45,6 +45,72 @@ enum DevelopControl: String, Sendable, CaseIterable {
         case .highlightRecovery: return "Highlight Recovery"
         }
     }
+
+    /// True when this control is a toggle rather than a slider.
+    ///
+    /// **No `default:` arm, deliberately.** This used to live on `AppViewModel` and end in
+    /// `default: return false`, so an eighteenth `DevelopControl` would silently have become a
+    /// slider — and a `Bool` knob driven by a slider writes 0.37 into a checkbox. Enumerated in full,
+    /// adding a case is a compile error that names the file to edit.
+    var isToggle: Bool {
+        switch self {
+        case .lensCorrection, .gamutMapping, .highlightRecovery:
+            return true
+        case .exposure, .baselineExposure, .shadowBias, .boost, .boostShadow, .whiteBalance,
+             .sharpness, .contrast, .detail, .moireReduction, .localToneMap,
+             .luminanceNoiseReduction, .colorNoiseReduction, .extendedDynamicRange:
+            return false
+        }
+    }
+
+    /// The slider range for a control.
+    ///
+    /// Lives beside `RAWDevelopSettings` rather than on the view model because it is a pure function
+    /// of the case, and because keeping the literals one file away from the doc comments they must
+    /// match is what lets `RAWCapabilitiesTests` check the two against each other.
+    ///
+    /// **Which of these are documented, and which are ours.** Documented — by `CIRAWFilter`, recorded
+    /// in `RAWDevelopSettings`' per-property comments and `PHASE2_SPEC.md` §9: `boost` 0…1,
+    /// `boostShadow` 0…2, `whiteBalance` 2000…50000 K, tint −150…150, `detail` 0…3,
+    /// `extendedDynamicRange` 0…2, and the 0…1 detail amounts (sharpness, contrast, moiré, local tone
+    /// map, both noise reductions). **Chosen by us**, with no documented bound anywhere in the repo or
+    /// the header: `exposure` and `baselineExposure` at −4…4, and `shadowBias` at −1…1. Those three
+    /// are UI conveniences — a usable throw for a slider — not framework limits, and `CIRAWFilter`
+    /// will accept values outside them. Widen them freely; the other rows are not ours to move.
+    ///
+    /// **`shadowBias` −1…1 is known to be too narrow.** The Leica in `realworldtest/` seeds it at
+    /// **5.0** — measured, see `RAWCapabilitiesTests.testProbingARealRAWReportsItsDecodersSeeds` —
+    /// so that slider opens pinned at its maximum on at least one real camera. Left as-is here
+    /// because this commit's brief was to stop *claiming* these bounds are documented, not to invent
+    /// better ones; picking a real range wants more than one file to look at. The test pins the
+    /// discrepancy so it stays visible rather than becoming folklore.
+    ///
+    /// **`boost` and `boostShadow` are not the same range**, despite the plan's draft grouping them:
+    /// `boostAmount`'s own doc comment (`RAWDevelopSettings.swift`) is explicit — "Global tone curve,
+    /// 0…1" — while `boostShadowAmount` is "0…2 (<1 darkens, >1 lightens)". Sharing one case would
+    /// let the boost slider reach 2.0, a value outside what `CIRAWFilter` documents for that knob.
+    ///
+    /// No `default:` arm here either, for the reason given on `isToggle`: the old one handed every
+    /// unlisted case a 0…1 slider, which is exactly how a mis-grouped `boostShadow` would have gone
+    /// unnoticed.
+    var range: ClosedRange<Double> {
+        switch self {
+        case .exposure, .baselineExposure: return -4...4
+        case .shadowBias: return -1...1
+        case .boost: return 0...1
+        case .boostShadow: return 0...2
+        case .whiteBalance: return 2000...50000
+        case .detail: return 0...3
+        case .extendedDynamicRange: return 0...2
+        case .sharpness, .contrast, .moireReduction, .localToneMap,
+             .luminanceNoiseReduction, .colorNoiseReduction: return 0...1
+        case .lensCorrection, .gamutMapping, .highlightRecovery: return 0...1
+        }
+    }
+
+    /// The tint slider's range. One row, two sliders — see `AppViewModel.developTintBinding()`.
+    /// Documented by `CIRAWFilter` as −150…150.
+    static let tintRange: ClosedRange<Double> = -150...150
 }
 
 /// What one particular RAW file's decoder can do, and where its own defaults sit.
@@ -81,6 +147,24 @@ struct RAWCapabilities: Sendable, Equatable {
     var baselineExposure: Double
     var shadowBias: Double
 
+    /// The eight below are the *gated* seeds: each is only meaningful when its `is*Supported`
+    /// neighbour is true, and `RenderEngine.rawCapabilities(for:)` reads each one only then. Asking a
+    /// decoder for a sharpening amount it does not offer answers nothing, so the value stays at the
+    /// default below rather than recording whatever the unsupported property happens to return.
+    ///
+    /// They exist for the same reason `baselineExposure` does. `RAWDevelopSettings`' own type doc is
+    /// explicit that the noise-reduction and sharpening defaults **vary per image**, so a slider bound
+    /// to one of these while its setting is `nil` has nothing to display without a seed — and a
+    /// guessed `0` means the control opens in the wrong place and the first nudge jumps the picture.
+    var sharpnessAmount: Double
+    var contrastAmount: Double
+    var detailAmount: Double
+    var moireReductionAmount: Double
+    var localToneMapAmount: Double
+    var luminanceNoiseReductionAmount: Double
+    var colorNoiseReductionAmount: Double
+    var lensCorrectionEnabled: Bool
+
     init(
         isSharpnessSupported: Bool = false,
         isContrastSupported: Bool = false,
@@ -94,7 +178,15 @@ struct RAWCapabilities: Sendable, Equatable {
         asShotTemperature: Double = 0,
         asShotTint: Double = 0,
         baselineExposure: Double = 0,
-        shadowBias: Double = 0
+        shadowBias: Double = 0,
+        sharpnessAmount: Double = 0,
+        contrastAmount: Double = 0,
+        detailAmount: Double = 0,
+        moireReductionAmount: Double = 0,
+        localToneMapAmount: Double = 0,
+        luminanceNoiseReductionAmount: Double = 0,
+        colorNoiseReductionAmount: Double = 0,
+        lensCorrectionEnabled: Bool = false
     ) {
         self.isSharpnessSupported = isSharpnessSupported
         self.isContrastSupported = isContrastSupported
@@ -109,6 +201,14 @@ struct RAWCapabilities: Sendable, Equatable {
         self.asShotTint = asShotTint
         self.baselineExposure = baselineExposure
         self.shadowBias = shadowBias
+        self.sharpnessAmount = sharpnessAmount
+        self.contrastAmount = contrastAmount
+        self.detailAmount = detailAmount
+        self.moireReductionAmount = moireReductionAmount
+        self.localToneMapAmount = localToneMapAmount
+        self.luminanceNoiseReductionAmount = luminanceNoiseReductionAmount
+        self.colorNoiseReductionAmount = colorNoiseReductionAmount
+        self.lensCorrectionEnabled = lensCorrectionEnabled
     }
 
     /// A decoder that refuses nothing. For tests, and for reasoning about the upper bound.

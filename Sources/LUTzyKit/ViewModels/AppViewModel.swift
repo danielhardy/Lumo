@@ -490,7 +490,7 @@ final class AppViewModel: ObservableObject {
         Binding(
             get: { self.developValue(for: control) },
             set: { newValue in
-                self.updateDocument(debounced: !Self.isToggle(control)) { document in
+                self.updateDocument(debounced: !control.isToggle) { document in
                     Self.setDevelop(control, to: newValue, in: &document.rawDevelop)
                 }
             }
@@ -498,6 +498,18 @@ final class AppViewModel: ObservableObject {
     }
 
     /// What a control should display: the stored setting, else the decoder's own starting point.
+    ///
+    /// **A literal appears here only where `CIRAWFilter` documents a fixed default** — `exposure` 0,
+    /// `boost`/`boostShadow` 1, `extendedDynamicRange` 0, `gamutMapping`/`highlightRecovery` true.
+    /// Everything else reads a per-image seed off `rawCapabilities`, because everything else *has* no
+    /// fixed default: `RAWDevelopSettings`' type doc says outright that the baseline exposure, shadow
+    /// bias, noise-reduction and sharpening defaults vary per image, and as-shot white balance on the
+    /// Leica in `realworldtest/` is 5842.2 K, not a round number. Guessing 0 for those would open the
+    /// slider away from where the picture actually is, and the first nudge would jump it — the exact
+    /// defect the white-balance seed was added to prevent.
+    ///
+    /// The trailing `?? 0` after each seed is only the no-image / not-a-RAW case: `rawCapabilities` is
+    /// `nil` until the probe lands, and when it is nil there is no panel to display either.
     func developValue(for control: DevelopControl) -> Double {
         let develop = document.rawDevelop
         let seed = rawCapabilities
@@ -508,14 +520,18 @@ final class AppViewModel: ObservableObject {
         case .boost: return develop.boostAmount ?? 1
         case .boostShadow: return develop.boostShadowAmount ?? 1
         case .whiteBalance: return develop.neutralTemperature ?? seed?.asShotTemperature ?? 6500
-        case .sharpness: return develop.sharpnessAmount ?? 0
-        case .contrast: return develop.contrastAmount ?? 0
-        case .detail: return develop.detailAmount ?? 0
-        case .moireReduction: return develop.moireReductionAmount ?? 0
-        case .localToneMap: return develop.localToneMapAmount ?? 0
-        case .luminanceNoiseReduction: return develop.luminanceNoiseReductionAmount ?? 0
-        case .colorNoiseReduction: return develop.colorNoiseReductionAmount ?? 0
-        case .lensCorrection: return (develop.lensCorrectionEnabled ?? true) ? 1 : 0
+        case .sharpness: return develop.sharpnessAmount ?? seed?.sharpnessAmount ?? 0
+        case .contrast: return develop.contrastAmount ?? seed?.contrastAmount ?? 0
+        case .detail: return develop.detailAmount ?? seed?.detailAmount ?? 0
+        case .moireReduction:
+            return develop.moireReductionAmount ?? seed?.moireReductionAmount ?? 0
+        case .localToneMap: return develop.localToneMapAmount ?? seed?.localToneMapAmount ?? 0
+        case .luminanceNoiseReduction:
+            return develop.luminanceNoiseReductionAmount ?? seed?.luminanceNoiseReductionAmount ?? 0
+        case .colorNoiseReduction:
+            return develop.colorNoiseReductionAmount ?? seed?.colorNoiseReductionAmount ?? 0
+        case .lensCorrection:
+            return (develop.lensCorrectionEnabled ?? seed?.lensCorrectionEnabled ?? false) ? 1 : 0
         case .gamutMapping: return (develop.gamutMappingEnabled ?? true) ? 1 : 0
         case .extendedDynamicRange: return develop.extendedDynamicRangeAmount ?? 0
         case .highlightRecovery: return (develop.highlightRecoveryEnabled ?? true) ? 1 : 0
@@ -586,35 +602,6 @@ final class AppViewModel: ObservableObject {
     /// Return every develop control to the decoder's defaults.
     func resetAllDevelop() {
         updateDocument { $0.rawDevelop = .neutral }
-    }
-
-    /// True when this control is a toggle rather than a slider.
-    static func isToggle(_ control: DevelopControl) -> Bool {
-        switch control {
-        case .lensCorrection, .gamutMapping, .highlightRecovery: return true
-        default: return false
-        }
-    }
-
-    /// The slider range for a control. Values are `CIRAWFilter`'s documented ranges
-    /// (`PHASE2_SPEC.md` §9 and `RAWDevelopSettings`).
-    ///
-    /// **`boost` and `boostShadow` are not the same range**, despite the plan's draft grouping them:
-    /// `boostAmount`'s own doc comment (`RAWDevelopSettings.swift`) is explicit — "Global tone curve,
-    /// 0…1" — while `boostShadowAmount` is "0…2 (<1 darkens, >1 lightens)". Sharing one case would
-    /// let the boost slider reach 2.0, a value outside what `CIRAWFilter` documents for that knob.
-    static func range(for control: DevelopControl) -> ClosedRange<Double> {
-        switch control {
-        case .exposure, .baselineExposure: return -4...4
-        case .shadowBias: return -1...1
-        case .boost: return 0...1
-        case .boostShadow: return 0...2
-        case .whiteBalance: return 2000...50000
-        case .detail: return 0...3
-        case .extendedDynamicRange: return 0...2
-        case .lensCorrection, .gamutMapping, .highlightRecovery: return 0...1
-        default: return 0...1
-        }
     }
 
     /// Resolve a document's LUT reference: the registry first, then the library. A miss returns

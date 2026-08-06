@@ -258,6 +258,169 @@ final class DevelopInspectorTests: TempDirectoryTestCase {
                       "opening the panel must not write settings")
     }
 
+    /// **Every** seeded control reads **its own** seed.
+    ///
+    /// The previous version of this file proved the seed path for exactly one control, white
+    /// balance, and every stub left the other seeds at 0 — so for the rest, "read the seed" and
+    /// "return a hardcoded 0" were the same number and eight controls were guessing. A table with a
+    /// distinct value per field means a getter reading the wrong seed names itself in the failure.
+    func testEverySeededControlReadsItsOwnSeed() async throws {
+        let caps = RAWCapabilities.distinctivelySeeded
+        let fake = FakeRenderEngine()
+        await fake.setStubbedCapabilities(caps)
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("capabilities") { viewModel.rawCapabilities != nil }
+
+        let seeded: [(DevelopControl, Double)] = [
+            (.baselineExposure, caps.baselineExposure),
+            (.shadowBias, caps.shadowBias),
+            (.whiteBalance, caps.asShotTemperature),
+            (.sharpness, caps.sharpnessAmount),
+            (.contrast, caps.contrastAmount),
+            (.detail, caps.detailAmount),
+            (.moireReduction, caps.moireReductionAmount),
+            (.localToneMap, caps.localToneMapAmount),
+            (.luminanceNoiseReduction, caps.luminanceNoiseReductionAmount),
+            (.colorNoiseReduction, caps.colorNoiseReductionAmount),
+            (.lensCorrection, caps.lensCorrectionEnabled ? 1 : 0),
+        ]
+
+        // Distinctness is what gives the table its power: two rows sharing a value would let a
+        // getter read the wrong field and still pass.
+        XCTAssertEqual(Set(seeded.map(\.1)).count, seeded.count,
+                       "the seed values must all differ, or a mis-wired getter can pass by accident")
+
+        for (control, expected) in seeded {
+            XCTAssertEqual(
+                viewModel.developValue(for: control), expected, accuracy: 0.0001,
+                "\(control.rawValue) must display the decoder's own seed, not a guessed constant"
+            )
+        }
+
+        // Tint travels on its own binding, so it needs its own row.
+        XCTAssertEqual(viewModel.developTintBinding().wrappedValue, caps.asShotTint, accuracy: 0.0001)
+
+        // And the controls that genuinely *do* have a fixed documented default keep it — a blanket
+        // "read a seed for everything" would have broken these.
+        XCTAssertEqual(viewModel.developValue(for: .exposure), 0)
+        XCTAssertEqual(viewModel.developValue(for: .boost), 1)
+        XCTAssertEqual(viewModel.developValue(for: .boostShadow), 1)
+        XCTAssertEqual(viewModel.developValue(for: .extendedDynamicRange), 0)
+        XCTAssertEqual(viewModel.developValue(for: .gamutMapping), 1)
+        XCTAssertEqual(viewModel.developValue(for: .highlightRecovery), 1)
+
+        // Reading all of that still wrote nothing.
+        XCTAssertTrue(viewModel.document.rawDevelop.isNeutral)
+    }
+
+    // MARK: - Tint
+
+    /// Tint is the one control with no `DevelopControl` case of its own, so nothing in the table
+    /// tests reaches it. It gets the same two guarantees as the rest: reading never writes, and what
+    /// you set is what you read back.
+    func testTheTintBindingRoundTripsAndNeverWritesOnRead() async throws {
+        let fake = FakeRenderEngine()
+        await fake.setStubbedCapabilities(RAWCapabilities(asShotTemperature: 5842.2, asShotTint: 14.04))
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("capabilities") { viewModel.rawCapabilities != nil }
+
+        // Read, repeatedly. `.neutral` is byte-identical to `developRAWNeutral` *because it sets
+        // nothing*; a getter that seeded on read would quietly end that and move the derive baseline.
+        for _ in 0..<3 {
+            XCTAssertEqual(viewModel.developTintBinding().wrappedValue, 14.04, accuracy: 0.0001,
+                           "an unset tint must display the file's as-shot value")
+        }
+        XCTAssertNil(viewModel.document.rawDevelop.neutralTint, "reading must not write")
+        XCTAssertTrue(viewModel.document.rawDevelop.isNeutral)
+
+        // Write, then read back — through the binding, not the document, so a getter that ignored
+        // the stored value and always returned the seed fails here.
+        viewModel.developTintBinding().wrappedValue = -87.5
+        XCTAssertEqual(viewModel.document.rawDevelop.neutralTint, -87.5)
+        XCTAssertEqual(viewModel.developTintBinding().wrappedValue, -87.5, accuracy: 0.0001,
+                       "a written tint must win over the seed")
+
+        // And the write reaches the renderer.
+        try await waitUntil("the tinted render") {
+            await fake.previewRequests.contains { $0.document.rawDevelop.neutralTint == -87.5 }
+        }
+    }
+
+    // MARK: - Toggles take the immediate path
+
+    /// `developBinding` passes `debounced: !control.isToggle`. Nothing exercised the `false` side of
+    /// that expression, so a regression to always-debounce — dropping the negation, or the whole
+    /// argument — would have gone green while every checkbox in the panel picked up a 60 ms lag.
+    ///
+    /// Same discriminator as `testAnUndebouncedEditRendersWithoutWaiting`: **sequence, not elapsed
+    /// time**. A slider write goes first with a distinct value, then, with no suspension in between,
+    /// a toggle write through the same binding. Spinning on `Task.yield()` — scheduling turns, not
+    /// wall-clock — hundreds of times still costs a tiny fraction of the 60 ms debounce, so the
+    /// toggle's render can only appear if it truly skipped the timer. If the toggle were routed
+    /// through the debounce, the loop exhausts and the render never shows.
+    func testWritingAToggleThroughTheBindingSkipsTheDebounce() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+
+        // A slider control first — this one *should* wait ~60 ms.
+        viewModel.developBinding(for: .exposure).wrappedValue = 0.42
+        // ...and immediately a toggle, through the same binding factory.
+        XCTAssertTrue(DevelopControl.gamutMapping.isToggle, "this test needs a toggle control")
+        viewModel.developBinding(for: .gamutMapping).wrappedValue = 0
+
+        var sawToggle = false
+        for _ in 0..<1000 {
+            sawToggle = await fake.previewRequests.contains {
+                $0.document.rawDevelop.gamutMappingEnabled == false
+            }
+            if sawToggle { break }
+            await Task.yield()
+        }
+        XCTAssertTrue(
+            sawToggle,
+            "a toggle written through developBinding must render immediately — developBinding is "
+            + "passing debounced: true for a Bool control"
+        )
+
+        // The toggle's 0 must have become `false`, not 0.0 in some numeric field.
+        XCTAssertEqual(viewModel.document.rawDevelop.gamutMappingEnabled, false)
+        // And the slider's debounced edit must not have fired on its own timer in the meantime.
+        let soFar = await fake.previewRequests
+        XCTAssertFalse(
+            soFar.contains {
+                $0.document.rawDevelop.exposure == 0.42
+                    && $0.document.rawDevelop.gamutMappingEnabled != false
+            },
+            "the slider's debounce should have been pre-empted, not raced"
+        )
+    }
+
+    /// The mirror image: a *slider* written through the same binding must still be debounced, or the
+    /// test above could be satisfied by making everything immediate.
+    func testWritingASliderThroughTheBindingStillDebounces() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+        let atRest = await fake.previewRequests.count
+
+        XCTAssertFalse(DevelopControl.exposure.isToggle)
+        for step in 1...20 {
+            viewModel.developBinding(for: .exposure).wrappedValue = Double(step) / 20.0
+        }
+        try await waitUntil("the settled render") {
+            await fake.previewRequests.contains { $0.document.rawDevelop.exposure == 1.0 }
+        }
+
+        let issued = await fake.previewRequests.count - atRest
+        XCTAssertLessThan(issued, 10,
+                          "20 slider ticks issued \(issued) renders — developBinding stopped debouncing")
+    }
+
     func testResettingAControlReturnsItToUnset() async throws {
         let fake = FakeRenderEngine()
         let viewModel = AppViewModel(engine: fake)

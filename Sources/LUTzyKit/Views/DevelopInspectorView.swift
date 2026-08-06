@@ -61,7 +61,7 @@ struct DevelopInspectorView: View {
             HStack {
                 Text(control.title).font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                if !AppViewModel.isToggle(control) {
+                if !control.isToggle {
                     Text(String(format: "%.2f", viewModel.developValue(for: control)))
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -76,7 +76,7 @@ struct DevelopInspectorView: View {
                 .help("Reset to the decoder's default")
             }
 
-            if AppViewModel.isToggle(control) {
+            if control.isToggle {
                 Toggle(control.title, isOn: Binding(
                     get: { viewModel.developValue(for: control) != 0 },
                     set: { viewModel.developBinding(for: control).wrappedValue = $0 ? 1 : 0 }
@@ -85,12 +85,12 @@ struct DevelopInspectorView: View {
             } else {
                 Slider(
                     value: viewModel.developBinding(for: control),
-                    in: AppViewModel.range(for: control)
+                    in: control.range
                 )
                 if control == .whiteBalance {
                     HStack {
                         Text("Tint").font(.caption2).foregroundStyle(.secondary)
-                        Slider(value: viewModel.developTintBinding(), in: -150...150)
+                        Slider(value: viewModel.developTintBinding(), in: DevelopControl.tintRange)
                     }
                 }
             }

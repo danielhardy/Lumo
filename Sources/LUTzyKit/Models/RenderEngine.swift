@@ -243,6 +243,12 @@ actor RenderEngine: RenderEngining {
     /// ~183 ms on a 30 MB DNG (measured; see the Step 10a design doc), and it is why this can run on
     /// every image open without being felt. It also leaves the developed-source memo alone — a
     /// capability question must not evict the image the user is looking at.
+    ///
+    /// **A gated seed is read only when its gate is open.** Every property below the `is*Supported`
+    /// line is a knob this particular decoder may not offer, and what an unoffered property returns is
+    /// not a default the panel should show — it is nothing at all. Where the gate is shut the seed
+    /// stays at `RAWCapabilities`' own default, which no control can reach anyway: `supports(_:)`
+    /// withdraws the control on the same flag.
     func rawCapabilities(for source: ImageSource) -> RAWCapabilities? {
         guard case .raw = source.kind else { return nil }
         guard let filter = RenderPipeline.rawFilter(for: source.backing) else { return nil }
@@ -265,7 +271,20 @@ actor RenderEngine: RenderEngining {
             asShotTemperature: Double(filter.neutralTemperature),
             asShotTint: Double(filter.neutralTint),
             baselineExposure: Double(filter.baselineExposure),
-            shadowBias: Double(filter.shadowBias)
+            shadowBias: Double(filter.shadowBias),
+            sharpnessAmount: filter.isSharpnessSupported ? Double(filter.sharpnessAmount) : 0,
+            contrastAmount: filter.isContrastSupported ? Double(filter.contrastAmount) : 0,
+            detailAmount: filter.isDetailSupported ? Double(filter.detailAmount) : 0,
+            moireReductionAmount:
+                filter.isMoireReductionSupported ? Double(filter.moireReductionAmount) : 0,
+            localToneMapAmount:
+                filter.isLocalToneMapSupported ? Double(filter.localToneMapAmount) : 0,
+            luminanceNoiseReductionAmount: filter.isLuminanceNoiseReductionSupported
+                ? Double(filter.luminanceNoiseReductionAmount) : 0,
+            colorNoiseReductionAmount: filter.isColorNoiseReductionSupported
+                ? Double(filter.colorNoiseReductionAmount) : 0,
+            lensCorrectionEnabled:
+                filter.isLensCorrectionSupported ? filter.isLensCorrectionEnabled : false
         )
     }
 
