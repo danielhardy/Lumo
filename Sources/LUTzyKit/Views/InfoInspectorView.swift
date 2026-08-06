@@ -6,6 +6,32 @@ struct InfoInspectorView: View {
     @ObservedObject var viewModel: AppViewModel
 
     var body: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $viewModel.inspectorTab) {
+                ForEach(AppViewModel.InspectorTab.allCases, id: \.self) { tab in
+                    Text(tab.title).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
+
+            Divider()
+
+            switch viewModel.inspectorTab {
+            case .info:
+                infoContent
+            case .develop:
+                DevelopInspectorView(viewModel: viewModel)
+            }
+        }
+        .frame(minWidth: 240, idealWidth: 280)
+    }
+
+    /// The original histogram + EXIF column, unchanged apart from being one branch of the switch.
+    private var infoContent: some View {
         Group {
             if viewModel.sourceImage == nil {
                 emptyState
@@ -19,7 +45,6 @@ struct InfoInspectorView: View {
                 }
             }
         }
-        .frame(minWidth: 240, idealWidth: 280)
     }
 
     // MARK: - Histogram
