@@ -139,7 +139,7 @@ final class ImageCollection: ObservableObject {
         while let fileURL = enumerator.nextObject() as? URL {
             if Task.isCancelled { return [] }
             let ext = fileURL.pathExtension.lowercased()
-            guard ImageProcessor.supportedExtensions.contains(ext) else { continue }
+            guard ImageDecoder.supportedExtensions.contains(ext) else { continue }
             let name = fileURL.deletingPathExtension().lastPathComponent
             let dir = fileURL.deletingLastPathComponent().resolvingSymlinksInPath().path
             let subfolder = dir.hasPrefix(rootPath)
@@ -159,15 +159,19 @@ final class ImageCollection: ObservableObject {
 
     // MARK: - Data import (from Photos picker)
 
+    /// Adopt a set of Photos-picker payloads as the collection.
+    ///
+    /// **The second thumbnail site.** `generateThumbnails` below is the obvious one; this one builds
+    /// its thumbnails inline and is easy to miss when the thumbnail path moves — which is why
+    /// `docs/PHASE2_SPEC.md` §6 names both explicitly. Step 7 pointed both at `Thumbnails`.
     func addFromData(_ dataItems: [(name: String, data: Data)]) {
         thumbnailTask?.cancel()
         items = []
         selectedIndex = 0
-        let processor = ImageProcessor.shared
 
         var newItems: [Item] = []
         for item in dataItems {
-            let thumb = processor.generateThumbnail(from: item.data)
+            let thumb = Thumbnails.generate(from: item.data)
             newItems.append(Item(url: nil, displayName: item.name, thumbnail: thumb, imageData: item.data))
         }
         self.items = newItems
@@ -199,8 +203,12 @@ final class ImageCollection: ObservableObject {
 
     // MARK: - Thumbnail generation
 
+    /// Fill in each file-backed item's thumbnail, off the main actor.
+    ///
+    /// The detached task used to capture `ImageProcessor.shared` — a non-`Sendable` class crossing
+    /// an isolation boundary, the hazard `docs/PHASE2_SPEC.md` §2 flags. `Thumbnails` is stateless,
+    /// so only the `URL` crosses now.
     private func generateThumbnails() {
-        let processor = ImageProcessor.shared
         thumbnailTask = Task {
             for i in items.indices {
                 guard !Task.isCancelled else { return }
@@ -212,7 +220,7 @@ final class ImageCollection: ObservableObject {
                 let itemID = items[i].id
 
                 let thumb = await Task.detached {
-                    processor.generateThumbnail(from: url)
+                    Thumbnails.generate(from: url)
                 }.value
 
                 guard !Task.isCancelled else { return }

@@ -14,7 +14,7 @@ import CoreImage
 /// is not a stylistic choice: several of these defaults *vary per image* (`baselineExposure`,
 /// `shadowBias`, the noise-reduction and sharpening amounts), so there is no fixed number that stands
 /// for "untouched". Storing `nil` is the only way to make `.neutral` byte-identical to today's
-/// `ImageProcessor.developRAWNeutral`, which sets nothing at all.
+/// `ImageDecoder.developRAWNeutral`, which sets nothing at all.
 ///
 /// Property names mirror `CIRAWFilter`'s exactly so there is no translation layer to get wrong. The
 /// set below is header-verified (`docs/PHASE2_SPEC.md` §9); an earlier draft of the spec contained
@@ -84,7 +84,7 @@ struct RAWDevelopSettings: Codable, Sendable, Equatable {
     // MARK: - Neutral
 
     /// Every knob left at the decoder's own default. Applying this to a `CIRAWFilter` sets nothing,
-    /// so it renders byte-identically to `ImageProcessor.developRAWNeutral`.
+    /// so it renders byte-identically to `ImageDecoder.developRAWNeutral`.
     static let neutral = RAWDevelopSettings()
 
     /// True when nothing here would be pushed onto a `CIRAWFilter`.

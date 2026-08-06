@@ -6,7 +6,7 @@ import CoreImage
 /// values onto a `CIRAWFilter` before `outputImage` is read.
 ///
 /// Two things are worth proving. First that `.neutral` is genuinely nothing — the migration's promise
-/// is that an untouched document renders byte-identically to today's `ImageProcessor.developRAWNeutral`,
+/// is that an untouched document renders byte-identically to today's `ImageDecoder.developRAWNeutral`,
 /// which sets no properties at all. Second that the property set is the real one: an earlier draft of
 /// the spec listed names (`isDustRemovalSupported`, `enableEDR`) that do not exist.
 final class RAWDevelopSettingsTests: XCTestCase {

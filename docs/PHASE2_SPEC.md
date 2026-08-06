@@ -1,7 +1,8 @@
 # LUTzy Phase 2 — non-destructive render pipeline + RAW develop
 
-**Status:** partly built. Steps 0–6 of the migration are done — the preview, both export paths and the
-histogram all render from the document. Thumbnails and the develop UI do not yet.
+**Status:** partly built. Steps 0–7 of the migration are done — the preview, both export paths and the
+histogram all render from the document, `ImageProcessor` is gone, and the module is
+strict-concurrency clean. The develop UI, undo and derive-registration are not built yet.
 
 This is a distillation. The original draft ran 4,180 lines of multi-agent output that contradicted
 itself across sections and spent a good fraction of its length arguing with earlier drafts about bugs
@@ -34,25 +35,29 @@ a baked image, which buys four things at once:
 | ✅ Preview rasterization and decode run off the main actor; intensity slider debounced | the "full filter graph on the main thread" bug is **fixed** |
 | ✅ LUT intensity ships today — `lutIntensity`, `CubeLUT.apply(to:intensity:)`, toolbar slider | the original called this "NEW behavior… exists nowhere". It exists. |
 | ✅ EXIF orientation baked at load for every non-RAW decode | the original's "standard images have NO orientation baking" is stale |
-| ✅ `AppViewModel` split into `ExportCoordinator` + `DeriveCoordinator` | the `[processor]`-capture hazard now lives in `ExportCoordinator` |
-| ✅ `ImageProcessor.rawExtensions` internal; `developRAWNeutral` is the one neutral baseline | |
+| ✅ `AppViewModel` split into `ExportCoordinator` + `DeriveCoordinator` | the `[processor]`-capture hazard it inherited is gone as of Step 7 |
+| ✅ `ImageDecoder.rawExtensions` internal; `developRAWNeutral` is the one neutral baseline | was `ImageProcessor` until Step 7 |
 | ✅ Derive: cancellable, geometry-validated, capped at a 3000 px working resolution | |
 | ✅ The value-state types exist (`EditDocument` and friends) — but nothing uses them yet | Step 2 is **done** |
 | ✅ `RenderPipeline.buildImage` and `LUTFilterCache` exist — also unused | Step 3 is **done** |
 | ✅ `actor RenderEngine` + `RenderEngining` exist, with a fake for tests | Step 4 is **done** |
 | ✅ **The preview renders from `EditDocument`** through the engine — develop, adjustments, LUT, intensity | Step 5 is **done** |
 | ✅ **Export and the histogram render from `EditDocument` too** — single *and* batch; `processedImage` deleted | Step 6 is **done** |
-| ❌ Thumbnails still run the old `ImageProcessor` path; no RAW develop UI | Steps 7, 10 |
+| ✅ **`ImageProcessor` dissolved** — `ImageDecoder` + `Thumbnails` + `ExportFormat`; one `CIContext` in the render stack | Step 7 is **done** |
+| ❌ No RAW develop UI, no undo, derive not registered by ID | Steps 9–11 |
 
-**Still true and still worth fixing:** `ImageProcessor` is a non-`Sendable` `final class` singleton
-holding a `CIContext`, captured into `Task.detached` in several places. Strict concurrency would reject it.
+~~**Still true and still worth fixing:** `ImageProcessor` is a non-`Sendable` `final class` singleton
+holding a `CIContext`, captured into `Task.detached` in several places.~~ **Fixed in Step 7** — the
+type is gone. Its GPU duties went to `actor RenderEngine`, its thumbnails to `enum Thumbnails`
+(`CGImageSource` only, never Core Image), its output vocabulary to `ExportFormat`, and what remained
+— the format vocabulary, `orientedLoadOptions`, `developRAWNeutral`, and the eager decode — to
+`enum ImageDecoder`, which is stateless and so has no instance to share.
 
-**Step 8's scope is now measured, not guessed.** Compiling `LUTzyKit` with
-`-strict-concurrency=complete` under the macOS 26 SDK reports **one** remaining diagnostic:
-`ImageProcessor.shared`. The whole Phase 2 stack — `EditDocument`, `RenderPipeline`, `LUTFilterCache`,
-`RenderEngine` — is already clean, and `sending CGImage?` typechecks in Swift 5 language mode, so no
-upcoming-feature flag is needed. Step 7 dissolves `ImageProcessor`; Step 8 should then be close to a
-one-line change:
+**Step 8's scope is now zero, measured.** Compiling `LUTzyKit` with `-strict-concurrency=complete`
+under the macOS 26 SDK reported **one** diagnostic (`ImageProcessor.shared`) before Step 7 and
+reports **none** after it. `sending CGImage?` typechecks in Swift 5 language mode, so no
+upcoming-feature flag is needed. Step 8 is now flipping the flag in `Package.swift` and confirming
+the *test* target is clean too:
 
 ```
 swiftc -typecheck -swift-version 5 -strict-concurrency=complete \
@@ -161,8 +166,8 @@ There are **four** explicit `CGColorSpace.sRGB` literals today and **two implici
 | site | file | role |
 |---|---|---|
 | LUT interpolation | `CubeLUT.swift:152` | the space the cube interpolates in |
-| Export encoding | `ImageProcessor.swift:259` | output encoding |
-| Histogram render | `ImageProcessor.swift:188` | analysis only — moved to `RenderEngine.histogram` in Step 6 |
+| Export encoding | `ImageProcessor.swift:259` | output encoding — now `RenderEngine.encode` |
+| Histogram render | `ImageProcessor.swift:188` | analysis only — now `RenderEngine.histogram` (Step 6) |
 | Derive sampling | `RecipeExtractor.swift:101` | **stays pinned to sRGB, not `.current`** |
 | *(was implicit)* | `ImageProcessor.renderPreview` `createCGImage` | **passed no colour space** — preview used the CIContext default while export forced sRGB |
 | *(was implicit)* | `ImageProcessor.renderToNSImage` `createCGImage` | same |
@@ -198,8 +203,18 @@ die inside it. Only `Sendable` values cross in (`EditDocument`, `ImageSource`, `
 `CGImage` is **not** `Sendable` (verified, Swift 6.3) — use `-> sending CGImage?` (region-based
 isolation), which keeps both the zero-`@unchecked` promise and the zero-copy benefit over returning bytes.
 
-`ImageProcessor` dissolves: GPU duties move to the actor, the format vocabulary
-(`rawExtensions`/`supportedExtensions`/`supportedTypes`) and `developRAWNeutral` stay as value-level statics.
+✅ **Step 7 did this.** `ImageProcessor` is gone. GPU duties moved to the actor; the format vocabulary
+(`rawExtensions`/`supportedExtensions`/`supportedTypes`), `orientedLoadOptions`, `developRAWNeutral`
+and the eager open-time decode became statics on `enum ImageDecoder`; `ExportFormat` was promoted to
+a top-level type; and thumbnails went to `enum Thumbnails`.
+
+**Thumbnails deliberately did *not* move onto the actor.** They read a file's embedded preview through
+`CGImageSource` — for a RAW that is the camera's own JPEG, which is why a 30 MB DNG thumbnails in
+milliseconds without being demosaiced. No `CIImage`, no `CIContext`, nothing for the engine to add;
+routing them through it would only queue every filmstrip tile behind the preview render. What Step 7
+changed is that both `ImageCollection` call sites stopped capturing a non-`Sendable` singleton into a
+`Task.detached`. `RenderStackTests` pins both halves: the set of files constructing a `CIContext`, and
+that `Thumbnails` names no Core Image type.
 
 The LUT filter cache lives on the **actor**, keyed by `LUTID` × color space — not on `CubeLUT`, which
 stays an immutable `Sendable` value.
@@ -236,7 +251,7 @@ leaf by leaf, delete the old path last.
 | ~~4~~ | ~~`actor RenderEngine` alongside the old path; a `RenderEngining` protocol so tests inject a fake~~ | ✅ **done** — 175 tests; preview/export parity asserted in both spaces; 12 mutations caught |
 | ~~5~~ | ~~Cut **preview** over. Keep computed `sourceImage`/`selectedLUT` shims so views compile~~ | ✅ **done** — 188 tests; 15 mutations caught; needed a **developed-source memo**, see below |
 | ~~6~~ | ~~Cut **export** over; delete `processedImage`~~ | ✅ **done** — 203 tests; 25 mutations caught; **both** export paths cut over, and the histogram came with them (see below) |
-| 7 | Move thumbnails (**both** `ImageCollection` sites — `generateThumbnails` *and* `addFromData`); dissolve `ImageProcessor` GPU duties | one `CIContext` **in the render stack** — `RecipeExtractor` keeps its own by design (§3), so the count to assert is 2, not 1 |
+| ~~7~~ | ~~Move thumbnails (**both** `ImageCollection` sites); dissolve `ImageProcessor` GPU duties~~ | ✅ **done** — 208 tests; 18 mutations caught, 2 shown equivalent by measurement; `RenderStackTests` asserts the context count |
 | 8 | Flip strict concurrency on | warning-clean build and test |
 | 9 | Wire derive into the new state: register the derived LUT by ID, keep the scratch-file bookkeeping | derive-baseline invariance test |
 | 10 | RAW develop + adjustments inspector, gated per-image on the real `is*Supported` flags | inspector drives live re-render |
@@ -304,7 +319,7 @@ the next frame. `ImageProcessor.histogram` is gone; the tally is now a pure
 | **Fabricated `CIRAWFilter` API** copied from the original draft | Use the header-verified set in §9. Compile Step 2 early. |
 | **Global undo stack** corrupts other images' edits on navigate-then-undo | Per-image, keyed by `Item.id` (not URL — nil for Photos imports) |
 | **Photos `data:` imports** break if `ImageSource` is URL-only | `Backing.data(Data)`. Temp files misclassify RAW and need cleanup. |
-| **`ExportFormat` promotion** loses `Identifiable` and its raw values | The toolbar `Picker` depends on both — keep them, update every reference in one commit |
+| ~~**`ExportFormat` promotion** loses `Identifiable` and its raw values~~ | ✅ **done in Step 7**, in one commit. `testTheToolbarPickerContractSurvivedThePromotion` pins `allCases` order, id uniqueness, raw values and `utType` — all things that fail *silently* in a `Picker`. |
 | **Stale A/B cache** shows a pre-edit graded image during Space-hold | Encode `isShowingOriginal` into the render-request identity, or render an `intensity = 0` document |
 | **Silent LUT failure** if the old "LUT application failed" branch is dropped | Validate once at parse/load and report, rather than per render |
 

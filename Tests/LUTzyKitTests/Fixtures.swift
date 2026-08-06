@@ -200,7 +200,7 @@ enum Fixtures {
             at: folder, includingPropertiesForKeys: nil
         ) else { return nil }
         return entries
-            .filter { ImageProcessor.rawExtensions.contains($0.pathExtension.lowercased()) }
+            .filter { ImageDecoder.rawExtensions.contains($0.pathExtension.lowercased()) }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
             .first
     }

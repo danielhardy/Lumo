@@ -1,18 +1,19 @@
 import XCTest
 import CoreImage
 import CoreGraphics
-import AppKit
 import simd
 @testable import LUTzyKit
 
-/// Phase 2 Step 1. Two things are being pinned down here:
+/// Phase 2 Step 1: the colour seam itself.
 ///
-/// 1. **Preview and export rasterize through the same colour space.** They did not: `createCGImage`
-///    was called with no space at all, so the preview used the `CIContext` default while export
-///    forced sRGB. Byte-identical while everything was sRGB, silently divergent otherwise.
-/// 2. **LUT interpolation and output encoding move in lockstep.** They were independent literals
-///    that merely happened to agree. A test that only checks today's sRGB values would pass either
-///    way, so the lockstep tests drive a *non-default* space through both halves.
+/// This suite was written against two code paths that "merely agreed" — `ImageProcessor.renderPreview`
+/// and `ImageProcessor.export`, one of which passed no colour space at all. Step 7 deleted both, and
+/// with them the reason for most of what was here: there is one funnel now, and its parity is
+/// asserted where it lives. See the redirection block below.
+///
+/// What remains is the seam as a *value* — that `.current` resolves, that every case names a real
+/// system space, that the cube interpolates in the space it is handed, and that derive stays pinned
+/// to sRGB regardless.
 final class WorkingSpaceTests: TempDirectoryTestCase {
 
     // MARK: - The seam itself
@@ -30,94 +31,25 @@ final class WorkingSpaceTests: TempDirectoryTestCase {
         }
     }
 
-    // MARK: - Preview / export parity
-
-    /// The ship gate for Step 1: the preview raster and the exported file must be the same pixels.
-    func testPreviewRasterMatchesExportedBytes() throws {
-        let source = try gradientImage(width: 64, height: 48)
-        let processor = ImageProcessor.shared
-
-        // Preview at a size that forces no downscale, so any difference is colour, not resampling.
-        let preview = try XCTUnwrap(processor.renderPreview(
-            source, maxSize: CGSize(width: 4096, height: 4096)
-        ))
-        let previewPixels = try pixels(of: try XCTUnwrap(cgImage(from: preview)))
-
-        // Export through the lossless encoder and read it back.
-        let exported = tempDirectory.appendingPathComponent("parity.png")
-        try processor.export(source, to: exported, format: .png)
-        let exportedPixels = try pixels(of: try XCTUnwrap(cgImage(atPath: exported)))
-
-        XCTAssertEqual(previewPixels.count, exportedPixels.count)
-        assertPixelsEqual(previewPixels, exportedPixels, tolerance: 1,
-                          "preview and export must rasterize through the same colour space")
-    }
-
-    /// Same, with a LUT in the chain — the case where interpolation space and encoding space could
-    /// disagree with each other rather than just with the context default.
-    func testPreviewMatchesExportWithALUTApplied() throws {
-        let source = try gradientImage(width: 64, height: 48)
-        let lut = try warmLUT()
-        let graded = try XCTUnwrap(lut.apply(to: source, intensity: 1))
-        let processor = ImageProcessor.shared
-
-        let preview = try XCTUnwrap(processor.renderPreview(
-            graded, maxSize: CGSize(width: 4096, height: 4096)
-        ))
-        let previewPixels = try pixels(of: try XCTUnwrap(cgImage(from: preview)))
-
-        let exported = tempDirectory.appendingPathComponent("parity-lut.png")
-        try processor.export(graded, to: exported, format: .png)
-        let exportedPixels = try pixels(of: try XCTUnwrap(cgImage(atPath: exported)))
-
-        assertPixelsEqual(previewPixels, exportedPixels, tolerance: 1,
-                          "a graded preview must match a graded export")
-    }
-
-    // MARK: - Lockstep
-
-    /// If the two halves of the seam were still independent, driving a non-default space through
-    /// them would produce a mismatch. This is the test that would have caught the original defect.
-    func testLUTInterpolationAndOutputMoveTogether() throws {
-        let source = try gradientImage(width: 64, height: 48)
-        let lut = try warmLUT()
-        let processor = ImageProcessor.shared
-
-        for space in WorkingSpace.allCases {
-            let graded = try XCTUnwrap(lut.apply(to: source, intensity: 1, space: space))
-
-            let preview = try XCTUnwrap(processor.renderPreview(
-                graded, maxSize: CGSize(width: 4096, height: 4096), space: space
-            ))
-            let previewPixels = try pixels(of: try XCTUnwrap(cgImage(from: preview)))
-
-            let exported = tempDirectory.appendingPathComponent("lockstep-\(space.rawValue).png")
-            try processor.export(graded, to: exported, format: .png, space: space)
-            let exportedPixels = try pixels(of: try XCTUnwrap(cgImage(atPath: exported)))
-
-            assertPixelsEqual(previewPixels, exportedPixels, tolerance: 1,
-                              "preview and export disagree in \(space.rawValue)")
-        }
-    }
-
-    /// And the space has to actually reach the encoder — otherwise the lockstep test above would
-    /// pass trivially by ignoring its argument in both places.
-    func testWorkingSpaceReachesTheOutputEncoder() throws {
-        let source = try gradientImage(width: 32, height: 32)
-        let processor = ImageProcessor.shared
-
-        let asSRGB = tempDirectory.appendingPathComponent("srgb.png")
-        let asP3 = tempDirectory.appendingPathComponent("p3.png")
-        try processor.export(source, to: asSRGB, format: .png, space: .sRGB)
-        try processor.export(source, to: asP3, format: .png, space: .displayP3)
-
-        let sRGBName = try XCTUnwrap(cgImage(atPath: asSRGB)).colorSpace?.name as String?
-        let p3Name = try XCTUnwrap(cgImage(atPath: asP3)).colorSpace?.name as String?
-
-        XCTAssertNotEqual(sRGBName, p3Name, "the exported files should carry different profiles")
-        XCTAssertEqual(sRGBName, CGColorSpace.sRGB as String)
-        XCTAssertEqual(p3Name, CGColorSpace.displayP3 as String)
-    }
+    // MARK: - Where the parity tests went
+    //
+    // Step 1 asserted preview/export parity here by driving `ImageProcessor.renderPreview` against
+    // `ImageProcessor.export` — the two code paths that "merely agreed". Step 7 deleted both: there
+    // is one funnel now, and the properties moved to tests that exercise it rather than the old
+    // pair. Named individually so this is a redirection, not a quiet deletion:
+    //
+    // - `testPreviewRasterMatchesExportedBytes`      → `RenderEngineTests.testPreviewAndExportAreTheSamePixels`
+    // - `testPreviewMatchesExportWithALUTApplied`    → same test (its document carries a warm cube and two adjustments)
+    // - `testLUTInterpolationAndOutputMoveTogether`  → `RenderEngineTests.testParityHoldsInEveryWorkingSpace`
+    // - `testWorkingSpaceReachesTheOutputEncoder`    → `RenderEngineTests.testTheWorkingSpaceReachesTheEncoder`
+    //
+    // The end-to-end half — bytes that actually reached a file on disk — is
+    // `ExportCutoverTests.testExportedFileIsTheDocumentAtFullResolution`, and the NSImage-wrapping
+    // half is `PreviewCutoverTests.testEachKnobVisiblyChangesThePreview`.
+    //
+    // What stays below is the part that has no equivalent up there: the cube's *interpolation*
+    // space, asserted against `CubeLUT.apply` directly rather than through a pipeline that could be
+    // passing the right space for the wrong reason.
 
     func testWorkingSpaceReachesTheLUTInterpolation() throws {
         // A cube that isn't the identity will interpolate differently in a wider space, so the two
@@ -129,13 +61,10 @@ final class WorkingSpaceTests: TempDirectoryTestCase {
         let inP3 = try XCTUnwrap(lut.apply(to: source, space: .displayP3))
 
         // Rasterize both through the SAME space so only the interpolation differs.
-        let processor = ImageProcessor.shared
-        let a = try pixels(of: try XCTUnwrap(cgImage(from: try XCTUnwrap(
-            processor.renderPreview(inSRGB, maxSize: CGSize(width: 4096, height: 4096), space: .sRGB)))))
-        let b = try pixels(of: try XCTUnwrap(cgImage(from: try XCTUnwrap(
-            processor.renderPreview(inP3, maxSize: CGSize(width: 4096, height: 4096), space: .sRGB)))))
+        let a = try Pixels.bytes(of: inSRGB, space: .sRGB)
+        let b = try Pixels.bytes(of: inP3, space: .sRGB)
 
-        XCTAssertNotEqual(a, b, "the cube's interpolation space should affect the result")
+        assertPixelsDiffer(a, b, "the cube's interpolation space should affect the result")
     }
 
     // MARK: - Derive stays pinned
@@ -168,32 +97,5 @@ final class WorkingSpaceTests: TempDirectoryTestCase {
     }
 
     private func warmLUT() throws -> CubeLUT { TestImages.warmLUT() }
-
-    private func cgImage(from nsImage: NSImage) -> CGImage? {
-        var rect = CGRect(origin: .zero, size: nsImage.size)
-        return nsImage.cgImage(forProposedRect: &rect, context: nil, hints: nil)
-    }
-
-    private func cgImage(atPath url: URL) -> CGImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-        return CGImageSourceCreateImageAtIndex(source, 0, nil)
-    }
-
-    /// Read a CGImage back as raw RGBA8 in its own colour space, so no conversion is introduced by
-    /// the comparison itself.
-    private func pixels(of image: CGImage) throws -> [UInt8] {
-        let width = image.width
-        let height = image.height
-        let bytesPerRow = width * 4
-        var bytes = [UInt8](repeating: 0, count: height * bytesPerRow)
-        let space = image.colorSpace ?? CGColorSpaceCreateDeviceRGB()
-        let context = try XCTUnwrap(CGContext(
-            data: &bytes, width: width, height: height, bitsPerComponent: 8,
-            bytesPerRow: bytesPerRow, space: space,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ))
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return bytes
-    }
 
 }

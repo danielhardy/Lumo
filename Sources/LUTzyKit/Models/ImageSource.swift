@@ -49,7 +49,7 @@ struct ImageSource: Sendable, Equatable {
         self.nativeExtent = nativeExtent
     }
 
-    /// A file-backed source, classified by extension — the same rule `ImageProcessor.loadImage` uses,
+    /// A file-backed source, classified by extension — the same rule `ImageDecoder.load` uses,
     /// so a file cannot be RAW for one and standard for the other.
     init(url: URL, nativeExtent: CGSize) {
         self.init(backing: .url(url), kind: Self.kind(forExtension: url.pathExtension), nativeExtent: nativeExtent)
@@ -67,7 +67,7 @@ struct ImageSource: Sendable, Equatable {
     // MARK: - Classification
 
     static func kind(forExtension ext: String) -> Kind {
-        ImageProcessor.rawExtensions.contains(ext.lowercased()) ? .raw : .standard
+        ImageDecoder.rawExtensions.contains(ext.lowercased()) ? .raw : .standard
     }
 
     /// Classify a buffer by the type ImageIO reports for it. Anything undecodable or unrecognised is

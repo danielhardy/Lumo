@@ -119,10 +119,10 @@ struct RecipeExtractor {
         progress?(0.05, "Loading RAW…")
 
         // 1. RAW → CIImage at neutral CIRAWFilter defaults. Routed through the
-        //    single shared helper on ImageProcessor so the derive baseline
+        //    single shared helper on ImageDecoder so the derive baseline
         //    can't drift from the render path — and stays independent of any
         //    user develop settings.
-        guard let rawImage = ImageProcessor.developRAWNeutral(at: rawURL) else {
+        guard let rawImage = ImageDecoder.developRAWNeutral(at: rawURL) else {
             throw ExtractorError.cannotLoadRAW(rawURL.lastPathComponent)
         }
 
@@ -133,7 +133,7 @@ struct RecipeExtractor {
         //    `orientedLoadOptions` bakes in the EXIF orientation so a portrait
         //    JPG isn't compared sideways against an upright RAW render
         //    (CIRAWFilter always applies orientation).
-        guard let jpgImage = CIImage(contentsOf: jpgURL, options: ImageProcessor.orientedLoadOptions) else {
+        guard let jpgImage = CIImage(contentsOf: jpgURL, options: ImageDecoder.orientedLoadOptions) else {
             throw ExtractorError.cannotLoadJPG(jpgURL.lastPathComponent)
         }
 
