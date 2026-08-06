@@ -7,43 +7,49 @@ struct InfoInspectorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $viewModel.inspectorTab) {
-                ForEach(AppViewModel.InspectorTab.allCases, id: \.self) { tab in
-                    Text(tab.title).tag(tab)
+            // No image, no tabs. Both halves describe *a picture*: with nothing open, the switcher
+            // offers a trip to Develop to be told "this image is already rendered" about an image
+            // that does not exist. The empty state alone is the honest answer.
+            if viewModel.sourceImage == nil {
+                emptyState
+            } else {
+                tabSwitcher
+
+                Divider()
+
+                switch viewModel.inspectorTab {
+                case .info:
+                    infoContent
+                case .develop:
+                    DevelopInspectorView(viewModel: viewModel)
                 }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
-
-            Divider()
-
-            switch viewModel.inspectorTab {
-            case .info:
-                infoContent
-            case .develop:
-                DevelopInspectorView(viewModel: viewModel)
             }
         }
         .frame(minWidth: 240, idealWidth: 280)
     }
 
-    /// The original histogram + EXIF column, unchanged apart from being one branch of the switch.
-    private var infoContent: some View {
-        Group {
-            if viewModel.sourceImage == nil {
-                emptyState
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        histogramSection
-                        metadataSection
-                    }
-                    .padding(16)
-                }
+    private var tabSwitcher: some View {
+        Picker("", selection: $viewModel.inspectorTab) {
+            ForEach(AppViewModel.InspectorTab.allCases, id: \.self) { tab in
+                Text(tab.title).tag(tab)
             }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+    }
+
+    /// The original histogram + EXIF column. Only reached with an image open — the no-image case is
+    /// handled one level up, before the tab switcher exists.
+    private var infoContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                histogramSection
+                metadataSection
+            }
+            .padding(16)
         }
     }
 
