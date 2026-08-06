@@ -74,16 +74,24 @@ enum DevelopControl: String, Sendable, CaseIterable {
     /// `boostShadow` 0…2, `whiteBalance` 2000…50000 K, tint −150…150, `detail` 0…3,
     /// `extendedDynamicRange` 0…2, and the 0…1 detail amounts (sharpness, contrast, moiré, local tone
     /// map, both noise reductions). **Chosen by us**, with no documented bound anywhere in the repo or
-    /// the header: `exposure` and `baselineExposure` at −4…4, and `shadowBias` at −1…1. Those three
+    /// the header: `exposure` and `baselineExposure` at −4…4, and `shadowBias` at −10…10. Those three
     /// are UI conveniences — a usable throw for a slider — not framework limits, and `CIRAWFilter`
     /// will accept values outside them. Widen them freely; the other rows are not ours to move.
     ///
-    /// **`shadowBias` −1…1 is known to be too narrow.** The Leica in `realworldtest/` seeds it at
-    /// **5.0** — measured, see `RAWCapabilitiesTests.testProbingARealRAWReportsItsDecodersSeeds` —
-    /// so that slider opens pinned at its maximum on at least one real camera. Left as-is here
-    /// because this commit's brief was to stop *claiming* these bounds are documented, not to invent
-    /// better ones; picking a real range wants more than one file to look at. The test pins the
-    /// discrepancy so it stays visible rather than becoming folklore.
+    /// **These three are observational, not documented — one camera's worth of data.** Probed directly
+    /// off a fresh `CIRAWFilter(imageURL:)` for the Leica M11 DNG in `realworldtest/` (no date attached
+    /// to the file; the camera is the only fact worth recording): `exposure` reads **0.0**, comfortably
+    /// centred in −4…4 — checked, not assumed, and left unchanged. `baselineExposure` reads **0.4**,
+    /// also comfortably inside −4…4 — checked and left unchanged. `shadowBias` reads **5.0**, which the
+    /// previous −1…1 range didn't even contain: that slider opened pinned at its maximum on this
+    /// camera and could only be dragged down. `shadowBias` is now −10…10 — round, symmetric like the
+    /// other two, and puts 5.0 well clear of either edge (5 of headroom above, 15 below) rather than
+    /// pinned. `RAWCapabilitiesTests.testProbingARealRAWReportsItsDecodersSeeds` re-measures the same
+    /// three each time a real DNG is available and prints them, and
+    /// `testEveryPerImageSeedLandsStrictlyInsideItsSliderRange` asserts every per-image seed sits
+    /// strictly inside its control's range — the check that would have caught this. With a sample size
+    /// of one camera, "comfortable" is a judgement call, not a proof; widen further the moment a second
+    /// camera disagrees.
     ///
     /// **`boost` and `boostShadow` are not the same range**, despite the plan's draft grouping them:
     /// `boostAmount`'s own doc comment (`RAWDevelopSettings.swift`) is explicit — "Global tone curve,
@@ -96,7 +104,7 @@ enum DevelopControl: String, Sendable, CaseIterable {
     var range: ClosedRange<Double> {
         switch self {
         case .exposure, .baselineExposure: return -4...4
-        case .shadowBias: return -1...1
+        case .shadowBias: return -10...10
         case .boost: return 0...1
         case .boostShadow: return 0...2
         case .whiteBalance: return 2000...50000

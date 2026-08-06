@@ -143,7 +143,7 @@ final class RAWCapabilitiesTests: XCTestCase {
         let expected: [DevelopControl: ClosedRange<Double>] = [
             .exposure: -4...4,                    // ours
             .baselineExposure: -4...4,            // ours
-            .shadowBias: -1...1,                  // ours
+            .shadowBias: -10...10,                // ours
             .boost: 0...1,                        // documented: "Global tone curve, 0…1"
             .boostShadow: 0...2,                  // documented: "0…2 (<1 darkens, >1 lightens)"
             .whiteBalance: 2000...50000,          // documented: "2000…50000 K"
@@ -289,8 +289,9 @@ final class RAWCapabilitiesTests: XCTestCase {
         // picture actually was — so the first touch of it jumped the image hard.
         // `colorNoiseReductionAmount` at 0.5 is the same defect, smaller.
         //
-        // Note also `shadowBias` at **5.0**, outside the −1…1 we chose for its slider. That range is
-        // ours, not CIRAWFilter's (see `DevelopControl.range`), and this file proves the two disagree.
+        // Note also `shadowBias` at **5.0**. That used to be outside the −1…1 we chose for its slider
+        // — this file is what caught it — so the range is now −10…10 (see `DevelopControl.range`),
+        // wide enough to hold this camera's seed with headroom on both sides rather than at the edge.
 
         // Assert the *shape* rather than the exact numbers — a macOS update may retune a decoder
         // default, and that should not fail the suite. What must hold is that a supported knob's
@@ -312,6 +313,13 @@ final class RAWCapabilitiesTests: XCTestCase {
         // a per-row assertion so the *membership* is the contract: a control joining or leaving this
         // list is a real change in what the panel does on open, and should be a deliberate edit to
         // `DevelopControl.range` and its doc comment, not a silent drift.
+        //
+        // This used to assert the set was exactly `{.shadowBias}` — encoding the pinned-slider defect
+        // as the expected outcome. Now that `DevelopControl.range` has been widened to actually hold
+        // this decoder's seeds (see its doc comment), the set should be empty; any control appearing
+        // here is a new bug, not a known one. `testEveryPerImageSeedLandsStrictlyInsideItsSliderRange`
+        // below is the sharper version of this same check — "inside" is not enough, it must not sit at
+        // an edge either — but this one stays as the plain, cheap sanity check.
         let seeds: [(DevelopControl, Double)] = [
             (.baselineExposure, caps.baselineExposure),
             (.shadowBias, caps.shadowBias),
@@ -328,10 +336,10 @@ final class RAWCapabilitiesTests: XCTestCase {
             seeds.filter { caps.supports($0.0) && !$0.0.range.contains($0.1) }.map(\.0)
         )
         XCTAssertEqual(
-            outOfRange, [.shadowBias],
-            "this decoder seeds shadowBias at \(caps.shadowBias), outside the −1…1 slider we chose "
-            + "for it, so that control opens pinned at its maximum. Known and recorded — see "
-            + "DevelopControl.range. Any *other* control appearing here is a new bug."
+            outOfRange, [],
+            "a supported control's seed landed outside the slider that displays it — that control "
+            + "will open pinned at an edge. Widen its range in DevelopControl.range and update the "
+            + "doc comment there in the same commit."
         )
 
         // An unsupported adjustment is never queried, so its seed stays at the struct's default —
@@ -342,6 +350,69 @@ final class RAWCapabilitiesTests: XCTestCase {
         XCTAssertEqual(caps.localToneMapAmount, 0,
                        "an unsupported adjustment must not be probed; its seed stays at the default")
         XCTAssertFalse(caps.availableControls.contains(.localToneMap))
+    }
+
+    /// The test that would have caught the `shadowBias` defect: not "is the seed somewhere in the
+    /// range", but "is it strictly inside it" — a seed sitting exactly on an endpoint is a slider that
+    /// opens pinned just as surely as one sitting outside the range altogether, and `.contains(_:)`
+    /// alone cannot tell a comfortable seed from one balanced on the edge.
+    ///
+    /// **Scope: the seeds whose range is ours to widen, plus the two colorimetric seeds with no
+    /// "off" state.** `baselineExposure` and `shadowBias` have UI-invented ranges (see
+    /// `DevelopControl.range`'s doc comment) — a seed pinned at either edge is exactly the defect this
+    /// commit fixes, and the fix is to widen the range. `asShotTemperature` / `asShotTint` (the
+    /// `whiteBalance` control and the separate `tintRange`) are per-image seeds too, and unlike an
+    /// "amount" dial neither has a meaningful "off" value at either end — a colour temperature or tint
+    /// pinned at its documented bound is a real problem, not a rest state.
+    ///
+    /// **Deliberately excluded: the seven gated 0…N "amount" controls** (`sharpness`, `contrast`,
+    /// `detail`, `moireReduction`, `localToneMap`, `luminanceNoiseReduction`, `colorNoiseReduction`).
+    /// Their ranges are `CIRAWFilter`-documented, not ours to move, and `0` is those knobs' legitimate
+    /// "no enhancement applied" rest value — this DNG's own seeds land exactly there for `contrast`,
+    /// `detail`, `moireReduction`, and `luminanceNoiseReduction` (see the printout in
+    /// `testProbingARealRAWReportsItsDecodersSeeds`). A slider opening at the bottom of a documented
+    /// 0…N range because the decoder applied no enhancement is normal — the same shape as a volume
+    /// slider resting at 0 — and not the "our range is too narrow" defect this test exists to catch,
+    /// which is also why there would be nothing to fix here even if it were flagged.
+    ///
+    /// `exposure` is excluded too: `CIRAWFilter` documents a fixed default of 0 for it, not a
+    /// per-image seed, and `developValue(for:)` never reads one for it. The three toggle controls
+    /// (`lensCorrection`, `gamutMapping`, `highlightRecovery`) are excluded as well — a `Bool` seed is
+    /// carried as literal 0 or 1 through a `Binding<Double>`, and sitting at an endpoint is exactly
+    /// correct for those, not a defect.
+    ///
+    /// Skips on CI, which has no DNG — read a green CI run as saying nothing about this.
+    func testEveryPerImageSeedLandsStrictlyInsideItsSliderRange() async throws {
+        guard let rawURL = Fixtures.localRAWURL else {
+            throw XCTSkip("no local RAW; see Fixtures.localRAWURL and PHASE2_SPEC §8.9")
+        }
+        let engine = RenderEngine()
+        let source = ImageSource(url: rawURL, nativeExtent: .zero)
+        let probed = await engine.rawCapabilities(for: source)
+        let caps = try XCTUnwrap(probed)
+
+        /// A seed sitting on either endpoint is pinned exactly as a seed outside the range is —
+        /// `ClosedRange.contains(_:)` alone would pass both.
+        func isStrictlyInside(_ value: Double, _ range: ClosedRange<Double>) -> Bool {
+            range.contains(value) && value != range.lowerBound && value != range.upperBound
+        }
+
+        let seeds: [(name: String, value: Double, range: ClosedRange<Double>)] = [
+            (DevelopControl.baselineExposure.rawValue, caps.baselineExposure,
+             DevelopControl.baselineExposure.range),
+            (DevelopControl.shadowBias.rawValue, caps.shadowBias, DevelopControl.shadowBias.range),
+            (DevelopControl.whiteBalance.rawValue, caps.asShotTemperature,
+             DevelopControl.whiteBalance.range),
+            ("tint", caps.asShotTint, DevelopControl.tintRange),
+        ]
+        for (name, value, range) in seeds {
+            XCTAssertTrue(
+                isStrictlyInside(value, range),
+                "\(name) seeds at \(value), which is at or outside the edge of its \(range) slider "
+                + "range — that control will open pinned. Widen the range for \(name) so the "
+                + "decoder's own default sits comfortably inside it."
+            )
+        }
     }
 
     // MARK: - "Read a seed only behind its gate", which leaves no runtime trace
