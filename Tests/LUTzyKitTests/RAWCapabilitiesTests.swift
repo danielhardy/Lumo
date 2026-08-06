@@ -113,4 +113,50 @@ final class RAWCapabilitiesTests: XCTestCase {
             )
         }
     }
+
+    // MARK: - The real probe
+
+    /// The flags a real decoder reports, read through the engine.
+    ///
+    /// Skips on CI, which has no DNG — read a green CI run as saying nothing about this.
+    func testProbingARealRAWReportsItsDecodersFlags() async throws {
+        guard let rawURL = Fixtures.localRAWURL else {
+            throw XCTSkip("no local RAW; see Fixtures.localRAWURL and PHASE2_SPEC §8.9")
+        }
+        let engine = RenderEngine()
+        let source = ImageSource(url: rawURL, nativeExtent: .zero)
+
+        // `XCTUnwrap` takes an autoclosure, which cannot contain `await` — so the actor hop happens
+        // here and the unwrap happens after it (see `RenderEngineTests.render`).
+        let probed = await engine.rawCapabilities(for: source)
+        let caps = try XCTUnwrap(probed)
+
+        // Measured on the Leica DNG in realworldtest/. CODE_REVIEW §5 used to claim this file
+        // "supports every one of them", which is why the gates were called untestable. It does not:
+        // localToneMap is false, so the gated branch is coverable locally.
+        XCTAssertFalse(caps.isLocalToneMapSupported,
+                       "expected this decoder to refuse local tone mapping — if it now supports it, "
+                       + "find another gate to pin rather than deleting this assertion")
+        XCTAssertTrue(caps.isSharpnessSupported)
+        XCTAssertTrue(caps.isColorNoiseReductionSupported)
+        XCTAssertFalse(caps.availableControls.contains(.localToneMap),
+                       "an unsupported adjustment must not be offered")
+
+        // Seeds: as-shot WB is a real measured value, not a round default. If these came back 0 the
+        // white-balance slider would open at 0 K.
+        XCTAssertGreaterThan(caps.asShotTemperature, 2000)
+        XCTAssertLessThan(caps.asShotTemperature, 50000)
+    }
+
+    /// A standard image has no CIRAWFilter to ask, and must not pretend otherwise.
+    func testProbingAStandardImageReturnsNil() async throws {
+        let directory = try Fixtures.makeTempDirectory("ProbeTests")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let png = try Fixtures.writeGradientPNG(width: 16, height: 16, named: "s.png", in: directory)
+
+        let engine = RenderEngine()
+        let caps = await engine.rawCapabilities(for: ImageSource(url: png, nativeExtent: .zero))
+
+        XCTAssertNil(caps, "a JPEG or PNG has no develop stage; capabilities must be nil, not empty")
+    }
 }

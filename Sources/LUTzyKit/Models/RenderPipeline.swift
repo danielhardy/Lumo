@@ -112,7 +112,10 @@ enum RenderPipeline {
         }
     }
 
-    private static func rawFilter(for backing: ImageSource.Backing) -> CIRAWFilter? {
+    /// Internal rather than private since Step 10a: `RenderEngine.rawCapabilities` builds a filter
+    /// purely to read its `is*Supported` flags, and duplicating the two-case construction would be
+    /// two places for the `identifierHint` decision to drift.
+    static func rawFilter(for backing: ImageSource.Backing) -> CIRAWFilter? {
         switch backing {
         case .url(let url):
             return CIRAWFilter(imageURL: url)

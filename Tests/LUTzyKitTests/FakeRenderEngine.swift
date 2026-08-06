@@ -100,6 +100,20 @@ actor FakeRenderEngine: RenderEngining {
 
     func invalidateLUTCache() { invalidateCount += 1 }
 
+    /// How many times the app asked for capabilities. The probe costs ~25 ms, so "once per image
+    /// open" is a requirement, not a detail — a count is the only way to see it.
+    private(set) var capabilityProbeCount = 0
+
+    /// What the fake reports. `nil` models a standard image.
+    var stubbedCapabilities: RAWCapabilities? = .everythingSupported
+
+    func rawCapabilities(for source: ImageSource) -> RAWCapabilities? {
+        capabilityProbeCount += 1
+        return stubbedCapabilities
+    }
+
+    func setStubbedCapabilities(_ value: RAWCapabilities?) { stubbedCapabilities = value }
+
     func setShouldFailEncode(_ value: Bool) { shouldFailEncode = value }
 
     /// A 2×2 opaque image — enough to be a real `CGImage`, cheap enough to make per call.
