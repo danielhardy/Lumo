@@ -2,6 +2,7 @@ import Foundation
 import CoreImage
 import AppKit
 import Combine
+import SwiftUI
 import UniformTypeIdentifiers
 
 /// Central state for the LUTzy app.
@@ -70,6 +71,18 @@ final class AppViewModel: ObservableObject {
     /// gated on this so we don't tally pixels for a panel nobody's looking at.
     @Published var isInspectorPresented: Bool = false {
         didSet { if isInspectorPresented { updateHistogram() } }
+    }
+    /// Which half of the inspector is showing.
+    @Published var inspectorTab: InspectorTab = .info
+
+    enum InspectorTab: String, CaseIterable, Sendable {
+        case info, develop
+        var title: String {
+            switch self {
+            case .info: return "Info"
+            case .develop: return "Develop"
+            }
+        }
     }
     /// Source-folder file browser panel visibility.
     @Published var isSourceBrowserPresented: Bool = false
@@ -454,6 +467,153 @@ final class AppViewModel: ObservableObject {
                 self.scheduleOriginalPreview()
             }
             self.schedulePreview()
+        }
+    }
+
+    // MARK: - RAW develop
+
+    /// A two-way binding for one develop control.
+    ///
+    /// **Reading never writes.** Every `RAWDevelopSettings` property is `Optional`, with `nil`
+    /// meaning "leave `CIRAWFilter` at its decoder default", and `.neutral` is byte-identical to
+    /// `ImageDecoder.developRAWNeutral` precisely *because it sets nothing*. So the getter falls back
+    /// to the decoder's own value — a fixed default where there is one, otherwise the per-image seed
+    /// from `rawCapabilities` — and only the setter stores anything. Seeding every field when the
+    /// panel opened would silently make every document non-neutral.
+    ///
+    /// **Writes for a toggle control are immediate, not debounced.** `updateDocument(debounced:)`'s
+    /// own doc comment is explicit that debouncing is for continuous controls only — "a checkbox that
+    /// lagged 60 ms would feel broken" — and this binding backs both sliders and the three Bool
+    /// controls (`lensCorrection`, `gamutMapping`, `highlightRecovery`), routed through `Toggle` in
+    /// the view. Only sliders get the 60 ms coalescing.
+    func developBinding(for control: DevelopControl) -> Binding<Double> {
+        Binding(
+            get: { self.developValue(for: control) },
+            set: { newValue in
+                self.updateDocument(debounced: !Self.isToggle(control)) { document in
+                    Self.setDevelop(control, to: newValue, in: &document.rawDevelop)
+                }
+            }
+        )
+    }
+
+    /// What a control should display: the stored setting, else the decoder's own starting point.
+    func developValue(for control: DevelopControl) -> Double {
+        let develop = document.rawDevelop
+        let seed = rawCapabilities
+        switch control {
+        case .exposure: return develop.exposure ?? 0
+        case .baselineExposure: return develop.baselineExposure ?? seed?.baselineExposure ?? 0
+        case .shadowBias: return develop.shadowBias ?? seed?.shadowBias ?? 0
+        case .boost: return develop.boostAmount ?? 1
+        case .boostShadow: return develop.boostShadowAmount ?? 1
+        case .whiteBalance: return develop.neutralTemperature ?? seed?.asShotTemperature ?? 6500
+        case .sharpness: return develop.sharpnessAmount ?? 0
+        case .contrast: return develop.contrastAmount ?? 0
+        case .detail: return develop.detailAmount ?? 0
+        case .moireReduction: return develop.moireReductionAmount ?? 0
+        case .localToneMap: return develop.localToneMapAmount ?? 0
+        case .luminanceNoiseReduction: return develop.luminanceNoiseReductionAmount ?? 0
+        case .colorNoiseReduction: return develop.colorNoiseReductionAmount ?? 0
+        case .lensCorrection: return (develop.lensCorrectionEnabled ?? true) ? 1 : 0
+        case .gamutMapping: return (develop.gamutMappingEnabled ?? true) ? 1 : 0
+        case .extendedDynamicRange: return develop.extendedDynamicRangeAmount ?? 0
+        case .highlightRecovery: return (develop.highlightRecoveryEnabled ?? true) ? 1 : 0
+        }
+    }
+
+    /// The tint half of white balance. Separate because `whiteBalance` is one row with two sliders.
+    func developTintBinding() -> Binding<Double> {
+        Binding(
+            get: { self.document.rawDevelop.neutralTint ?? self.rawCapabilities?.asShotTint ?? 0 },
+            set: { newValue in
+                self.updateDocument(debounced: true) { $0.rawDevelop.neutralTint = newValue }
+            }
+        )
+    }
+
+    private static func setDevelop(
+        _ control: DevelopControl, to value: Double, in develop: inout RAWDevelopSettings
+    ) {
+        switch control {
+        case .exposure: develop.exposure = value
+        case .baselineExposure: develop.baselineExposure = value
+        case .shadowBias: develop.shadowBias = value
+        case .boost: develop.boostAmount = value
+        case .boostShadow: develop.boostShadowAmount = value
+        case .whiteBalance: develop.neutralTemperature = value
+        case .sharpness: develop.sharpnessAmount = value
+        case .contrast: develop.contrastAmount = value
+        case .detail: develop.detailAmount = value
+        case .moireReduction: develop.moireReductionAmount = value
+        case .localToneMap: develop.localToneMapAmount = value
+        case .luminanceNoiseReduction: develop.luminanceNoiseReductionAmount = value
+        case .colorNoiseReduction: develop.colorNoiseReductionAmount = value
+        case .lensCorrection: develop.lensCorrectionEnabled = value != 0
+        case .gamutMapping: develop.gamutMappingEnabled = value != 0
+        case .extendedDynamicRange: develop.extendedDynamicRangeAmount = value
+        case .highlightRecovery: develop.highlightRecoveryEnabled = value != 0
+        }
+    }
+
+    /// Return one control to "decoder default" — `nil`, not zero.
+    func resetDevelop(_ control: DevelopControl) {
+        updateDocument { document in
+            switch control {
+            case .exposure: document.rawDevelop.exposure = nil
+            case .baselineExposure: document.rawDevelop.baselineExposure = nil
+            case .shadowBias: document.rawDevelop.shadowBias = nil
+            case .boost: document.rawDevelop.boostAmount = nil
+            case .boostShadow: document.rawDevelop.boostShadowAmount = nil
+            case .whiteBalance:
+                document.rawDevelop.neutralTemperature = nil
+                document.rawDevelop.neutralTint = nil
+            case .sharpness: document.rawDevelop.sharpnessAmount = nil
+            case .contrast: document.rawDevelop.contrastAmount = nil
+            case .detail: document.rawDevelop.detailAmount = nil
+            case .moireReduction: document.rawDevelop.moireReductionAmount = nil
+            case .localToneMap: document.rawDevelop.localToneMapAmount = nil
+            case .luminanceNoiseReduction: document.rawDevelop.luminanceNoiseReductionAmount = nil
+            case .colorNoiseReduction: document.rawDevelop.colorNoiseReductionAmount = nil
+            case .lensCorrection: document.rawDevelop.lensCorrectionEnabled = nil
+            case .gamutMapping: document.rawDevelop.gamutMappingEnabled = nil
+            case .extendedDynamicRange: document.rawDevelop.extendedDynamicRangeAmount = nil
+            case .highlightRecovery: document.rawDevelop.highlightRecoveryEnabled = nil
+            }
+        }
+    }
+
+    /// Return every develop control to the decoder's defaults.
+    func resetAllDevelop() {
+        updateDocument { $0.rawDevelop = .neutral }
+    }
+
+    /// True when this control is a toggle rather than a slider.
+    static func isToggle(_ control: DevelopControl) -> Bool {
+        switch control {
+        case .lensCorrection, .gamutMapping, .highlightRecovery: return true
+        default: return false
+        }
+    }
+
+    /// The slider range for a control. Values are `CIRAWFilter`'s documented ranges
+    /// (`PHASE2_SPEC.md` §9 and `RAWDevelopSettings`).
+    ///
+    /// **`boost` and `boostShadow` are not the same range**, despite the plan's draft grouping them:
+    /// `boostAmount`'s own doc comment (`RAWDevelopSettings.swift`) is explicit — "Global tone curve,
+    /// 0…1" — while `boostShadowAmount` is "0…2 (<1 darkens, >1 lightens)". Sharing one case would
+    /// let the boost slider reach 2.0, a value outside what `CIRAWFilter` documents for that knob.
+    static func range(for control: DevelopControl) -> ClosedRange<Double> {
+        switch control {
+        case .exposure, .baselineExposure: return -4...4
+        case .shadowBias: return -1...1
+        case .boost: return 0...1
+        case .boostShadow: return 0...2
+        case .whiteBalance: return 2000...50000
+        case .detail: return 0...3
+        case .extendedDynamicRange: return 0...2
+        case .lensCorrection, .gamutMapping, .highlightRecovery: return 0...1
+        default: return 0...1
         }
     }
 

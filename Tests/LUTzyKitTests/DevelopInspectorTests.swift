@@ -209,4 +209,70 @@ final class DevelopInspectorTests: TempDirectoryTestCase {
             await fake.previewRequests.contains { $0.document == expectedBaseline && $0.lutID == nil }
         }
     }
+
+    // MARK: - The ship gate: edits reach the renderer
+
+    func testADevelopEditRendersTheChangedDocument() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+
+        viewModel.developBinding(for: .exposure).wrappedValue = 1.25
+
+        try await waitUntil("the edited render") {
+            await fake.previewRequests.contains { $0.document.rawDevelop.exposure == 1.25 }
+        }
+    }
+
+    /// A control bound to a `nil` setting has to show the decoder's own value, not zero. As-shot
+    /// white balance on a real file is ~5842 K; a slider opening at 0 K would be nonsense.
+    func testAnUnsetControlReadsBackTheSeedRatherThanZero() async throws {
+        let fake = FakeRenderEngine()
+        await fake.setStubbedCapabilities(RAWCapabilities(asShotTemperature: 5842.2, asShotTint: 14.04))
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("capabilities") { viewModel.rawCapabilities != nil }
+
+        XCTAssertNil(viewModel.document.rawDevelop.neutralTemperature, "nothing written yet")
+        XCTAssertEqual(viewModel.developBinding(for: .whiteBalance).wrappedValue, 5842.2, accuracy: 0.01,
+                       "an unset white balance must display the file's as-shot value")
+        XCTAssertEqual(viewModel.developBinding(for: .exposure).wrappedValue, 0,
+                       "exposure has a fixed decoder default of 0")
+    }
+
+    /// Presenting the panel must not write anything. `.neutral` is byte-identical to
+    /// `developRAWNeutral` *because it sets nothing*; seeding every field on open would quietly end
+    /// that, and the derive baseline reasons about a neutral document.
+    func testReadingEveryControlWritesNothing() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("capabilities") { viewModel.rawCapabilities != nil }
+
+        for control in DevelopControl.allCases {
+            _ = viewModel.developBinding(for: control).wrappedValue
+        }
+
+        XCTAssertTrue(viewModel.document.rawDevelop.isNeutral,
+                      "opening the panel must not write settings")
+    }
+
+    func testResettingAControlReturnsItToUnset() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("capabilities") { viewModel.rawCapabilities != nil }
+
+        viewModel.developBinding(for: .exposure).wrappedValue = 2.0
+        XCTAssertEqual(viewModel.document.rawDevelop.exposure, 2.0)
+
+        viewModel.resetDevelop(.exposure)
+        XCTAssertNil(viewModel.document.rawDevelop.exposure, "reset means unset, not zero")
+
+        viewModel.developBinding(for: .exposure).wrappedValue = 2.0
+        viewModel.developBinding(for: .whiteBalance).wrappedValue = 3000
+        viewModel.resetAllDevelop()
+        XCTAssertTrue(viewModel.document.rawDevelop.isNeutral)
+    }
 }
