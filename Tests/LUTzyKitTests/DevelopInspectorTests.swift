@@ -210,6 +210,93 @@ final class DevelopInspectorTests: TempDirectoryTestCase {
         }
     }
 
+    // MARK: - The histogram belongs to the Info tab
+
+    /// The histogram is gated on the inspector being open "so we don't tally pixels for a panel
+    /// nobody's looking at" — its own words. The Develop tab breaks that: the inspector is open, the
+    /// histogram is not on screen, and every settled render of a slider drag was tallying one. An
+    /// open inspector parked on Develop is as much a panel nobody's looking at as a closed one.
+    func testNoHistogramIsTalliedWhileTheDevelopTabIsShowing() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+
+        // Switch first, *then* open: opening with Info showing would legitimately tally one.
+        viewModel.inspectorTab = .develop
+        viewModel.isInspectorPresented = true
+
+        viewModel.developBinding(for: .exposure).wrappedValue = 0.9
+        try await waitUntil("the develop render") {
+            await fake.previewRequests.contains { $0.document.rawDevelop.exposure == 0.9 }
+        }
+        // The tally would be issued from the same task that publishes the preview, so by the time
+        // that render is visible it would already be recorded. The sleep is belt and braces.
+        try await Task.sleep(for: .milliseconds(150))
+
+        let requests = await fake.histogramRequests
+        XCTAssertTrue(requests.isEmpty,
+                      "the Develop tab has no histogram; \(requests.count) tallies were issued for a "
+                      + "chart nobody can see")
+        XCTAssertNil(viewModel.histogram)
+    }
+
+    /// ...and coming **back** has to recompute, or the gate above just makes the histogram blank (on
+    /// a first visit) or stale (on a return) for anyone who touched Develop.
+    func testSwitchingBackToInfoRecomputesTheHistogram() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+
+        viewModel.inspectorTab = .develop
+        viewModel.isInspectorPresented = true
+
+        // Edit while the histogram is off-screen. Nothing is tallied, so whatever Info shows next
+        // can only be right if the switch itself recomputes.
+        viewModel.developBinding(for: .exposure).wrappedValue = 0.9
+        try await waitUntil("the develop render") {
+            await fake.previewRequests.contains { $0.document.rawDevelop.exposure == 0.9 }
+        }
+        try await Task.sleep(for: .milliseconds(150))
+        let beforeSwitch = await fake.histogramRequests
+        XCTAssertTrue(beforeSwitch.isEmpty, "precondition: nothing tallied while on Develop")
+
+        viewModel.inspectorTab = .info
+
+        try await waitUntil("the histogram to be published") { viewModel.histogram != nil }
+        let after = await fake.histogramRequests
+        XCTAssertEqual(after.count, 1, "returning to Info should tally exactly once")
+        XCTAssertEqual(
+            after.first?.document.rawDevelop.exposure, 0.9,
+            "the recomputed histogram must describe the document as it is now, not as it was when "
+            + "the user left the tab"
+        )
+    }
+
+    /// Leaving Info for Develop and coming back must not need an intervening render — and must not
+    /// tally on the way *out*, either.
+    func testLeavingInfoStopsTalliesAndReturningResumesThem() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+
+        viewModel.isInspectorPresented = true   // Info is the default tab
+        try await waitUntil("the first tally") { await !fake.histogramRequests.isEmpty }
+        let onInfo = await fake.histogramRequests.count
+
+        viewModel.inspectorTab = .develop
+        try await Task.sleep(for: .milliseconds(100))
+        let afterLeaving = await fake.histogramRequests.count
+        XCTAssertEqual(afterLeaving, onInfo, "switching away must not tally")
+
+        viewModel.inspectorTab = .info
+        try await waitUntil("the tally on return") {
+            await fake.histogramRequests.count > onInfo
+        }
+    }
+
     // MARK: - The ship gate: edits reach the renderer
 
     func testADevelopEditRendersTheChangedDocument() async throws {

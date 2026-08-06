@@ -67,13 +67,22 @@ final class AppViewModel: ObservableObject {
     @Published var isShowingOriginal: Bool = false
     @Published var isSideBySide: Bool = true
 
-    /// Info inspector (EXIF + histogram) visibility. Computing the histogram is
-    /// gated on this so we don't tally pixels for a panel nobody's looking at.
+    /// Inspector visibility. Computing the histogram is gated on this — plus on the Info tab being
+    /// the one on screen — so we don't tally pixels for a panel nobody's looking at.
     @Published var isInspectorPresented: Bool = false {
         didSet { if isInspectorPresented { updateHistogram() } }
     }
+
     /// Which half of the inspector is showing.
-    @Published var inspectorTab: InspectorTab = .info
+    ///
+    /// The histogram lives on `.info` only, so this gates it exactly as `isInspectorPresented` does:
+    /// an open inspector showing Develop is as much "a panel nobody's looking at" as a closed one,
+    /// and without this every settled render of a develop drag would tally an off-screen histogram.
+    /// Switching **back** recomputes, or the panel would return blank (or stale) after a detour
+    /// through Develop.
+    @Published var inspectorTab: InspectorTab = .info {
+        didSet { if inspectorTab == .info { updateHistogram() } }
+    }
 
     enum InspectorTab: String, CaseIterable, Sendable {
         case info, develop
@@ -760,8 +769,8 @@ final class AppViewModel: ObservableObject {
         isInspectorPresented.toggle()
     }
 
-    /// Recompute the histogram for the currently displayed image. No-op while the inspector is
-    /// closed. Cancellable, so dragging the intensity slider stays smooth.
+    /// Recompute the histogram for the currently displayed image. No-op unless the Info tab of an
+    /// open inspector is on screen. Cancellable, so dragging the intensity slider stays smooth.
     ///
     /// **Step 6 cut this over with export.** It used to tally `processedImage` — a full-resolution
     /// neutral decode with only the LUT on it — while the screen showed develop and adjustments as
@@ -773,7 +782,9 @@ final class AppViewModel: ObservableObject {
     /// `RenderEngine.histogram`, which shares the developed-source memo with the on-screen render
     /// instead of evicting it every tally.
     private func updateHistogram() {
-        guard isInspectorPresented else { return }
+        // Both halves of the gate: an inspector parked on Develop shows no histogram, so tallying
+        // one on every settled render of a slider drag is pure waste.
+        guard isInspectorPresented, inspectorTab == .info else { return }
         guard let imageSource else {
             histogram = nil
             return
