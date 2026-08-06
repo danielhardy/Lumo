@@ -21,6 +21,12 @@ final class AppViewModel: ObservableObject {
     ///
     /// Kept across image opens rather than reset, per §8.4 — auditioning one look across a folder is
     /// the common case, and that is what the app already did.
+    ///
+    /// That reasoning covers the LUT and its intensity; it does not cover `rawDevelop`, whose fields
+    /// are per-file decoder defaults, not a portable look. Step 10a is the first thing that writes to
+    /// `rawDevelop`, and carrying it forward means a value set on one RAW silently overrides the next
+    /// RAW's own probed as-shot seed. Known, and deliberately deferred to Step 11 — see §8.4 for the
+    /// worked example and why that step is the right place to settle it.
     @Published private(set) var document = EditDocument()
 
     /// How to reproduce the open image. Held instead of a decoded `CIImage` because a RAW has to be

@@ -289,3 +289,10 @@ across launches (§8.8), and the `CITemperatureAndTint` direction question (§8.
 deferred *by decision*: RAW white balance is the temperature control for a RAW, and the
 `temperatureTint` node is reserved for non-RAW images in 10b, so no image ever shows two Kelvin
 sliders and §8.7 does not block this step.
+
+`rawDevelop` not resetting on new-image open is also deferred *by decision*, not overlooked. §8.4's
+Step 5 "keep `document` across opens" call predates develop being reachable at all; 10a is what makes
+its cost visible — a `neutralTemperature` set on one RAW now overrides the next RAW's own as-shot seed
+instead of yielding to it, and `originalForComparison` inherits the same staleness. Fixing it belongs
+with Step 11's `EditDocumentStore`, which is where "which document belongs to which image" becomes a
+per-image question instead of a single global one; see §8.4 for the full argument.

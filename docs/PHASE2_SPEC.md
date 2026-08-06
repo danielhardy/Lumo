@@ -410,6 +410,21 @@ the next frame. `ImageProcessor.histogram` is gone; the tally is now a pure
 4. ~~**New-image document policy.**~~ **Decided at Step 5: keep.** The document survives an open, so a
    look can be auditioned across a folder — which is what the app already did with its LUT selection
    and intensity, so the cutover changed nothing here.
+
+   **Revisited at Step 10a.** The Step 5 rationale is about *look* — a LUT and its intensity mean the
+   same thing on every image in a folder, so carrying them forward is correct. `rawDevelop` breaks
+   that: exposure, white balance and the rest are decoder defaults **measured per file**, not a
+   portable look, and Step 10a is the first thing that writes to them. Carrying `document` forward now
+   also carries a stale seed. Set white balance to 3200 K on one RAW, press → to the next, and the new
+   image renders at 3200 K while its own probed as-shot temperature — 5842 K on the Leica in
+   `realworldtest/` — sits unused in `rawCapabilities`, never read because `neutralTemperature` is no
+   longer `nil`. `EditDocument.originalForComparison` (§8.5) keeps `rawDevelop` for its baseline, so
+   the A/B "original" is wrong the same way: it shows image B developed with image A's white balance,
+   not image B's own as-shot rendering. Step 5 could not have reasoned about this — develop did not
+   exist yet. **Deliberately deferred to Step 11:** that step adds per-image undo and an
+   `EditDocumentStore`, which is the point at which "which document belongs to which image" stops
+   being a single global answer and becomes a per-`Item.id` one — the natural place to also decide
+   whether `rawDevelop` resets, and to what, on open. Left as-is until then.
 5. ~~**"Original" for A/B.**~~ **Decided at Step 5: develop-applied.** `EditDocument.originalForComparison`
    keeps `rawDevelop` and strips adjustments and the LUT — holding Space shows the same negative
    without the *look*, not a different rendering of it. Sharing `rawDevelop` also keeps the swap cheap,
