@@ -49,8 +49,14 @@ final class PreviewCostBenchmark: XCTestCase {
 
     /// `time` for an async body. Runs the loop on a semaphore-free detached task and waits, so the
     /// per-render figure is comparable with the synchronous one.
+    ///
+    /// `@Sendable` because the body is handed to an unstructured `Task`: Swift 6 language mode
+    /// rejects passing a non-sendable closure across that boundary. Every call site already captures
+    /// only `Sendable` values — the actor, the source, the document, the cube — so this documents
+    /// what was true rather than constraining anything.
     fileprivate func timeAsync(
-        _ label: String, _ iterations: Int, unit: String = "render", _ body: @escaping () async -> Void
+        _ label: String, _ iterations: Int, unit: String = "render",
+        _ body: @escaping @Sendable () async -> Void
     ) -> Double {
         func runAll() {
             let group = DispatchGroup()

@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 // LUTzy is split into a library plus a thin `@main` executable so the app's own
@@ -15,6 +15,7 @@ let package = Package(
     targets: [
         .target(
             name: "LUTzyKit",
+            swiftSettings: [.swiftLanguageMode(.v6)],
             linkerSettings: [
                 .linkedFramework("PhotosUI"),
             ]
@@ -22,11 +23,13 @@ let package = Package(
         .executableTarget(
             name: "LUTzy",
             dependencies: ["LUTzyKit"],
-            exclude: ["Assets.xcassets", "LUTzy.entitlements"]
+            exclude: ["Assets.xcassets", "LUTzy.entitlements"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
             name: "LUTzyKitTests",
-            dependencies: ["LUTzyKit"]
+            dependencies: ["LUTzyKit"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]
 )
