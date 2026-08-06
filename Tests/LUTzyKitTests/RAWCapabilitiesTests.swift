@@ -309,6 +309,16 @@ final class RAWCapabilitiesTests: XCTestCase {
         XCTAssertGreaterThan(caps.colorNoiseReductionAmount, 0)
         XCTAssertGreaterThan(caps.baselineExposure, 0)
 
+        // `lensCorrectionEnabled` is a `Bool`, so unlike the numeric seeds above it cannot be pinned
+        // by "not zero, not round" — `false` is just as legitimate a decoder answer as `true`. It was
+        // printed above but never asserted, which is exactly the gap `FakeRenderEngine.distinctivelySeeded`'s
+        // doc comment warns about: a getter that dropped this seed and fell back to a hardcoded
+        // constant would pass every existing check. This Leica reports it `true` — assert that, so a
+        // regression back to a constant (in either direction) has something real to fail against.
+        XCTAssertTrue(caps.lensCorrectionEnabled,
+                      "this decoder enables lens correction by default; false here means the probe "
+                      + "stopped reading lensCorrectionEnabled off the filter")
+
         // Which seeds land outside the slider that will display them. Written as a set rather than
         // a per-row assertion so the *membership* is the contract: a control joining or leaving this
         // list is a real change in what the panel does on open, and should be a deliberate edit to
@@ -365,21 +375,29 @@ final class RAWCapabilitiesTests: XCTestCase {
     /// "amount" dial neither has a meaningful "off" value at either end — a colour temperature or tint
     /// pinned at its documented bound is a real problem, not a rest state.
     ///
-    /// **Deliberately excluded: the seven gated 0…N "amount" controls** (`sharpness`, `contrast`,
-    /// `detail`, `moireReduction`, `localToneMap`, `luminanceNoiseReduction`, `colorNoiseReduction`).
-    /// Their ranges are `CIRAWFilter`-documented, not ours to move, and `0` is those knobs' legitimate
-    /// "no enhancement applied" rest value — this DNG's own seeds land exactly there for `contrast`,
-    /// `detail`, `moireReduction`, and `luminanceNoiseReduction` (see the printout in
-    /// `testProbingARealRAWReportsItsDecodersSeeds`). A slider opening at the bottom of a documented
-    /// 0…N range because the decoder applied no enhancement is normal — the same shape as a volume
-    /// slider resting at 0 — and not the "our range is too narrow" defect this test exists to catch,
-    /// which is also why there would be nothing to fix here even if it were flagged.
+    /// **Exempted from the *lower*-bound check only: the seven gated 0…N "amount" controls**
+    /// (`sharpness`, `contrast`, `detail`, `moireReduction`, `localToneMap`,
+    /// `luminanceNoiseReduction`, `colorNoiseReduction`). Their ranges are `CIRAWFilter`-documented,
+    /// not ours to move, and `0` is those knobs' legitimate "no enhancement applied" rest value — this
+    /// DNG's own seeds land exactly there for `contrast`, `detail`, `moireReduction`, and
+    /// `luminanceNoiseReduction` (see the printout in `testProbingARealRAWReportsItsDecodersSeeds`). A
+    /// slider opening at the bottom of a documented 0…N range because the decoder applied no
+    /// enhancement is normal — the same shape as a volume slider resting at 0 — and not the "our range
+    /// is too narrow" defect this test exists to catch.
     ///
-    /// `exposure` is excluded too: `CIRAWFilter` documents a fixed default of 0 for it, not a
-    /// per-image seed, and `developValue(for:)` never reads one for it. The three toggle controls
-    /// (`lensCorrection`, `gamutMapping`, `highlightRecovery`) are excluded as well — a `Bool` seed is
-    /// carried as literal 0 or 1 through a `Binding<Double>`, and sitting at an endpoint is exactly
-    /// correct for those, not a defect.
+    /// That exemption stops at the lower bound, though. Excluding these seven wholesale would also
+    /// drop their **upper** bound, and a decoder reporting, say, `sharpnessAmount == 1.0` or
+    /// `detailAmount == 3.0` — this control's own documented maximum — would open the slider pinned at
+    /// full strength, which is exactly the "opens pinned" defect this test exists to catch. So the
+    /// seven below still get checked against their upper bound; only the lower-bound rest state is
+    /// exempt for them.
+    ///
+    /// `exposure`, `boost`, `boostShadow`, and `extendedDynamicRange` are excluded entirely:
+    /// `CIRAWFilter` documents fixed defaults for these, not per-image seeds, and `developValue(for:)`
+    /// never reads a seed for any of them. The three toggle controls (`lensCorrection`,
+    /// `gamutMapping`, `highlightRecovery`) are excluded as well — a `Bool` seed is carried as literal
+    /// 0 or 1 through a `Binding<Double>`, and sitting at an endpoint is exactly correct for those, not
+    /// a defect.
     ///
     /// Skips on CI, which has no DNG — read a green CI run as saying nothing about this.
     func testEveryPerImageSeedLandsStrictlyInsideItsSliderRange() async throws {
@@ -396,23 +414,70 @@ final class RAWCapabilitiesTests: XCTestCase {
         func isStrictlyInside(_ value: Double, _ range: ClosedRange<Double>) -> Bool {
             range.contains(value) && value != range.lowerBound && value != range.upperBound
         }
+        /// The lower-bound-exempt version, for the seven "amount" controls: `0` is a legitimate rest
+        /// state for them, but the maximum is not.
+        func isBelowUpperBound(_ value: Double, _ range: ClosedRange<Double>) -> Bool {
+            range.contains(value) && value != range.upperBound
+        }
 
-        let seeds: [(name: String, value: Double, range: ClosedRange<Double>)] = [
-            (DevelopControl.baselineExposure.rawValue, caps.baselineExposure,
-             DevelopControl.baselineExposure.range),
-            (DevelopControl.shadowBias.rawValue, caps.shadowBias, DevelopControl.shadowBias.range),
-            (DevelopControl.whiteBalance.rawValue, caps.asShotTemperature,
-             DevelopControl.whiteBalance.range),
-            ("tint", caps.asShotTint, DevelopControl.tintRange),
+        let strictControls: [(DevelopControl, Double)] = [
+            (.baselineExposure, caps.baselineExposure),
+            (.shadowBias, caps.shadowBias),
+            (.whiteBalance, caps.asShotTemperature),
         ]
-        for (name, value, range) in seeds {
+        for (control, value) in strictControls {
             XCTAssertTrue(
-                isStrictlyInside(value, range),
-                "\(name) seeds at \(value), which is at or outside the edge of its \(range) slider "
-                + "range — that control will open pinned. Widen the range for \(name) so the "
-                + "decoder's own default sits comfortably inside it."
+                isStrictlyInside(value, control.range),
+                "\(control.rawValue) seeds at \(value), which is at or outside the edge of its "
+                + "\(control.range) slider range — that control will open pinned. Widen the range "
+                + "for \(control.rawValue) so the decoder's own default sits comfortably inside it."
             )
         }
+        XCTAssertTrue(
+            isStrictlyInside(caps.asShotTint, DevelopControl.tintRange),
+            "tint seeds at \(caps.asShotTint), which is at or outside the edge of its "
+            + "\(DevelopControl.tintRange) slider range — that control will open pinned."
+        )
+
+        let amountControls: [DevelopControl] = [
+            .sharpness, .contrast, .detail, .moireReduction, .localToneMap,
+            .luminanceNoiseReduction, .colorNoiseReduction,
+        ]
+        let amountValues: [DevelopControl: Double] = [
+            .sharpness: caps.sharpnessAmount,
+            .contrast: caps.contrastAmount,
+            .detail: caps.detailAmount,
+            .moireReduction: caps.moireReductionAmount,
+            .localToneMap: caps.localToneMapAmount,
+            .luminanceNoiseReduction: caps.luminanceNoiseReductionAmount,
+            .colorNoiseReduction: caps.colorNoiseReductionAmount,
+        ]
+        for control in amountControls {
+            let value = try XCTUnwrap(amountValues[control])
+            XCTAssertTrue(
+                isBelowUpperBound(value, control.range),
+                "\(control.rawValue) seeds at \(value), the maximum of its \(control.range) slider "
+                + "range — that control would open pinned at full strength. Widen the range for "
+                + "\(control.rawValue) so the decoder's own default sits below the maximum."
+            )
+        }
+
+        // Everything not checked above must be a control this test deliberately has nothing to say
+        // about — see the doc comment. A new per-image seed landing in `developValue(for:)` without a
+        // row in `strictControls` or `amountControls` must show up here, not slip past silently, which
+        // is the same "a new case must arrive with a row" guard `testEveryControlsSliderRangeIsPinned`
+        // applies to slider ranges.
+        let excluded: Set<DevelopControl> = [
+            .exposure, .boost, .boostShadow, .extendedDynamicRange,
+            .lensCorrection, .gamutMapping, .highlightRecovery,
+        ]
+        XCTAssertEqual(
+            Set(strictControls.map(\.0)).union(amountControls),
+            Set(DevelopControl.allCases).subtracting(excluded),
+            "every DevelopControl must be covered by the strict-inside check, the below-maximum "
+            + "check, or the exclusion list above, or a new per-image seed would ship with no bounds "
+            + "check at all"
+        )
     }
 
     // MARK: - "Read a seed only behind its gate", which leaves no runtime trace
@@ -461,12 +526,35 @@ final class RAWCapabilitiesTests: XCTestCase {
         ]
 
         /// The text the call passes for `label`, up to the next argument.
+        ///
+        /// **Must fail, not fail open, when a *reorder* is what broke the search.** `lensCorrectionEnabled:`
+        /// is genuinely the last label in `labels`, so for it alone there is no "next" label to find —
+        /// `nextIndex` lands out of bounds, and the rest of `body` legitimately *is* its value, since
+        /// nothing else follows it in the source. That case returns `String(after)` and must not fail.
+        /// But when `label` has a real next neighbour in `labels` and that neighbour's text cannot be
+        /// found *after* `label` in `body`, the only way that happens is the arguments no longer appear
+        /// in the expected order — and the old code silently returned `String(after)` there too: the
+        /// entire rest of the method body, containing every other flag's text. `passed.contains(flag)`
+        /// against that string is true almost by construction, so the whole test would pass vacuously on
+        /// exactly the reorder it exists to catch. This is the only check guarding that invariant, so
+        /// that specific parse miss has to be loud.
         func argument(_ label: String) throws -> String {
             let labelRange = try XCTUnwrap(body.range(of: label), "\(label) is not passed at all")
             let after = body[labelRange.upperBound...]
-            guard let nextIndex = labels.firstIndex(of: label).map({ $0 + 1 }),
-                  nextIndex < labels.count,
-                  let nextRange = after.range(of: labels[nextIndex]) else {
+            let currentIndex = try XCTUnwrap(labels.firstIndex(of: label),
+                                             "\(label) is missing from the labels array")
+            let nextIndex = currentIndex + 1
+            guard nextIndex < labels.count else {
+                // `label` is the last argument in the call — nothing follows it, so `after` is
+                // legitimately its whole value.
+                return String(after)
+            }
+            guard let nextRange = after.range(of: labels[nextIndex]) else {
+                XCTFail(
+                    "could not find \(labels[nextIndex]) anywhere after \(label) in the source — the "
+                    + "parser lost track of where \(label)'s value ends, most likely because the "
+                    + "arguments were reordered, so this test can no longer vouch for anything"
+                )
                 return String(after)
             }
             return String(after[..<nextRange.lowerBound])

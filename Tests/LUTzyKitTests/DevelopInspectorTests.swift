@@ -390,15 +390,56 @@ final class DevelopInspectorTests: TempDirectoryTestCase {
 
         // And the controls that genuinely *do* have a fixed documented default keep it — a blanket
         // "read a seed for everything" would have broken these.
-        XCTAssertEqual(viewModel.developValue(for: .exposure), 0)
-        XCTAssertEqual(viewModel.developValue(for: .boost), 1)
-        XCTAssertEqual(viewModel.developValue(for: .boostShadow), 1)
-        XCTAssertEqual(viewModel.developValue(for: .extendedDynamicRange), 0)
-        XCTAssertEqual(viewModel.developValue(for: .gamutMapping), 1)
-        XCTAssertEqual(viewModel.developValue(for: .highlightRecovery), 1)
+        let fixedDefault: [(DevelopControl, Double)] = [
+            (.exposure, 0),
+            (.boost, 1),
+            (.boostShadow, 1),
+            (.extendedDynamicRange, 0),
+            (.gamutMapping, 1),
+            (.highlightRecovery, 1),
+        ]
+        for (control, expected) in fixedDefault {
+            XCTAssertEqual(viewModel.developValue(for: control), expected)
+        }
+
+        // A new `DevelopControl` must arrive with a row in one of the two tables above, not inherit
+        // no coverage by omission — the same "silently inherits" guard
+        // `RAWCapabilitiesTests.testEveryControlsSliderRangeIsPinned` applies to slider ranges.
+        XCTAssertEqual(
+            Set(seeded.map(\.0)).union(fixedDefault.map(\.0)), Set(DevelopControl.allCases),
+            "every control must be covered by either the per-image seed table or the fixed-default "
+            + "table above, or a new control would ship with no seed coverage tested at all"
+        )
 
         // Reading all of that still wrote nothing.
         XCTAssertTrue(viewModel.document.rawDevelop.isNeutral)
+    }
+
+    /// **`lensCorrectionEnabled` is a `Bool`**, so `RAWCapabilities.distinctivelySeeded`'s single
+    /// `false` above cannot by itself distinguish "reads the seed" from "returns a constant" — a
+    /// getter hardcoded to `false` (the field's own default, and the getter's own tail fallback) would
+    /// pass the table above just as happily as a correct one. Only two stubs, one `true` and one
+    /// `false`, can pin the getter to the seed rather than to either constant.
+    ///
+    /// This is not academic: the Leica in `realworldtest/` reports `lensCorrectionEnabled == true`
+    /// (`RAWCapabilitiesTests.testProbingARealRAWReportsItsDecodersSeeds`). Under the regression this
+    /// guards against, that camera's toggle would show OFF while the decoder already has it ON, and
+    /// the user flipping it "on" would write a value into a document that was already effectively on
+    /// — no longer neutral, for no visual change at all.
+    func testLensCorrectionValueFollowsTheSeedInBothDirections() async throws {
+        for seedValue in [true, false] {
+            let fake = FakeRenderEngine()
+            await fake.setStubbedCapabilities(RAWCapabilities(lensCorrectionEnabled: seedValue))
+            let viewModel = AppViewModel(engine: fake)
+            try await openStandardImage(viewModel)
+            try await waitUntil("capabilities") { viewModel.rawCapabilities != nil }
+
+            XCTAssertEqual(
+                viewModel.developValue(for: .lensCorrection), seedValue ? 1 : 0,
+                "lensCorrection must track the decoder's own seed (\(seedValue)), not a hardcoded "
+                + "constant"
+            )
+        }
     }
 
     // MARK: - Tint
