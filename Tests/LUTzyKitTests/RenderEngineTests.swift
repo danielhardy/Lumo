@@ -307,6 +307,39 @@ final class RenderEngineTests: TempDirectoryTestCase {
         XCTAssertEqual(afterFlush, 0, "a rescan must be able to drop stale cubes")
     }
 
+    /// The staleness the cache flush exists to prevent, asserted in **pixels** rather than in counts.
+    ///
+    /// A `LUTID` is a file path, so replacing a `.cube` in place gives a different cube under an
+    /// unchanged identity. Step 9 made that reachable from the UI: save a derive to `X.cube`, derive
+    /// again, save over `X.cube`. Without the flush the engine serves the first cube forever and the
+    /// second save appears to do nothing.
+    ///
+    /// The count-based test above would pass against a flush that dropped entries and rebuilt them
+    /// from a stale table, so this one drives the whole path and looks at the output. The two renders
+    /// are interleaved in one process, per the repo's Core Image reproducibility rule.
+    func testAReplacedCubeAtTheSamePathRendersTheNewLookAfterAFlush() async throws {
+        let engine = RenderEngine()
+        let path = tempDirectory.appendingPathComponent("Look.cube")
+
+        try Fixtures.writeCube(Fixtures.identityCubeText(size: 4), named: "Look.cube", in: tempDirectory)
+        let identity = try CubeLUT(url: path)
+        let document = EditDocument(lut: LUTSettings(lutID: identity.lutID, intensity: 1))
+        let first = try Pixels.bytes(of: try await render(engine, document, lut: identity))
+
+        // Same path, different contents — so the same LUTID, which is the whole hazard.
+        try CubeLUT.write(
+            cube: TestImages.toBlackCube(size: 4), size: 4, title: "Look", to: path
+        )
+        let replaced = try CubeLUT(url: path)
+        XCTAssertEqual(replaced.lutID, identity.lutID, "precondition: the identity did not change")
+
+        await engine.invalidateLUTCache()
+        let second = try Pixels.bytes(of: try await render(engine, document, lut: replaced))
+
+        assertPixelsDiffer(first, second,
+                           "after a flush the replaced cube must reach the screen")
+    }
+
     // MARK: - Actor isolation
 
     /// The cache is a mutable reference type living inside the actor. If it ever escaped — or if the

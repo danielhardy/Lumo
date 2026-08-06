@@ -1,9 +1,9 @@
 # LUTzy Phase 2 — non-destructive render pipeline + RAW develop
 
-**Status:** partly built. Steps 0–8 of the migration are done — the preview, both export paths and the
-histogram all render from the document, `ImageProcessor` is gone, and the whole package builds in
-**Swift 6 language mode** with no diagnostics and no escape hatches. The develop UI, undo and
-derive-registration are not built yet.
+**Status:** partly built. Steps 0–9 of the migration are done — the preview, both export paths and the
+histogram all render from the document, `ImageProcessor` is gone, derive registers its result by ID,
+and the whole package builds in **Swift 6 language mode** with no diagnostics and no escape hatches.
+The develop UI and undo are not built yet.
 
 This is a distillation. The original draft ran 4,180 lines of multi-agent output that contradicted
 itself across sections and spent a good fraction of its length arguing with earlier drafts about bugs
@@ -45,7 +45,8 @@ a baked image, which buys four things at once:
 | ✅ **The preview renders from `EditDocument`** through the engine — develop, adjustments, LUT, intensity | Step 5 is **done** |
 | ✅ **Export and the histogram render from `EditDocument` too** — single *and* batch; `processedImage` deleted | Step 6 is **done** |
 | ✅ **`ImageProcessor` dissolved** — `ImageDecoder` + `Thumbnails` + `ExportFormat`; one `CIContext` in the render stack | Step 7 is **done** |
-| ❌ No RAW develop UI, no undo, derive not registered by ID | Steps 9–11 |
+| ✅ **Derive registers its result by ID** — content-hashed `derived://`, a session registry, save re-points | Step 9 is **done**; it fixed a shipped bug, see below |
+| ❌ No RAW develop UI, no undo | Steps 10–11 |
 
 ~~**Still true and still worth fixing:** `ImageProcessor` is a non-`Sendable` `final class` singleton
 holding a `CIContext`, captured into `Task.detached` in several places.~~ **Fixed in Step 7** — the
@@ -266,7 +267,7 @@ leaf by leaf, delete the old path last.
 | ~~6~~ | ~~Cut **export** over; delete `processedImage`~~ | ✅ **done** — 203 tests; 25 mutations caught; **both** export paths cut over, and the histogram came with them (see below) |
 | ~~7~~ | ~~Move thumbnails (**both** `ImageCollection` sites); dissolve `ImageProcessor` GPU duties~~ | ✅ **done** — 208 tests; 18 mutations caught, 2 shown equivalent by measurement; `RenderStackTests` asserts the context count |
 | ~~8~~ | ~~Flip strict concurrency on~~ | ✅ **done** — full **Swift 6 language mode** (errors, not warnings) on all three targets; 214 tests; 9 mutations caught, 1 untestable and named |
-| 9 | Wire derive into the new state: register the derived LUT by ID, keep the scratch-file bookkeeping | derive-baseline invariance test |
+| ~~9~~ | ~~Wire derive into the new state: register the derived LUT by ID, keep the scratch-file bookkeeping~~ | ✅ **done** — 230 tests; 19 mutations caught, 1 shown equivalent by inspection; fixed a **shipped** bug where a derived LUT never resolved (see below) |
 | 10 | RAW develop + adjustments inspector, gated per-image on the real `is*Supported` flags | inspector drives live re-render |
 | 11 | Per-image undo keyed by `Item.id`, plus an `EditDocumentStore` | ⌘Z scoped per image |
 | 12 | *(deferred)* export descriptor, metadata/ICC | — |
@@ -308,6 +309,61 @@ grew 46 MB/export through the engine against 56 MB/export on the old path: both 
 full-resolution intermediate per export, neither gives it back, and `CIContext.clearCaches()` does
 not reclaim it. That is Core Image's own accounting and predates the cutover.
 `PreviewCostBenchmark.testMeasureExportCost` reproduces all of it.
+
+### What Step 9 found: a derived LUT never resolved
+
+Step 9's headline was not migration work. It was a **shipped bug**, live on `main` since derive was
+built, that the migration merely made legible.
+
+`DeriveCoordinator.derive` named its result after the scratch temp file (`sourceURL: scratch`), so
+`CubeLUT.init` set `id` to a temp path and `LUTID.isDerived` read **false**. `selectLUT` therefore
+filed it under nothing and `resolvedLUT` fell through to a library lookup for a path no library
+contains. A successful derive left the preview **ungraded** with nothing selected in the sidebar.
+Measured before the fix, and again after, on the same construction:
+
+| | before | after |
+|---|---|---|
+| `isDerived` | false | true |
+| `selectedLUT` after `onDerived` | `nil` | the derived LUT |
+| preview delta vs. ungraded | **0/255** | graded |
+
+Two tests covered this area and both were green, because both built their fixture with
+`CubeLUT(cube:size:name:)` — no `sourceURL`, hence a `derived://` id — where production produced a
+path. **The fixture differed from production in exactly the field under test.** That is
+`CODE_REVIEW.md` §2's "wrote a value that equals the default" one level up, and it is now prevented
+structurally rather than by discipline: `DeriveCoordinator.makeDerivedLUT` is the single constructor,
+used by production and every test.
+
+What the step settled:
+
+- **Identity is content-derived.** A derived LUT's id is `derived://<name>/<sha256 of the cube table>`
+  (`CryptoKit`; **not** `Hasher`, which is seeded per process and would be stable within a launch and
+  silently different across launches). This reverses a documented property — two identically-built
+  in-memory LUTs are now *one* identity, not two — which two tests assert deliberately. It buys
+  determinism per cube value, which is §4.3's real objection to `UUID`. It does **not** buy
+  resurrection by re-deriving: `RecipeExtractor` samples with `SystemRandomNumberGenerator`, so the
+  same pair fits a different cube every run.
+- **Save re-points, after re-parsing.** The saved file — not the in-memory cube — becomes what the
+  document references, because `cubeFileContents` writes `%.6f` and the file is what a fresh launch
+  would resolve. The reference becomes durable at the moment the LUT does. `DerivedLUTRegistry`
+  (unbounded; a 33³ cube is ~575 KB and a derive costs tens of seconds) covers saves outside the LUT
+  folder, where no rescan fires.
+- **`invalidateLUTCache` is wired at last**, because Step 9 made it reachable: save a derive to
+  `X.cube`, derive again, save over `X.cube` — same path, same `LUTID`, stale cube forever. It is on
+  the `RenderEngining` protocol now (so the app calling it is assertable) and fires from a
+  `LUTLibrary.onScanned` closure, which covers every scan rather than the sites someone remembered.
+  Measured: without the flush the replaced-cube render differs from the original by **0/255**.
+- **Scratch-file policy is unchanged.** A cancelled derive still writes nothing, a completed one is
+  still kept for the sheet to reopen, and it is still left to the OS temp sweep. What changed is only
+  that the temp path no longer *names* the LUT.
+- `RecipeExtractor` did **not** move onto the engine, so `RenderStackTests` is untouched.
+
+The ship gate, `DeriveInvarianceTests`, derives from the `realworldtest` pair and checks the cube
+lands the same way through the new pipeline as it does over `developRAWNeutral` (tolerance 1,
+interleaved in one process). A second assertion bounds mean absolute error against the in-camera JPG:
+measured **1.25/255**, bounded at 3.0, against **5.30** with no cube at all — so the bound has real
+discriminating power. **These tests skip on CI**, which has no DNG; the suite's green tick there says
+nothing about derive.
 
 ### What Step 6 did with the histogram
 

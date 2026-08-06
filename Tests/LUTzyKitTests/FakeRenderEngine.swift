@@ -92,6 +92,14 @@ actor FakeRenderEngine: RenderEngining {
         return HistogramData(red: bins, green: bins, blue: bins, luma: bins)
     }
 
+    /// How many times the app asked for the cube-filter cache to be dropped.
+    ///
+    /// A count rather than a flag: the interesting failures are "never" and "on every render", and a
+    /// Bool cannot tell those apart from "once, when the library was rescanned".
+    private(set) var invalidateCount = 0
+
+    func invalidateLUTCache() { invalidateCount += 1 }
+
     func setShouldFailEncode(_ value: Bool) { shouldFailEncode = value }
 
     /// A 2×2 opaque image — enough to be a real `CGImage`, cheap enough to make per call.

@@ -69,6 +69,27 @@ final class DeriveCoordinator: ObservableObject {
         jpgURL.deletingPathExtension().lastPathComponent + "_recipe_\(size)_Rec709"
     }
 
+    /// Build the `CubeLUT` for a completed derive.
+    ///
+    /// **Extracted so a test cannot build one differently.** This construction used to live inline in
+    /// `derive`, and two tests stood up their own version of it with `CubeLUT(cube:size:name:)` — no
+    /// `sourceURL`, and therefore a `derived://` ID where production produced a temp-file path. Both
+    /// passed, and both passed *because* the fixture differed from production in exactly the field
+    /// under test. One function used by both sides makes that drift impossible rather than merely
+    /// discouraged.
+    ///
+    /// **No `sourceURL`, and that is the fix.** The scratch `.cube` is still written and still kept —
+    /// that is what this coordinator's `scratchURL` is for — but the temp path must not *name* the
+    /// LUT. When it did, `LUTID.isDerived` read false, the document held a path no library contains,
+    /// and a finished derive resolved to nothing: the user got an ungraded preview. Worse for
+    /// anything that persists a document, after the OS temp sweep that path can be reused by an
+    /// unrelated file, so a stale reference resolves to the *wrong* LUT rather than to none.
+    nonisolated static func makeDerivedLUT(
+        cube: [SIMD3<Float>], size: Int, name: String
+    ) -> CubeLUT {
+        CubeLUT(cube: cube, size: size, name: name, category: "Derived")
+    }
+
     /// Derive a LUT from a (RAW, JPG) pair. The result lives in `derivedLUT`
     /// and `report` until the user explicitly saves it.
     func derive(rawURL: URL, jpgURL: URL) {
@@ -105,13 +126,7 @@ final class DeriveCoordinator: ObservableObject {
                     .appendingPathComponent("\(name).cube")
                 try CubeLUT.write(cube: result.cube, size: result.size, title: name, to: scratch)
 
-                let lut = CubeLUT(
-                    cube: result.cube,
-                    size: result.size,
-                    name: name,
-                    category: "Derived",
-                    sourceURL: scratch
-                )
+                let lut = Self.makeDerivedLUT(cube: result.cube, size: result.size, name: name)
 
                 await MainActor.run {
                     self.derivedLUT = lut

@@ -205,6 +205,29 @@ enum Fixtures {
             .first
     }
 
+    /// A real (RAW, in-camera JPG) pair, if this checkout happens to have one.
+    ///
+    /// The derive gate needs both halves of the same frame: the cube is fit by comparing a neutral
+    /// RAW render against the JPEG the camera produced from it. Matched on the filename stem, because
+    /// that is how cameras write the pair and how `realworldtest/` happens to hold one — anything
+    /// looser could pick up an unrelated JPG and the geometry check would reject it with a confusing
+    /// message.
+    ///
+    /// `nil` on CI, which never has a RAW. A test that needs this must `XCTSkip`.
+    static var localRAWJPGPair: (raw: URL, jpg: URL)? {
+        guard let raw = localRAWURL else { return nil }
+        let stem = raw.deletingPathExtension().lastPathComponent
+        let folder = raw.deletingLastPathComponent()
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: nil
+        ) else { return nil }
+        guard let jpg = entries.first(where: {
+            ["jpg", "jpeg"].contains($0.pathExtension.lowercased())
+                && $0.deletingPathExtension().lastPathComponent == stem
+        }) else { return nil }
+        return (raw, jpg)
+    }
+
     /// Dimensions ImageIO reports for a file on disk.
     static func storedSize(of url: URL) -> CGSize? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),

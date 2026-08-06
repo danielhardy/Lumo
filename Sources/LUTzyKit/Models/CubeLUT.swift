@@ -1,5 +1,6 @@
 import Foundation
 import CoreImage
+import CryptoKit
 
 /// Parses a .cube 3D LUT file and creates a CIFilter for GPU-accelerated color grading.
 struct CubeLUT: Identifiable, Hashable, Sendable {
@@ -32,7 +33,6 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
         self.name = name
         self.category = category
         self.url = sourceURL ?? URL(fileURLWithPath: "/dev/null")
-        self.id = sourceURL?.path ?? "derived://\(name)/\(UUID().uuidString)"
 
         var floats = [Float]()
         floats.reserveCapacity(cube.count * 4)
@@ -42,7 +42,34 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
             floats.append(v.z)
             floats.append(1.0)
         }
-        self.tableData = floats.withUnsafeBufferPointer { Data(buffer: $0) }
+        let table = floats.withUnsafeBufferPointer { Data(buffer: $0) }
+        self.tableData = table
+        // The table has to be built before the ID, because the ID is made from it.
+        self.id = sourceURL?.path ?? Self.derivedID(name: name, table: table)
+    }
+
+    /// The identity of a LUT that exists only in memory: `derived://<name>/<hash of the table>`.
+    ///
+    /// **Content-derived, not random.** `docs/PHASE2_SPEC.md` §4.3 rules out a `UUID` because it
+    /// mints fresh identity on construction, and that argument does not stop at the library scan it
+    /// is written about — a `UUID()` here did the same thing one level down. Hashing the table means
+    /// the same cube is always the same LUT, which is also the honest answer: two cubes with the same
+    /// contents render identically and are interchangeable in `LUTFilterCache`.
+    ///
+    /// **`CryptoKit`, not `Hasher`.** Swift's `Hasher` is seeded per process, so an ID built from it
+    /// would be stable within a launch and silently different across launches — the failure mode
+    /// §4.3 exists to prevent, and one no single-process test can see.
+    /// `LUTIDTests.testTheDerivedIDIsStableAcrossProcesses` pins a literal for that reason.
+    ///
+    /// The name is included because it identifies the source pair a derive came from, and two
+    /// unrelated derives should not share a registry slot on the strength of a coincidence.
+    ///
+    /// 64 bits of the digest. This distinguishes the handful of derives in one session, not the
+    /// world's LUTs.
+    private static func derivedID(name: String, table: Data) -> String {
+        let digest = SHA256.hash(data: table)
+        let hex = digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+        return "derived://\(name)/\(hex)"
     }
 
     // MARK: - Parsing

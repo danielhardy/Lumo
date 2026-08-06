@@ -18,6 +18,19 @@ final class LUTLibrary: ObservableObject {
     /// True while a folder scan is running. Drives the sidebar's progress hint.
     @Published var isScanning: Bool = false
 
+    /// Fired after every scan publishes its results, whatever started it.
+    ///
+    /// Exists so `AppViewModel` can drop the engine's cube-filter cache. A `LUTID` is a file path, so
+    /// a `.cube` replaced in place keeps its identity and a cached filter would go on serving the old
+    /// contents — reachable as of Step 9, when saving a second derive over the same path became a
+    /// thing the UI can do.
+    ///
+    /// A closure rather than a call at each scan site because it covers *every* scan — `setFolder`,
+    /// `restoreFolder`, and the rescan after a save — instead of relying on the next person to
+    /// remember. The library stays ignorant of the renderer, which is why this is a closure the owner
+    /// wires rather than an engine reference held here.
+    var onScanned: (() -> Void)?
+
     private static let settingsKey = "lutFolderBookmark"
 
     /// Folder whose security scope we hold open, so it can be released when we
@@ -97,6 +110,9 @@ final class LUTLibrary: ObservableObject {
                 self.categories = cats
                 self.allLUTs = cats.flatMap(\.luts)
             }
+            // After publishing, and on the failure path too: a scan that found nothing still means
+            // the folder changed under whatever the engine has cached.
+            self.onScanned?()
         }
     }
 

@@ -122,6 +122,15 @@ enum TestImages {
         return output.cropped(to: CGRect(x: 0, y: 0, width: width, height: height))
     }
 
+    /// The raw table of a cube that maps everything to black.
+    ///
+    /// Returned as values rather than a `CubeLUT` because the callers that want it are writing a
+    /// `.cube` file — the loudest possible difference from an identity cube, which is what makes
+    /// "did the new file reach the screen?" answerable in one comparison.
+    static func toBlackCube(size: Int = 4) -> [SIMD3<Float>] {
+        [SIMD3<Float>](repeating: .zero, count: size * size * size)
+    }
+
     /// A cube that is emphatically not the identity: pushes red up and blue down, so both "the LUT
     /// ran" and "it interpolated in the right space" are visible.
     static func warmLUT(size: Int = 4, name: String = "warm") -> CubeLUT {

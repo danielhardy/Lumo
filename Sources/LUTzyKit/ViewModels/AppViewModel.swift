@@ -26,9 +26,10 @@ final class AppViewModel: ObservableObject {
     /// re-developed to honour `document.rawDevelop` (§4.2).
     private var imageSource: ImageSource?
 
-    /// A freshly derived LUT lives only in memory until the user saves it, so it cannot be resolved
-    /// out of the library the way a file-backed one can. Step 9 replaces this with a real registry.
-    private var scratchLUT: CubeLUT?
+    /// LUTs a document can reference that no folder scan produces — a freshly derived LUT, and the
+    /// file it becomes once saved. See `DerivedLUTRegistry`; this is the Step 9 replacement for the
+    /// single `scratchLUT` slot that stood here.
+    private var derivedRegistry = DerivedLUTRegistry()
 
     /// **Shim.** The document stores a `LUTID`; views still want the LUT. Resolution is deliberately
     /// a fresh lookup rather than a cached object — `LUTID` is a file path precisely so a rescan
@@ -129,6 +130,15 @@ final class AppViewModel: ObservableObject {
     /// owns the status bar and the alert. They report *what* happened; deciding
     /// how to show it stays here.
     private func wireCoordinators() {
+        // A rescan can mean the bytes behind an unchanged `LUTID` have changed — a path is the
+        // identity, so a `.cube` replaced in place keeps it. Drop the engine's cube filters rather
+        // than go on serving the old cube. Wired here, before `restoreFolder()` runs below, so the
+        // launch scan is covered too.
+        library.onScanned = { [weak self] in
+            guard let engine = self?.engine else { return }
+            Task { await engine.invalidateLUTCache() }
+        }
+
         export.onStatus = { [weak self] in self?.statusMessage = $0 }
         export.onError = { [weak self] in self?.presentError($0) }
 
@@ -140,11 +150,41 @@ final class AppViewModel: ObservableObject {
             self.selectLUT(lut)
         }
         derive.libraryFolder = { [weak self] in self?.library.folderURL }
-        derive.onSaved = { [weak self] _ in
+        derive.onSaved = { [weak self] destination in
+            guard let self else { return }
+            self.adoptSavedLUT(at: destination)
             // Re-scan so the new entry appears in the sidebar.
-            guard let self, let folder = self.library.folderURL else { return }
+            guard let folder = self.library.folderURL else { return }
             self.library.scan(folder)
         }
+    }
+
+    /// Follow a derived LUT from memory onto disk.
+    ///
+    /// Saving is the moment a derived LUT becomes durable, so it is the moment its reference should
+    /// become durable too. A `derived://` ID resolves only through the registry and cannot survive a
+    /// relaunch; the path the user just chose is what a fresh launch would resolve and what the next
+    /// library scan will hold. So the document is re-pointed at it.
+    ///
+    /// **The saved LUT is re-parsed from the file rather than aliased from memory.** `cubeFileContents`
+    /// writes `%.6f`, so what landed on disk is a rounded copy of the in-memory table. Aliasing the
+    /// full-precision cube to the saved path would leave the app rendering something a fresh launch
+    /// could not reproduce from that same file — a divergence of exactly the kind this migration
+    /// exists to close. The file is authoritative because the file is what persists.
+    ///
+    /// It is registered as well as re-pointed, because `onSaved` only triggers a rescan when the
+    /// destination is inside the configured LUT folder. Saving anywhere else would otherwise re-point
+    /// the document at something nothing can resolve.
+    ///
+    /// Only the LUT that was *just saved* moves. The user can derive, pick something else from the
+    /// sidebar, and then save the derive from the still-open sheet; that must not steal the selection.
+    private func adoptSavedLUT(at destination: URL) {
+        guard let saved = try? CubeLUT(url: destination, category: "Derived") else { return }
+        derivedRegistry.register(saved)
+
+        guard let current = document.lut.lutID, current == derive.derivedLUT?.lutID else { return }
+        document.lut.lutID = saved.lutID
+        schedulePreview()
     }
 
     /// Open the first image of the source folder once its scan completes.
@@ -324,8 +364,10 @@ final class AppViewModel: ObservableObject {
     // MARK: - LUT selection
 
     func selectLUT(_ lut: CubeLUT?) {
-        // A derived LUT is only reachable through this reference until it is saved to the library.
-        scratchLUT = (lut?.lutID.isDerived == true) ? lut : nil
+        // A derived LUT is in no library, so nothing but the registry can resolve it later. Remember
+        // it rather than replacing the last one: a document made now must still resolve after the
+        // user derives again.
+        if let lut, lut.lutID.isDerived { derivedRegistry.register(lut) }
         document.lut.lutID = lut?.lutID
         applyLUT()
     }
@@ -349,12 +391,16 @@ final class AppViewModel: ObservableObject {
         schedulePreview()
     }
 
-    /// Resolve a document's LUT reference: the unsaved derived LUT if it matches, otherwise the
-    /// library. A miss returns `nil`, and the render simply comes out ungraded — see
-    /// `RenderPipeline.buildImage`.
+    /// Resolve a document's LUT reference: the registry first, then the library. A miss returns
+    /// `nil`, and the render simply comes out ungraded — see `RenderPipeline.buildImage`.
+    ///
+    /// Registry first because it is the narrower answer. Its only entries are derived LUTs and the
+    /// files they were saved to, so a hit there is always the more specific one; for a saved LUT the
+    /// library holds an identical value under the same ID, and `CubeLUT` compares by ID, so which
+    /// copy wins is not observable.
     private func resolvedLUT(_ id: LUTID?) -> CubeLUT? {
         guard let id else { return nil }
-        if let scratchLUT, scratchLUT.lutID == id { return scratchLUT }
+        if let registered = derivedRegistry.lut(for: id) { return registered }
         return library.allLUTs.first(matching: id)
     }
 

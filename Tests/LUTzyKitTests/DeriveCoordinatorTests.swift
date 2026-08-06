@@ -10,6 +10,11 @@ import simd
 final class DeriveCoordinatorTests: TempDirectoryTestCase {
 
     /// Stand in for a completed derive without running the extractor.
+    ///
+    /// The LUT is built through `DeriveCoordinator.makeDerivedLUT` — the same call `derive` makes —
+    /// rather than with a hand-rolled `CubeLUT`. A fixture that constructs its own is free to differ
+    /// from production in the field under test, which is precisely how the derived-LUT resolution
+    /// bug survived two green tests until Step 9.
     private func installScratchResult(
         on coordinator: DeriveCoordinator,
         named name: String = "shot_recipe_33_Rec709"
@@ -17,9 +22,24 @@ final class DeriveCoordinatorTests: TempDirectoryTestCase {
         let scratch = tempDirectory.appendingPathComponent("\(name).cube")
         let cube = [SIMD3<Float>](repeating: SIMD3(0.25, 0.5, 0.75), count: 8)
         try CubeLUT.write(cube: cube, size: 2, title: name, to: scratch)
-        let lut = CubeLUT(cube: cube, size: 2, name: name, category: "Derived", sourceURL: scratch)
+        let lut = DeriveCoordinator.makeDerivedLUT(cube: cube, size: 2, name: name)
         coordinator.setScratchResult(lut: lut, report: nil, scratchURL: scratch)
         return scratch
+    }
+
+    /// The scratch file is still written and still kept — Step 9 changed what *names* the LUT, not
+    /// the bookkeeping around it. A derived LUT's identity must not be a temp path, and the temp file
+    /// must still be there for `performSave` to copy.
+    func testTheDerivedLUTIsNotNamedAfterItsScratchFile() throws {
+        let coordinator = DeriveCoordinator()
+        let scratch = try installScratchResult(on: coordinator)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: scratch.path),
+                      "the scratch .cube is still written and kept")
+        let lut = try XCTUnwrap(coordinator.derivedLUT)
+        XCTAssertTrue(lut.lutID.isDerived, "a derived LUT carries a derived:// identity")
+        XCTAssertNotEqual(lut.id, scratch.path,
+                          "a temp path must never be a LUT's identity — it can be reused after a sweep")
     }
 
     // MARK: - Naming
