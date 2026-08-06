@@ -90,4 +90,64 @@ final class DevelopInspectorTests: TempDirectoryTestCase {
         XCTAssertEqual(probeCount, 1, "the engine must still be consulted even with no develop stage")
         XCTAssertNil(viewModel.rawCapabilities)
     }
+
+    // MARK: - Debounce
+
+    /// A slider drag is many ticks. Rendering each one would be two full renders per tick, because
+    /// a develop change also re-rasterizes the side-by-side baseline.
+    func testADragIssuesFarFewerRendersThanTicks() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+        let atRest = await fake.previewRequests.count
+
+        // Twenty ticks in quick succession, as a drag produces.
+        for step in 1...20 {
+            viewModel.updateDocument(debounced: true) {
+                $0.rawDevelop.exposure = Double(step) / 20.0
+            }
+        }
+        // Let the debounce settle and the final render land.
+        try await waitUntil("the settled render") {
+            await fake.previewRequests.contains { $0.document.rawDevelop.exposure == 1.0 }
+        }
+
+        let issued = await fake.previewRequests.count - atRest
+        XCTAssertLessThan(issued, 10, "20 ticks issued \(issued) renders — the debounce is not working")
+        XCTAssertGreaterThan(issued, 0)
+    }
+
+    /// ...and the value the user let go on is the one that gets rendered. A debounce that dropped
+    /// the *last* event would leave the screen showing a value the slider is not on.
+    func testTheFinalValueOfADragIsTheOneRendered() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+
+        for step in 1...10 {
+            viewModel.updateDocument(debounced: true) { $0.rawDevelop.exposure = Double(step) }
+        }
+
+        try await waitUntil("the final value to render") {
+            await fake.previewRequests.contains { $0.document.rawDevelop.exposure == 10.0 }
+        }
+        XCTAssertEqual(viewModel.document.rawDevelop.exposure, 10.0,
+                       "the document must hold the released value immediately, debounce or not")
+    }
+
+    /// Discrete controls stay immediate — a checkbox that lagged 60 ms would feel broken.
+    func testAnUndebouncedEditRendersWithoutWaiting() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+
+        viewModel.updateDocument { $0.rawDevelop.gamutMappingEnabled = false }
+
+        try await waitUntil("the immediate render", timeout: 1) {
+            await fake.previewRequests.contains { $0.document.rawDevelop.gamutMappingEnabled == false }
+        }
+    }
 }

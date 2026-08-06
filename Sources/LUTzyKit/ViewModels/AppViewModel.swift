@@ -35,6 +35,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var rawCapabilities: RAWCapabilities?
 
     private var capabilitiesTask: Task<Void, Never>?
+    private var developTask: Task<Void, Never>?
 
     /// LUTs a document can reference that no folder scan produces — a freshly derived LUT, and the
     /// file it becomes once saved. See `DerivedLUTRegistry`; this is the Step 9 replacement for the
@@ -231,6 +232,7 @@ final class AppViewModel: ObservableObject {
         originalPreviewTask?.cancel()
         intensityTask?.cancel()
         capabilitiesTask?.cancel()
+        developTask?.cancel()
 
         isLoading = true
         statusMessage = "Loading \(name)..."
@@ -391,16 +393,44 @@ final class AppViewModel: ObservableObject {
     /// it is what the inspector will call. Keeping `document` `private(set)` behind it means every
     /// mutation goes through one place that knows to re-render.
     func updateDocument(_ transform: (inout EditDocument) -> Void) {
+        updateDocument(debounced: false, transform)
+    }
+
+    /// Mutate the document and re-render, optionally coalescing a burst of edits into one render.
+    ///
+    /// **`debounced: true` is for continuous controls only** — a slider drag, where the user
+    /// produces tens of values per second and only the one they settle on matters. `PHASE2_SPEC.md`
+    /// §6 is explicit that open and filmstrip navigation must stay immediate, and discrete controls
+    /// (toggles, resets) should too: a checkbox that lagged 60 ms would feel broken.
+    ///
+    /// The document itself is updated **immediately** either way. Only the render is deferred, so
+    /// the control stays glued to the pointer and `document` is always the truth. Deferring the
+    /// document as well would mean a read-back mid-drag saw a stale value.
+    ///
+    /// Worth the machinery because a develop change costs *two* renders — `scheduleOriginalPreview`
+    /// as well as `schedulePreview`, since the comparison baseline moves with develop.
+    func updateDocument(debounced: Bool, _ transform: (inout EditDocument) -> Void) {
         var updated = document
         transform(&updated)
         guard updated != document else { return }
 
         let developChanged = updated.rawDevelop != document.rawDevelop
         document = updated
-        // The comparison baseline only moves when develop does — re-rasterizing it on every
-        // adjustment would be work nobody can see.
-        if developChanged { scheduleOriginalPreview() }
-        schedulePreview()
+
+        guard debounced else {
+            developTask?.cancel()
+            if developChanged { scheduleOriginalPreview() }
+            schedulePreview()
+            return
+        }
+
+        developTask?.cancel()
+        developTask = Task {
+            try? await Task.sleep(for: .milliseconds(Self.intensityDebounceMs))
+            guard !Task.isCancelled else { return }
+            if developChanged { self.scheduleOriginalPreview() }
+            self.schedulePreview()
+        }
     }
 
     /// Resolve a document's LUT reference: the registry first, then the library. A miss returns
