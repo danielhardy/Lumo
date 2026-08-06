@@ -69,4 +69,48 @@ final class RAWCapabilitiesTests: XCTestCase {
             XCTAssertFalse(control.title.isEmpty, "\(control.rawValue) has no label")
         }
     }
+
+    /// `supports(_:)` is nine near-identical `case .x: return isXSupported` arms, and the tests
+    /// above cannot tell one arm from its neighbour: they either flip every gated flag together
+    /// (`RAWCapabilities()`, `.everythingSupported`) or isolate only `.localToneMap`. A copy-paste
+    /// slip that swaps, say, the `.contrast` and `.detail` arms passes every one of them.
+    ///
+    /// This drives every gated control through its own flag, one at a time, off a table so a
+    /// mis-wired arm names itself in the failure rather than hiding behind an aggregate count.
+    func testEachGatedControlIsWithdrawnByExactlyItsOwnFlag() {
+        let gates: [(DevelopControl, WritableKeyPath<RAWCapabilities, Bool>)] = [
+            (.sharpness, \.isSharpnessSupported),
+            (.contrast, \.isContrastSupported),
+            (.detail, \.isDetailSupported),
+            (.moireReduction, \.isMoireReductionSupported),
+            (.localToneMap, \.isLocalToneMapSupported),
+            (.luminanceNoiseReduction, \.isLuminanceNoiseReductionSupported),
+            (.colorNoiseReduction, \.isColorNoiseReductionSupported),
+            (.lensCorrection, \.isLensCorrectionSupported),
+            (.highlightRecovery, \.isHighlightRecoverySupported),
+        ]
+
+        // If a tenth gated flag ever joins `RAWCapabilities` without a row here, this catches the
+        // omission instead of the new arm quietly riding along untested.
+        let ungated: Set<DevelopControl> = [
+            .exposure, .baselineExposure, .shadowBias, .boost, .boostShadow,
+            .whiteBalance, .gamutMapping, .extendedDynamicRange,
+        ]
+        XCTAssertEqual(
+            Set(gates.map(\.0)), Set(DevelopControl.allCases).subtracting(ungated),
+            "the gate table must list exactly the gated controls, or a new flag would ship untested"
+        )
+
+        for (control, flag) in gates {
+            var caps = RAWCapabilities.everythingSupported
+            caps[keyPath: flag] = false
+
+            let withdrawn = Set(DevelopControl.allCases).subtracting(caps.availableControls)
+            XCTAssertEqual(
+                withdrawn, [control],
+                "\(control.rawValue)'s flag should withdraw only \(control.rawValue) — " +
+                "supports(_:) is reading the wrong flag for this arm"
+            )
+        }
+    }
 }
