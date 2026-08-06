@@ -210,6 +210,55 @@ final class DevelopInspectorTests: TempDirectoryTestCase {
         }
     }
 
+    /// **A pending develop flag describes the image being left.** `load()` clears
+    /// `pendingDevelopChange` deliberately, and until now nothing checked that it did: a debounced
+    /// develop edit whose 60 ms timer is cancelled by the next image opening leaves the flag set,
+    /// and then the *first unrelated edit on the new image* re-rasterizes a comparison baseline for
+    /// develop settings that were never touched on it — a second full render on a file the user has
+    /// only just opened.
+    ///
+    /// Found by `scripts/mutate-step10a.sh`: deleting that one line left every other test in this
+    /// file green. It is the harness's own worked example of a survivor being a gap rather than an
+    /// equivalence.
+    func testAPendingDevelopFlagDoesNotSurviveOpeningAnotherImage() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+
+        // A debounced develop edit on the first image: this sets the pending flag and arms the
+        // timer...
+        viewModel.updateDocument(debounced: true) { $0.rawDevelop.exposure = 0.7 }
+        // ...and opening another image immediately — no `await` in between, so the timer cannot have
+        // fired — cancels that task. The flag it left behind belongs to the image being closed.
+        let second = try Fixtures.writeGradientPNG(
+            width: 20, height: 16, named: "second.png", in: tempDirectory
+        )
+        viewModel.openImage(url: second)
+        try await waitUntil("the second image to load") { viewModel.sourceName == "second.png" }
+        try await Task.sleep(for: .milliseconds(200))
+
+        // A comparison-baseline render is exactly a request whose document has no adjustments —
+        // `originalForComparison` strips them. Counting before and after is what makes the extra
+        // render visible; both images legitimately produce one on open.
+        let baselinesBefore = await fake.previewRequests.filter { $0.document.adjustments.isEmpty }.count
+
+        // An edit on the new image that touches nothing in `rawDevelop`. The baseline only moves
+        // with develop, so this must not re-rasterize it.
+        viewModel.updateDocument(debounced: true) { $0.adjustments = [.exposure(ev: 0.3)] }
+        try await waitUntil("the edited render") {
+            await fake.previewRequests.contains { !$0.document.adjustments.isEmpty }
+        }
+        try await Task.sleep(for: .milliseconds(150))
+
+        let baselinesAfter = await fake.previewRequests.filter { $0.document.adjustments.isEmpty }.count
+        XCTAssertEqual(
+            baselinesAfter, baselinesBefore,
+            "an edit that changed no develop setting re-rasterized the comparison baseline, so the "
+            + "pending develop flag from the previous image survived the open"
+        )
+    }
+
     // MARK: - The histogram belongs to the Info tab
 
     /// The histogram is gated on the inspector being open "so we don't tally pixels for a panel
