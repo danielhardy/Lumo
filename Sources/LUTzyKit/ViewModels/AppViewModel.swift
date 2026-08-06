@@ -26,6 +26,16 @@ final class AppViewModel: ObservableObject {
     /// re-developed to honour `document.rawDevelop` (§4.2).
     private var imageSource: ImageSource?
 
+    /// What the open image's RAW decoder can do, and where its own defaults sit. `nil` for a
+    /// standard image, which has no develop stage at all.
+    ///
+    /// Probed once per open rather than per render: the probe builds a `CIRAWFilter`, which measures
+    /// ~25 ms on a 30 MB DNG. Not memoized across images — one entry would save that on returning to
+    /// an image, at the cost of another cache whose invalidation nobody will remember.
+    @Published private(set) var rawCapabilities: RAWCapabilities?
+
+    private var capabilitiesTask: Task<Void, Never>?
+
     /// LUTs a document can reference that no folder scan produces — a freshly derived LUT, and the
     /// file it becomes once saved. See `DerivedLUTRegistry`; this is the Step 9 replacement for the
     /// single `scratchLUT` slot that stood here.
@@ -220,6 +230,7 @@ final class AppViewModel: ObservableObject {
         previewTask?.cancel()
         originalPreviewTask?.cancel()
         intensityTask?.cancel()
+        capabilitiesTask?.cancel()
 
         isLoading = true
         statusMessage = "Loading \(name)..."
@@ -266,6 +277,7 @@ final class AppViewModel: ObservableObject {
                 self.scheduleOriginalPreview()
                 self.schedulePreview()
                 self.refreshMetadata(url: url, data: data)
+                self.refreshCapabilities()
             }
         }
     }
@@ -591,6 +603,22 @@ final class AppViewModel: ObservableObject {
                 meta = ImageMetadata()
             }
             await MainActor.run { self.metadata = meta }
+        }
+    }
+
+    /// Ask the engine what this image's decoder supports.
+    ///
+    /// Runs alongside the preview render rather than in front of it: the panel can appear a frame
+    /// late, but first pixels should not wait on a capability question.
+    private func refreshCapabilities() {
+        capabilitiesTask?.cancel()
+        rawCapabilities = nil
+
+        guard let imageSource else { return }
+        capabilitiesTask = Task { [engine] in
+            let capabilities = await engine.rawCapabilities(for: imageSource)
+            guard !Task.isCancelled else { return }
+            self.rawCapabilities = capabilities
         }
     }
 
