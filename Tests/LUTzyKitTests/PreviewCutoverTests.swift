@@ -189,6 +189,36 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
         assertPixelsDiffer(weakened, plain, "…without collapsing back to ungraded")
     }
 
+    /// **What Step 9 changed on screen**, through the real engine and the real preview property.
+    ///
+    /// The bug was not that the document held the wrong reference — it held the right one. It was
+    /// that resolution missed, so `RenderPipeline` was handed `lut: nil` and rendered the image
+    /// ungraded while the sidebar showed nothing selected. Every other Step 9 test drives the fake
+    /// and asserts on the *request*; a request carrying the right LUT ID proves nothing about pixels
+    /// if resolution hands the engine a nil.
+    ///
+    /// So this one rasterizes: derive-shaped LUT, real `RenderEngine`, compare `previewNSImage`
+    /// before and after. It needs no RAW — the resolution path does not care what the source is —
+    /// which is why it runs on CI too, unlike the derive gate proper.
+    func testAFreshDerivePutsAGradedImageOnScreen() async throws {
+        let viewModel = AppViewModel(engine: RenderEngine())
+        try await openImage(viewModel)
+        try await waitUntil("the first preview") { viewModel.previewNSImage != nil }
+        let ungraded = try previewBytes(viewModel)
+
+        // Built the way DeriveCoordinator builds one, and delivered the way a finished derive
+        // delivers it — through `onDerived`, which is the only path that selects a fresh derive.
+        let derived = DeriveCoordinator.makeDerivedLUT(
+            cube: TestImages.toBlackCube(size: 2), size: 2, name: "shot_recipe_2_Rec709"
+        )
+        viewModel.derive.onDerived?(derived)
+
+        try await waitUntil("the derived preview") { (try? self.previewBytes(viewModel)) != ungraded }
+        assertPixelsDiffer(try previewBytes(viewModel), ungraded,
+                           "a finished derive must reach the screen, not leave it ungraded")
+        XCTAssertEqual(viewModel.selectedLUT, derived, "…and show as selected in the sidebar")
+    }
+
     /// Holding Space must actually put the ungraded image on screen.
     ///
     /// The fake cannot prove this: the side-by-side baseline issues an identical request, so a
@@ -255,7 +285,12 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
         XCTAssertEqual(viewModel.lutIntensity, 0.35)
         XCTAssertEqual(viewModel.document.lut.intensity, 0.35)
 
-        let lut = TestImages.warmLUT()
+        // Built the way `DeriveCoordinator` builds one, not with a hand-rolled `CubeLUT`. The
+        // hand-rolled version differed from production in exactly the field this line reads —
+        // `lutID` — which is why this assertion was green while a fresh derive resolved to nothing.
+        let lut = DeriveCoordinator.makeDerivedLUT(
+            cube: TestImages.toBlackCube(size: 2), size: 2, name: "shot_recipe_2_Rec709"
+        )
         viewModel.selectLUT(lut)
         XCTAssertEqual(viewModel.selectedLUT, lut, "an unsaved derived LUT must still resolve")
         XCTAssertEqual(viewModel.document.lut.lutID, lut.lutID)

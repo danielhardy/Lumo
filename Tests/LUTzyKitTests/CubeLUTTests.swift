@@ -329,12 +329,21 @@ final class CubeLUTTests: TempDirectoryTestCase {
         }
     }
 
-    func testInMemoryLUTGetsSyntheticIDWhenNotFileBacked() {
+    /// Step 9 reversed the second half of this. See `LUTIDTests` for the full argument; the short
+    /// version is that identity now follows the cube table rather than being minted per construction,
+    /// so two LUTs holding the same table are one LUT.
+    func testInMemoryLUTGetsAContentDerivedIDWhenNotFileBacked() {
         let cube = [SIMD3<Float>](repeating: .zero, count: 8)
         let a = CubeLUT(cube: cube, size: 2, name: "derived")
         let b = CubeLUT(cube: cube, size: 2, name: "derived")
         XCTAssertTrue(a.id.hasPrefix("derived://"))
-        XCTAssertNotEqual(a.id, b.id, "two in-memory LUTs must not collide as the same identity")
+        XCTAssertEqual(a.id, b.id, "the same table under the same name is the same identity")
+
+        // The name is part of the ID, so it has to reach it — a hash of the table alone would let two
+        // unrelated derives share an identity in the registry.
+        let renamed = CubeLUT(cube: cube, size: 2, name: "other")
+        XCTAssertNotEqual(a.id, renamed.id)
+        XCTAssertTrue(a.id.contains("derived"), "the name should stay legible in the ID")
     }
 
     func testEqualityAndHashingUseIdentityNotContents() throws {

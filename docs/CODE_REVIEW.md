@@ -193,7 +193,27 @@ dead, while the browser panel still listed the row. Now `!items.isEmpty`.
   `export` and `histogram`, all of which the engine now owns.
 - `dismissRecipeExtractor` claimed the scratch `.cube` was "cleared … on app exit". Nothing cleared it.
   **[partly fixed]** — a cancelled derive no longer writes one; a completed one is still kept
-  deliberately (so the sheet can be reopened) and left to the OS temp sweep.
+  deliberately (so the sheet can be reopened) and left to the OS temp sweep. **Phase 2 Step 9 did not
+  change this**, deliberately: it changed what *names* a derived LUT (a content hash, no longer the
+  temp path) and left the file bookkeeping exactly as it was. Still `[partly fixed]`.
+- **A derived LUT never resolved, so a successful derive showed an ungraded preview.** **[fixed]** in
+  Phase 2 Step 9 — `derive` named its result after the scratch temp file, so `LUTID.isDerived` read
+  false and resolution fell through to a library lookup for a path no library contains. Measured
+  before the fix: preview delta versus ungraded was **0/255**.
+
+  Worth recording for the pattern rather than the bug: **two tests covered this and both were green**,
+  because both built their fixture with `CubeLUT(cube:size:name:)` — no `sourceURL`, hence a
+  `derived://` id — where production produced a path. A fixture that differs from production *in the
+  field under test* is the "wrote a value that equals the default" weakness one level up, and it is
+  the fourth variety this repo has shipped. The fix is structural, not a patched assertion:
+  `DeriveCoordinator.makeDerivedLUT` is now the only constructor, used by production and every test,
+  so the fixture cannot drift again.
+- `RenderEngine.invalidateLUTCache()` existed and was tested, but **the app never called it** — the
+  only caller was a test. **[fixed]** in Step 9, which also made it reachable: saving a second derive
+  over the same `.cube` path yields the same `LUTID`, so the cache would serve the first cube forever.
+  It is on the `RenderEngining` protocol now (so the app calling it is assertable from above the
+  actor) and fires from a `LUTLibrary.onScanned` closure covering every scan. Measured: without the
+  flush, a replaced cube renders **0/255** different from the one it replaced.
 - Export quality is hardcoded at 0.95 with no UI, and no EXIF/ICC metadata survives an export. Note that
   metadata cannot be injected through `CIImageRepresentationOption` — it needs `CGImageDestination`.
 - All of Phase 2 — non-destructive pipeline, RAW develop controls, undo, per-image edits — is unbuilt.
@@ -264,10 +284,13 @@ Worth knowing before leaning on the suite:
 - **The panels themselves are untested**, and can't be — `NSOpenPanel`/`NSSavePanel` need a UI session.
   Everything behind them now is tested; what is not covered is that the wrapper passes the panel's URL
   to the core, which is a two-line body in each case.
-- **`RecipeExtractor.derive` end-to-end is untested** — it needs a RAW, and a DNG fixture is tens of MB.
-  The pure pieces (`buildCube`, `workingSize`, the error messages) are covered; alignment and the sample
-  loop are not. If real coverage is wanted here, generate a small synthetic DNG rather than committing a
-  camera file.
+- **`RecipeExtractor.derive` end-to-end is tested only where a RAW exists.** Phase 2 Step 9 added
+  `DeriveInvarianceTests`, which runs a real derive on the `realworldtest` (DNG, in-camera JPG) pair
+  and checks the cube lands the same way through the new pipeline as it does over
+  `developRAWNeutral`. **It skips on CI**, which has no DNG — read the green tick there as saying
+  nothing about derive. The pure pieces (`buildCube`, `workingSize`, the error messages) are covered
+  everywhere; alignment and the sample loop are covered locally only. A small synthetic DNG remains
+  the only way to close that, and is still not worth the effort of generating one.
 - **No SwiftUI view tests.** Views are exercised only insofar as the view model is.
 - **The `CIRAWFilter` half of `RAWDevelopSettings` only runs where a RAW exists.** Three tests build a
   real filter from `Fixtures.localRAWURL` — the untracked `realworldtest/` DNG — and `XCTSkip` when

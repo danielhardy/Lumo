@@ -62,6 +62,15 @@ protocol RenderEngining: Sendable {
         space: WorkingSpace,
         maxDimension: Int
     ) async -> HistogramData?
+
+    /// Drop every cached cube filter, because the bytes behind a `LUTID` may have changed.
+    ///
+    /// **On the protocol as of Step 9, so that the app calling it is assertable.** The engine has had
+    /// this method since Step 4 and it was correct the whole time; the only caller was a test, and
+    /// nothing above the actor could see whether it fired. Its absence became reachable in Step 9:
+    /// saving a second derive over the same `.cube` path yields the same `LUTID`, so without this the
+    /// cache keeps serving the first cube and the second save silently does nothing on screen.
+    func invalidateLUTCache() async
 }
 
 /// The one `CIContext`.
