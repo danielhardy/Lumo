@@ -1,6 +1,6 @@
 # CLAUDE.md — project guidance for AI agents
 
-LUTzy is a native **macOS 14+** app (Swift 5.9, SwiftUI + Core Image, **zero third-party dependencies**) that applies `.cube` 3D LUTs to RAW/DNG and standard images, and can derive a `.cube` LUT from a (RAW, JPG) pair.
+LUTzy is a native **macOS 14+** app (**Swift 6 language mode**, SwiftUI + Core Image, **zero third-party dependencies**) that applies `.cube` 3D LUTs to RAW/DNG and standard images, and can derive a `.cube` LUT from a (RAW, JPG) pair.
 
 ## Build / run / test
 
@@ -22,6 +22,29 @@ runtime; it cannot conjure a symbol the SDK never declared. That distinction cos
 Step 2, when CI still ran `macos-14` (Xcode 15.4 / macOS 14.5 SDK) and the code built clean locally.
 
 If CI ever needs to move back to an older image, that reference is the thing that has to go with it.
+
+## Swift 6 language mode is on, for every target
+
+`Package.swift` is a 6.0 tools version and declares `.swiftLanguageMode(.v6)` on `LUTzyKit`, `LUTzy`
+and `LUTzyKitTests`. Data-race safety is **errors, not warnings** — Phase 2 Step 8 turned it on after
+Steps 4–7 removed the last shared mutable state, and the module compiles with **zero** diagnostics
+and **zero** escape hatches: no `@unchecked Sendable`, no `nonisolated(unsafe)`, no
+`@preconcurrency`. `PackageSettingsTests` fails if any of that changes, because none of it is
+observable at runtime.
+
+Practical consequences when writing code here:
+
+- **`deinit` is `nonisolated`.** It can run on any thread, so it may not touch non-`Sendable` stored
+  state even on a `@MainActor` class. Teardown that needs the main actor belongs in an explicit
+  method the owner calls — see `KeyMonitor.stop()`, which is why that pattern exists.
+- **Closures handed to an unstructured `Task` must be `@Sendable`.** Mark the parameter rather than
+  reaching for an opt-out.
+- **`CIImage`, `CIFilter` and `CIContext` are not `Sendable`** and must stay inside `RenderEngine`.
+  Only values cross the boundary — `EditDocument`, `ImageSource`, `CubeLUT`, `WorkingSpace`,
+  `RenderScale` — plus a `sending CGImage?` or `Data` on the way out.
+- If something genuinely cannot be expressed safely, raise it rather than silencing it. The zero-opt-out
+  property is what makes "Swift 6 mode is on" mean anything; the mode is trivially satisfiable file
+  by file otherwise.
 
 ## Layout
 

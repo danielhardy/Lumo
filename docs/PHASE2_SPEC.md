@@ -1,8 +1,9 @@
 # LUTzy Phase 2 — non-destructive render pipeline + RAW develop
 
-**Status:** partly built. Steps 0–7 of the migration are done — the preview, both export paths and the
-histogram all render from the document, `ImageProcessor` is gone, and the module is
-strict-concurrency clean. The develop UI, undo and derive-registration are not built yet.
+**Status:** partly built. Steps 0–8 of the migration are done — the preview, both export paths and the
+histogram all render from the document, `ImageProcessor` is gone, and the whole package builds in
+**Swift 6 language mode** with no diagnostics and no escape hatches. The develop UI, undo and
+derive-registration are not built yet.
 
 This is a distillation. The original draft ran 4,180 lines of multi-agent output that contradicted
 itself across sections and spent a good fraction of its length arguing with earlier drafts about bugs
@@ -53,16 +54,28 @@ type is gone. Its GPU duties went to `actor RenderEngine`, its thumbnails to `en
 — the format vocabulary, `orientedLoadOptions`, `developRAWNeutral`, and the eager decode — to
 `enum ImageDecoder`, which is stateless and so has no instance to share.
 
-**Step 8's scope is now zero, measured.** Compiling `LUTzyKit` with `-strict-concurrency=complete`
-under the macOS 26 SDK reported **one** diagnostic (`ImageProcessor.shared`) before Step 7 and
-reports **none** after it. `sending CGImage?` typechecks in Swift 5 language mode, so no
-upcoming-feature flag is needed. Step 8 is now flipping the flag in `Package.swift` and confirming
-the *test* target is clean too:
+✅ **Step 8 turned it on, and went further than planned.** The plan was Swift 5 language mode with
+`-strict-concurrency=complete`, which reports data-race problems as *warnings*. Measured first:
+`LUTzyKit` compiles with **zero** diagnostics in full **Swift 6 language mode**, where they are
+errors. So `Package.swift` moved to a 6.0 tools version and declares `.swiftLanguageMode(.v6)` on all
+three targets — library, executable and tests — rather than the weaker flag.
 
-```
-swiftc -typecheck -swift-version 5 -strict-concurrency=complete \
-    -target arm64-apple-macosx14.0 $(find Sources/LUTzyKit -name '*.swift')
-```
+The standalone `swiftc -typecheck` invocation this section used to carry is retired: `swift build`
+enforces it now, on every target rather than just the library, which is where the last diagnostic
+actually turned out to be.
+
+Two real fixes fell out, both in code the earlier steps had not touched:
+
+- `KeyMonitor.deinit` removed its `NSEvent` monitor. A `deinit` is `nonisolated` — it can run on any
+  thread — so it may not touch the non-`Sendable` `Any?` token AppKit returns. Teardown became an
+  explicit `stop()` on the main actor, called from `onDisappear`. That is the better shape anyway:
+  `NSEvent.removeMonitor` wants the main thread, and reaching it from a `deinit` never guaranteed one.
+- `PreviewCostBenchmark.timeAsync` passed a non-`Sendable` closure to an unstructured `Task`. Marked
+  `@Sendable`; every call site already captured only values.
+
+**Zero escape hatches**, which is what makes the mode mean anything: no `@unchecked Sendable`, no
+`nonisolated(unsafe)`, no `@preconcurrency` anywhere in `Sources`. `PackageSettingsTests` asserts
+both the manifest settings and the absence of opt-outs, because neither is observable at runtime.
 
 ---
 
@@ -252,7 +265,7 @@ leaf by leaf, delete the old path last.
 | ~~5~~ | ~~Cut **preview** over. Keep computed `sourceImage`/`selectedLUT` shims so views compile~~ | ✅ **done** — 188 tests; 15 mutations caught; needed a **developed-source memo**, see below |
 | ~~6~~ | ~~Cut **export** over; delete `processedImage`~~ | ✅ **done** — 203 tests; 25 mutations caught; **both** export paths cut over, and the histogram came with them (see below) |
 | ~~7~~ | ~~Move thumbnails (**both** `ImageCollection` sites); dissolve `ImageProcessor` GPU duties~~ | ✅ **done** — 208 tests; 18 mutations caught, 2 shown equivalent by measurement; `RenderStackTests` asserts the context count |
-| 8 | Flip strict concurrency on | warning-clean build and test |
+| ~~8~~ | ~~Flip strict concurrency on~~ | ✅ **done** — full **Swift 6 language mode** (errors, not warnings) on all three targets; 214 tests; 9 mutations caught, 1 untestable and named |
 | 9 | Wire derive into the new state: register the derived LUT by ID, keep the scratch-file bookkeeping | derive-baseline invariance test |
 | 10 | RAW develop + adjustments inspector, gated per-image on the real `is*Supported` flags | inspector drives live re-render |
 | 11 | Per-image undo keyed by `Item.id`, plus an `EditDocumentStore` | ⌘Z scoped per image |
