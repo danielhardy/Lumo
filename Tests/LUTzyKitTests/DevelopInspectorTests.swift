@@ -525,4 +525,53 @@ final class DevelopInspectorTests: TempDirectoryTestCase {
         viewModel.resetAllDevelop()
         XCTAssertTrue(viewModel.document.rawDevelop.isNeutral)
     }
+
+    /// **White balance is one control over two settings.** `resetDevelop(.whiteBalance)` has to clear
+    /// `neutralTint` as well as `neutralTemperature`; there is no `.tint` case to reset it through, so
+    /// a dropped line would strand the tint set forever with a reset button that appears to work.
+    /// Nothing caught that before — `resetAllDevelop` clears both by replacing the whole struct.
+    func testResettingWhiteBalanceClearsBothTemperatureAndTint() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("capabilities") { viewModel.rawCapabilities != nil }
+
+        viewModel.developBinding(for: .whiteBalance).wrappedValue = 3200
+        viewModel.developTintBinding().wrappedValue = -42
+        XCTAssertEqual(viewModel.document.rawDevelop.neutralTemperature, 3200)
+        XCTAssertEqual(viewModel.document.rawDevelop.neutralTint, -42)
+
+        viewModel.resetDevelop(.whiteBalance)
+
+        XCTAssertNil(viewModel.document.rawDevelop.neutralTemperature, "reset means unset, not zero")
+        XCTAssertNil(viewModel.document.rawDevelop.neutralTint,
+                     "the tint half of white balance has no reset of its own — this one must clear it")
+        // Both halves gone means the document is untouched again, which is the observable
+        // consequence: a stranded tint would keep it non-neutral and keep the develop stage running.
+        XCTAssertTrue(viewModel.document.rawDevelop.isNeutral,
+                      "resetting the only edited control must return the document to neutral")
+    }
+
+    /// Reset per control, one at a time, across the whole enum: each returns to neutral on its own.
+    /// The single-control test above only exercises `.exposure`, so a `resetDevelop` arm that cleared
+    /// the wrong field would survive it.
+    func testEveryControlResetsToUnsetOnItsOwn() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("capabilities") { viewModel.rawCapabilities != nil }
+
+        for control in DevelopControl.allCases {
+            // A value the seed cannot coincide with, so the write genuinely changes the document.
+            let written: Double = control.isToggle ? 0 : (control.range.lowerBound + 0.03)
+            viewModel.developBinding(for: control).wrappedValue = written
+            XCTAssertFalse(viewModel.document.rawDevelop.isNeutral,
+                           "writing \(control.rawValue) should have left the document non-neutral")
+
+            viewModel.resetDevelop(control)
+            XCTAssertTrue(viewModel.document.rawDevelop.isNeutral,
+                          "resetDevelop(.\(control.rawValue)) left something set — it is clearing "
+                          + "the wrong field, or not every field it writes")
+        }
+    }
 }
