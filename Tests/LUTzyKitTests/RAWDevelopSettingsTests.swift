@@ -202,7 +202,134 @@ final class RAWDevelopSettingsTests: XCTestCase {
         }
     }
 
-    // The `is*Supported` gates in `apply(to:)` are deliberately not covered by a test. Exercising one
-    // needs a RAW whose decoder *lacks* that adjustment, and the file this suite can reach supports
-    // all of them — a test that skips both here and in CI is noise, not coverage.
+    // MARK: - The gates themselves, which leave no runtime trace to assert on
+
+    /// Every per-file adjustment in `apply(to:)` must be written **only** inside a condition naming
+    /// its own `is*Supported` flag.
+    ///
+    /// **This reads source text, and for the same reason `RenderStackTests` and
+    /// `RAWCapabilitiesTests.testEveryGatedSeedIsReadBehindItsOwnSupportedFlag` do.** The property is
+    /// invisible at runtime because the framework itself masks it: `CIRAWFilter` silently discards a
+    /// write to an adjustment its decoder does not implement, so a pixel comparison cannot tell "our
+    /// gate ran" from "our gate was deleted and the framework's own discard covered for it".
+    /// Confirmed directly —
+    /// `RAWCapabilitiesTests.testAValueWrittenToAnUnsupportedAdjustmentChangesNothing` measures a
+    /// worst pixel delta of exactly **0** on the Leica in `realworldtest/` whether
+    /// `filter.isLocalToneMapSupported` is checked or not. The only way to keep the gate honest is to
+    /// look at the source.
+    ///
+    /// Deliberately narrow, like its `RAWCapabilitiesTests` sibling: it checks that each property's
+    /// `if let` condition names its own flag, not what the rest of the expression does with it. A
+    /// rewrite that keeps the flag but inverts the check would slip through — this guards against
+    /// deletion and mis-pairing, which are the failures that actually happen (see the mutation tests
+    /// this shipped with).
+    func testEveryGatedAdjustmentIsAppliedOnlyBehindItsOwnSupportedFlag() throws {
+        let source = URL(fileURLWithPath: #filePath)            // Tests/LUTzyKitTests/…
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()                         // package root
+            .appendingPathComponent("Sources/LUTzyKit/Models/RAWDevelopSettings.swift")
+        let text = try String(contentsOf: source, encoding: .utf8)
+
+        let signature = "func apply(to filter: CIRAWFilter) {"
+        let start = try XCTUnwrap(text.range(of: signature),
+                                  "could not find apply(to:) — was it renamed?")
+        let rest = text[start.upperBound...]
+        let end = try XCTUnwrap(rest.range(of: "\n    }"), "could not find the end of the method")
+        let body = String(rest[..<end.lowerBound])
+
+        /// The condition guarding `property`'s `if let` binding — from `if let <property>` up to (but
+        /// not including) the opening brace of that `if` statement.
+        ///
+        /// **Must fail, not fail open, when `property` cannot be found.** A property renamed, moved
+        /// out of `apply(to:)`, or written some other way (e.g. `if settings.property != nil`) is
+        /// exactly the kind of drift this test exists to catch, so a miss here is `XCTFail`, not a
+        /// vacuous pass.
+        func condition(for property: String) throws -> String {
+            let needle = "if let \(property)"
+            guard let range = body.range(of: needle) else {
+                XCTFail(
+                    "\(needle) not found in apply(to:) — \(property) was renamed, removed, or is no "
+                    + "longer written behind an `if let` binding, so this test can no longer vouch for it"
+                )
+                return ""
+            }
+            let after = body[range.lowerBound...]
+            guard let braceRange = after.range(of: "{") else {
+                XCTFail("could not find the opening brace of \(property)'s if statement")
+                return ""
+            }
+            return String(after[..<braceRange.lowerBound])
+        }
+
+        // The eight per-file adjustments, each paired with the flag that must gate it. A row here
+        // pairing a property with the *wrong* flag would still parse and still find a `Supported`
+        // substring — `contains(flag)` below only passes when the flag named is this property's own.
+        let gated: [(property: String, flag: String)] = [
+            ("sharpnessAmount", "isSharpnessSupported"),
+            ("contrastAmount", "isContrastSupported"),
+            ("detailAmount", "isDetailSupported"),
+            ("moireReductionAmount", "isMoireReductionSupported"),
+            ("localToneMapAmount", "isLocalToneMapSupported"),
+            ("luminanceNoiseReductionAmount", "isLuminanceNoiseReductionSupported"),
+            ("colorNoiseReductionAmount", "isColorNoiseReductionSupported"),
+            ("lensCorrectionEnabled", "isLensCorrectionSupported"),
+        ]
+
+        for (property, flag) in gated {
+            let condition = try condition(for: property)
+            XCTAssertTrue(
+                condition.contains(flag),
+                "\(property) is written without checking \(flag) — writing it unconditionally would "
+                + "push it onto a CIRAWFilter whose decoder may not implement it. Condition found: "
+                + "\"\(condition.trimmingCharacters(in: .whitespacesAndNewlines))\""
+            )
+        }
+
+        // `highlightRecoveryEnabled` is gated on BOTH `#available(macOS 26, *)` and its own
+        // `isHighlightRecoverySupported` flag — the only knob newer than the deployment target. Both
+        // conditions have to survive, or the test would pass against code that dropped either one.
+        let highlightCondition = try condition(for: "highlightRecoveryEnabled")
+        XCTAssertTrue(
+            highlightCondition.contains("isHighlightRecoverySupported"),
+            "highlightRecoveryEnabled is written without checking isHighlightRecoverySupported. "
+            + "Condition found: \"\(highlightCondition.trimmingCharacters(in: .whitespacesAndNewlines))\""
+        )
+        XCTAssertTrue(
+            highlightCondition.contains("#available"),
+            "highlightRecoveryEnabled is written without an #available guard — this is the one knob "
+            + "newer than the macOS 14 deployment target. "
+            + "Condition found: \"\(highlightCondition.trimmingCharacters(in: .whitespacesAndNewlines))\""
+        )
+
+        // The ungated properties must NOT be behind a `Supported` condition — otherwise a change that
+        // gated *everything* (including these) would still pass the loop above, which only checks
+        // that the eight it lists are gated, not that gating stops there.
+        let ungated = [
+            "exposure", "baselineExposure", "shadowBias", "boostAmount", "boostShadowAmount",
+            "neutralTemperature", "neutralTint", "gamutMappingEnabled", "extendedDynamicRangeAmount",
+        ]
+        for property in ungated {
+            let condition = try condition(for: property)
+            XCTAssertFalse(
+                condition.contains("Supported"),
+                "\(property) is documented and tested as ungated, but apply(to:) now guards it with "
+                + "a Supported flag: \"\(condition.trimmingCharacters(in: .whitespacesAndNewlines))\" "
+                + "— if that's deliberate, move it into the `gated` table above and update its doc "
+                + "comment in RAWDevelopSettings.swift in the same commit"
+            )
+        }
+
+        // Completeness: every stored property of RAWDevelopSettings must appear in exactly one of the
+        // three lists above (gated, highlightRecoveryEnabled, or ungated), or a new knob could land in
+        // apply(to:) — gated correctly or not — without this test ever looking at it. Read via
+        // `Mirror` rather than hardcoded a third time, so the source of truth is the type itself.
+        let allProperties = Set(Mirror(reflecting: RAWDevelopSettings()).children.compactMap(\.label))
+        let covered = Set(gated.map(\.property)).union(ungated).union(["highlightRecoveryEnabled"])
+        XCTAssertEqual(
+            allProperties, covered,
+            "RAWDevelopSettings gained or lost a stored property that this test doesn't account for "
+            + "— add it to the `gated` table or the `ungated` list above, whichever apply(to:) does"
+        )
+    }
 }

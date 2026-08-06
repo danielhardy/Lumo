@@ -642,9 +642,21 @@ final class RAWCapabilitiesTests: XCTestCase {
         )
     }
 
-    /// The gate `CODE_REVIEW.md` §5 called untestable, asserted on pixels rather than on a flag:
-    /// a value written to an unsupported adjustment must be dropped by `apply(to:)`.
-    func testAValueWrittenToAnUnsupportedAdjustmentIsIgnored() async throws {
+    /// The gate `CODE_REVIEW.md` §5 called untestable, asserted on pixels rather than on a flag: a
+    /// value written for an unsupported adjustment must not change the render.
+    ///
+    /// **What this does and does not prove.** It proves the end-to-end claim: writing
+    /// `localToneMapAmount` against a decoder that does not support local tone mapping renders
+    /// byte-identically to leaving it unset. It does **not** prove that `RAWDevelopSettings.apply(to:)`
+    /// own `filter.isLocalToneMapSupported` gate is what makes that true. Tried directly: removing
+    /// that `if`-condition from `apply(to:)` and rerunning this test still measures a worst pixel
+    /// delta of exactly **0**. `CIRAWFilter` silently discards writes to properties its decoder does
+    /// not implement — the framework's own gate absorbs the write regardless of whether ours runs
+    /// first — so this test cannot tell "our gate ran" from "our gate was deleted and it didn't
+    /// matter". `testEveryGatedAdjustmentIsAppliedOnlyBehindItsOwnSupportedFlag` in
+    /// `RAWDevelopSettingsTests.swift` is what actually covers our gate, by reading source text
+    /// instead of pixels, for exactly this reason.
+    func testAValueWrittenToAnUnsupportedAdjustmentChangesNothing() async throws {
         guard let rawURL = Fixtures.localRAWURL else {
             throw XCTSkip("no local RAW; see Fixtures.localRAWURL and PHASE2_SPEC §8.9")
         }
