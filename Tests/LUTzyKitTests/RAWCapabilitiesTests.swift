@@ -598,4 +598,79 @@ final class RAWCapabilitiesTests: XCTestCase {
 
         XCTAssertNil(caps, "a JPEG or PNG has no develop stage; capabilities must be nil, not empty")
     }
+
+    // MARK: - The seeds are the decoder's actual values
+
+    /// Writing the probed as-shot white balance must render identically to leaving it unset.
+    ///
+    /// This is the assumption the whole panel rests on: a slider bound to a `nil` setting displays
+    /// the seed, so if the seed is not what the decoder actually used, every control opens on a
+    /// value that is subtly not where the image is — and the first touch of any slider would jump
+    /// the picture.
+    ///
+    /// Interleaved in one process; Core Image is not bit-reproducible across time-separated runs.
+    /// Skips on CI, which has no DNG.
+    func testWritingTheAsShotValuesMatchesLeavingThemUnset() async throws {
+        guard let rawURL = Fixtures.localRAWURL else {
+            throw XCTSkip("no local RAW; see Fixtures.localRAWURL and PHASE2_SPEC §8.9")
+        }
+        let engine = RenderEngine()
+        let source = ImageSource(url: rawURL, nativeExtent: .zero)
+        // `XCTUnwrap` takes an autoclosure, which cannot contain `await` — so the actor hop happens
+        // here and the unwrap happens after it (see `RenderEngineTests.render`).
+        let probed = await engine.rawCapabilities(for: source)
+        let caps = try XCTUnwrap(probed)
+
+        var written = EditDocument()
+        written.rawDevelop.neutralTemperature = caps.asShotTemperature
+        written.rawDevelop.neutralTint = caps.asShotTint
+
+        let unsetImage = try XCTUnwrap(RenderPipeline.buildImage(
+            source: source, document: EditDocument(), lut: nil, scale: .full, space: .sRGB
+        ))
+        let writtenImage = try XCTUnwrap(RenderPipeline.buildImage(
+            source: source, document: written, lut: nil, scale: .full, space: .sRGB
+        ))
+
+        assertPixelsEqual(
+            try Pixels.bytes(of: writtenImage, space: .sRGB),
+            try Pixels.bytes(of: unsetImage, space: .sRGB),
+            """
+            writing the probed as-shot white balance changed the render, so the seed is not the \
+            value the decoder actually used and every white-balance slider opens in the wrong place
+            """
+        )
+    }
+
+    /// The gate `CODE_REVIEW.md` §5 called untestable, asserted on pixels rather than on a flag:
+    /// a value written to an unsupported adjustment must be dropped by `apply(to:)`.
+    func testAValueWrittenToAnUnsupportedAdjustmentIsIgnored() async throws {
+        guard let rawURL = Fixtures.localRAWURL else {
+            throw XCTSkip("no local RAW; see Fixtures.localRAWURL and PHASE2_SPEC §8.9")
+        }
+        let engine = RenderEngine()
+        let source = ImageSource(url: rawURL, nativeExtent: .zero)
+        // `XCTUnwrap` takes an autoclosure, which cannot contain `await` — so the actor hop happens
+        // here and the unwrap happens after it (see `RenderEngineTests.render`).
+        let probed = await engine.rawCapabilities(for: source)
+        let caps = try XCTUnwrap(probed)
+        try XCTSkipIf(caps.isLocalToneMapSupported,
+                      "this decoder now supports local tone mapping; pick another unsupported gate")
+
+        var document = EditDocument()
+        document.rawDevelop.localToneMapAmount = 1.0
+
+        let neutral = try XCTUnwrap(RenderPipeline.buildImage(
+            source: source, document: EditDocument(), lut: nil, scale: .full, space: .sRGB
+        ))
+        let gated = try XCTUnwrap(RenderPipeline.buildImage(
+            source: source, document: document, lut: nil, scale: .full, space: .sRGB
+        ))
+
+        assertPixelsEqual(
+            try Pixels.bytes(of: gated, space: .sRGB),
+            try Pixels.bytes(of: neutral, space: .sRGB),
+            "an unsupported adjustment must be dropped by apply(to:), not written to the filter"
+        )
+    }
 }
