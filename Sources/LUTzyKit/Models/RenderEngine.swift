@@ -42,6 +42,26 @@ protocol RenderEngining: Sendable {
         quality: CGFloat,
         space: WorkingSpace
     ) async throws -> Data
+
+    /// Tally `document` over `source` into a 256-bin per-channel histogram.
+    ///
+    /// On the protocol rather than left to the caller because tallying needs a rasterizer, and the
+    /// rasterizer is this actor. The alternative — handing the caller a `CIImage` to tally itself —
+    /// is the old `ImageProcessor` shape, and it is what let the histogram describe a *different*
+    /// image from the one on screen: it graded a full-resolution neutral decode with only the LUT,
+    /// while the preview showed develop and adjustments too.
+    ///
+    /// `scale` should be the **display** scale, not a histogram-sized one, so the call reuses the
+    /// engine's developed-source memo instead of evicting it; the tally buffer is capped separately
+    /// by `maxDimension`.
+    func histogram(
+        source: ImageSource,
+        document: EditDocument,
+        lut: CubeLUT?,
+        scale: RenderScale,
+        space: WorkingSpace,
+        maxDimension: Int
+    ) async -> HistogramData?
 }
 
 /// The one `CIContext`.
@@ -142,6 +162,58 @@ actor RenderEngine: RenderEngining {
             ) else { throw ImageError.exportFailed }
             return data
         }
+    }
+
+    // MARK: - Histogram
+
+    /// Tally the rendered document into 256 bins per channel.
+    ///
+    /// The image is rendered to a downscaled RGBA8 buffer first — `maxDimension` caps the longest
+    /// side so this stays a few milliseconds even for a 60 MP source, while staying representative.
+    ///
+    /// `scale` is the caller's *display* scale on purpose. The developed-source memo is keyed on it
+    /// (§6, "the cutover's one real trap"), so asking for a histogram at some private 512 px scale
+    /// would evict the preview's entry on every tally and re-develop the RAW on the next frame —
+    /// turning a cheap panel into a per-frame decode. Rendering the same graph the preview renders
+    /// and shrinking only the tally buffer keeps both on one memo entry.
+    ///
+    /// The buffer is rendered in `space` for the same reason `makeCGImage` is: the histogram should
+    /// describe the pixels the user is looking at, not a differently-encoded copy of them.
+    func histogram(
+        source: ImageSource,
+        document: EditDocument,
+        lut: CubeLUT?,
+        scale: RenderScale,
+        space: WorkingSpace = .current,
+        maxDimension: Int = 512
+    ) -> HistogramData? {
+        guard maxDimension > 0, let image = buildImage(source, document, lut, scale, space) else {
+            return nil
+        }
+        let extent = image.extent
+        guard extent.isRasterizable else { return nil }
+
+        let factor = min(
+            CGFloat(maxDimension) / extent.width,
+            CGFloat(maxDimension) / extent.height,
+            1.0
+        )
+        let scaled = image.transformed(by: CGAffineTransform(scaleX: factor, y: factor))
+        let rect = scaled.extent.integral
+        guard rect.isRasterizable else { return nil }
+
+        let width = Int(rect.width)
+        let height = Int(rect.height)
+        let bytesPerRow = width * 4
+        var bytes = [UInt8](repeating: 0, count: height * bytesPerRow)
+        bytes.withUnsafeMutableBytes { ptr in
+            guard let base = ptr.baseAddress else { return }
+            context.render(
+                scaled, toBitmap: base, rowBytes: bytesPerRow, bounds: rect,
+                format: .RGBA8, colorSpace: space.cgColorSpace
+            )
+        }
+        return HistogramData(rgba8: bytes, width: width, height: height, bytesPerRow: bytesPerRow)
     }
 
     // MARK: - Cache

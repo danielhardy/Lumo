@@ -239,6 +239,10 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
     }
 
     // MARK: - The shims still hold
+    //
+    // `processedImage` is gone — Step 6 deleted it along with the old export path. The test that
+    // pinned its behaviour lived here and went with it; `ExportCutoverTests` is what replaces it.
+
 
     /// Views read `selectedLUT` and `lutIntensity`; both are now computed off the document. If they
     /// stopped tracking it the toolbar and sidebar would show stale state.
@@ -283,22 +287,4 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
         XCTAssertEqual(viewModel.selectedLUT, lut, "the selection must survive a library rescan")
     }
 
-    /// Export and the histogram are **not** cut over yet — that is Step 6. `processedImage` must
-    /// still be what it always was, or this step would quietly change what gets written to disk.
-    func testProcessedImageStillReflectsTheOldExportPath() async throws {
-        let viewModel = AppViewModel(engine: FakeRenderEngine())
-        try await openImage(viewModel)
-
-        XCTAssertNil(viewModel.processedImage, "no LUT means no processed image, as before")
-
-        let lut = TestImages.warmLUT()
-        viewModel.selectLUT(lut)
-        // A strength other than 1.0 on purpose: at full strength this test cannot tell a pipeline
-        // that reads the document's intensity from one that hard-codes it.
-        viewModel.setLUTIntensity(0.45)
-        let processed = try XCTUnwrap(viewModel.processedImage)
-        let expected = try XCTUnwrap(lut.apply(to: try XCTUnwrap(viewModel.sourceImage), intensity: 0.45))
-        assertPixelsEqual(try Pixels.bytes(of: processed), try Pixels.bytes(of: expected),
-                          "export's image must be unchanged by the preview cutover")
-    }
 }
