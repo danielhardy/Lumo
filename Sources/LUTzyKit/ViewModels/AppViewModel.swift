@@ -37,6 +37,17 @@ final class AppViewModel: ObservableObject {
     private var capabilitiesTask: Task<Void, Never>?
     private var developTask: Task<Void, Never>?
 
+    /// Whether any call since the last fired render changed `rawDevelop`.
+    ///
+    /// A coalesced burst of `updateDocument(debounced:)` calls shares one `developTask` — only the
+    /// last call in the burst survives to fire. If that flag were captured per call (as it was
+    /// before this existed), an earlier call in the burst that touched `rawDevelop` would have its
+    /// `developChanged == true` thrown away the moment a later call in the same burst cancelled its
+    /// task, even though the comparison baseline genuinely needs to move. Accumulating the flag here
+    /// instead — OR'd in by every call, read and cleared by whichever call actually fires the render —
+    /// means the baseline re-renders if *any* call in the burst touched develop, not just the last.
+    private var pendingDevelopChange = false
+
     /// LUTs a document can reference that no folder scan produces — a freshly derived LUT, and the
     /// file it becomes once saved. See `DerivedLUTRegistry`; this is the Step 9 replacement for the
     /// single `scratchLUT` slot that stood here.
@@ -233,6 +244,10 @@ final class AppViewModel: ObservableObject {
         intensityTask?.cancel()
         capabilitiesTask?.cancel()
         developTask?.cancel()
+        // A pending develop flag describes the image being left; it must not survive onto whatever
+        // opens next, or an unrelated first edit on the new image would render a comparison baseline
+        // for develop settings that were never actually touched on it.
+        pendingDevelopChange = false
 
         isLoading = true
         statusMessage = "Loading \(name)..."
@@ -416,19 +431,28 @@ final class AppViewModel: ObservableObject {
 
         let developChanged = updated.rawDevelop != document.rawDevelop
         document = updated
+        // OR'd in rather than assigned: a call earlier in a coalesced burst may have changed
+        // `rawDevelop` even though *this* call didn't, and only the last call's task survives to
+        // fire (see `pendingDevelopChange`'s doc comment).
+        pendingDevelopChange = pendingDevelopChange || developChanged
+
+        developTask?.cancel()
 
         guard debounced else {
-            developTask?.cancel()
-            if developChanged { scheduleOriginalPreview() }
+            let shouldRenderBaseline = pendingDevelopChange
+            pendingDevelopChange = false
+            if shouldRenderBaseline { scheduleOriginalPreview() }
             schedulePreview()
             return
         }
 
-        developTask?.cancel()
         developTask = Task {
             try? await Task.sleep(for: .milliseconds(Self.intensityDebounceMs))
             guard !Task.isCancelled else { return }
-            if developChanged { self.scheduleOriginalPreview() }
+            if self.pendingDevelopChange {
+                self.pendingDevelopChange = false
+                self.scheduleOriginalPreview()
+            }
             self.schedulePreview()
         }
     }

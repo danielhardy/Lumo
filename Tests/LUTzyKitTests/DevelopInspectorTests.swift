@@ -138,16 +138,75 @@ final class DevelopInspectorTests: TempDirectoryTestCase {
     }
 
     /// Discrete controls stay immediate — a checkbox that lagged 60 ms would feel broken.
+    ///
+    /// The discriminator here is **sequence, not elapsed time**. Waiting up to some deadline (the
+    /// previous version of this test waited up to 1 s against a 60 ms debounce) would pass even if
+    /// the immediate path were secretly rerouted through the debounce, since 1 s comfortably outlasts
+    /// 60 ms either way. Instead: issue a debounced edit with one value, then immediately (no
+    /// `await` in between) an undebounced edit with a *different* value, then spin on `Task.yield()`
+    /// — scheduling turns, not wall-clock time — until the undebounced value's render shows up.
+    /// Hundreds of yields still complete in a tiny fraction of 60 ms on any real scheduler, so this
+    /// only succeeds if the undebounced edit truly skipped the debounce; if it were routed through
+    /// the same 60 ms sleep, the loop exhausts and the render is never seen. At that moment, the
+    /// debounced edit's own value must not have rendered on its own either — that would mean its
+    /// timer fired (or was never cancelled) independently of the undebounced edit, which should
+    /// never happen since every call — debounced or not — cancels the prior develop task.
     func testAnUndebouncedEditRendersWithoutWaiting() async throws {
         let fake = FakeRenderEngine()
         let viewModel = AppViewModel(engine: fake)
         try await openStandardImage(viewModel)
         try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
 
+        // Debounced first — on its own this renders only ~60 ms from now.
+        viewModel.updateDocument(debounced: true) { $0.rawDevelop.exposure = 0.42 }
+        // Immediately after, with no suspension in between: an undebounced edit, distinct value.
         viewModel.updateDocument { $0.rawDevelop.gamutMappingEnabled = false }
 
-        try await waitUntil("the immediate render", timeout: 1) {
-            await fake.previewRequests.contains { $0.document.rawDevelop.gamutMappingEnabled == false }
+        var sawUndebounced = false
+        for _ in 0..<1000 {
+            sawUndebounced = await fake.previewRequests.contains {
+                $0.document.rawDevelop.gamutMappingEnabled == false
+            }
+            if sawUndebounced { break }
+            await Task.yield()
+        }
+        XCTAssertTrue(sawUndebounced, "the undebounced edit must render without waiting for the debounce")
+
+        // The debounced edit's value must never have rendered by itself (i.e. before the undebounced
+        // edit's mutation had also landed) — it should have been pre-empted, not raced.
+        let requestsSoFar = await fake.previewRequests
+        XCTAssertFalse(
+            requestsSoFar.contains {
+                $0.document.rawDevelop.exposure == 0.42 && $0.document.rawDevelop.gamutMappingEnabled != false
+            },
+            "the debounced edit's own timer must not have fired independently"
+        )
+    }
+
+    // MARK: - Coalesced bursts
+
+    /// **Finding 1 regression.** A coalesced burst shares one `developTask`; only the last call's
+    /// task survives to fire. Before the fix, `developChanged` was captured per call, so a burst
+    /// that changed `rawDevelop` first and something else (here, `adjustments`) last would fire with
+    /// the *last* call's `developChanged == false` — the comparison baseline would never re-render,
+    /// leaving the side-by-side panel showing stale, pre-edit pixels indefinitely.
+    func testAMixedBurstStillRendersTheComparisonBaseline() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+
+        // First call in the burst changes rawDevelop...
+        viewModel.updateDocument(debounced: true) { $0.rawDevelop.exposure = 0.8 }
+        // ...a second call within the debounce window changes only adjustments. No `await` in
+        // between, so both land before either's debounce timer has any chance to fire — exactly
+        // what a coalesced burst of slider ticks produces.
+        viewModel.updateDocument(debounced: true) { $0.adjustments = [.exposure(ev: 0.3)] }
+
+        let expectedBaseline = viewModel.document.originalForComparison
+
+        try await waitUntil("the comparison baseline to re-render") {
+            await fake.previewRequests.contains { $0.document == expectedBaseline && $0.lutID == nil }
         }
     }
 }
