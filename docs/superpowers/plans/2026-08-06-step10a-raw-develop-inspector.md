@@ -416,7 +416,7 @@ Then add to `actor RenderEngine`, immediately before the `// MARK: - Cache` sect
     /// capability question must not evict the image the user is looking at.
     func rawCapabilities(for source: ImageSource) -> RAWCapabilities? {
         guard case .raw = source.kind else { return nil }
-        guard let filter = Self.rawFilter(for: source.backing) else { return nil }
+        guard let filter = RenderPipeline.rawFilter(for: source.backing) else { return nil }
 
         var highlightRecovery = false
         if #available(macOS 26, *) {
@@ -456,7 +456,7 @@ to:
     static func rawFilter(for backing: ImageSource.Backing) -> CIRAWFilter? {
 ```
 
-and in `RenderEngine.rawCapabilities` above, `Self.rawFilter` refers to `RenderPipeline.rawFilter`, so write it as `RenderPipeline.rawFilter(for: source.backing)`.
+The call in `RenderEngine.rawCapabilities` above is already written as `RenderPipeline.rawFilter(for: source.backing)` — `RenderEngine` and `RenderPipeline` are different types, so `Self.` would not resolve.
 
 In `Tests/LUTzyKitTests/FakeRenderEngine.swift`, add before `func setShouldFailEncode(_ value: Bool)`:
 
