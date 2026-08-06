@@ -7,7 +7,7 @@ extension RAWCapabilities {
 
     /// Every gate open, and **every seed a different value that is not the field default**.
     ///
-    /// `.everythingSupported` cannot serve as the stub for seed tests: it leaves all thirteen seeds at
+    /// `.everyGateOpen` cannot serve as the stub for seed tests: it leaves all twelve seeds at
     /// 0/false, which is exactly what a getter falling back to a hardcoded constant returns, so
     /// "the seed was read" and "a constant was guessed" are literally the same number. Every value
     /// here is distinct from every other, so a getter wired to the *wrong* seed field also fails
@@ -144,13 +144,41 @@ actor FakeRenderEngine: RenderEngining {
 
     /// What the fake reports. `nil` models a standard image.
     ///
-    /// Distinctively seeded rather than `.everythingSupported`: that value leaves every seed at its
+    /// Distinctively seeded rather than `.everyGateOpen`: that value leaves every seed at its
     /// field default, so a getter reading a seed and a getter returning a hardcoded constant produce
     /// the same number and no test can tell them apart. See `RAWCapabilities.distinctivelySeeded`.
     var stubbedCapabilities: RAWCapabilities? = .distinctivelySeeded
 
-    func rawCapabilities(for source: ImageSource) -> RAWCapabilities? {
+    /// Whether an incoming probe should park until `releaseProbe()` is called.
+    ///
+    /// **The in-flight state is a real state, and a state you cannot hold still is a state you
+    /// cannot assert.** `AppViewModel.developPanelState` is `.probing` between "the image opened"
+    /// and "the probe answered" — 25–170 ms in the app, and effectively zero against this fake, so a
+    /// test racing it would be a flake either way it landed. Gating the probe makes that window last
+    /// as long as the test needs.
+    private var probeIsGated = false
+    private var parkedProbe: CheckedContinuation<Void, Never>?
+
+    func gateProbe() { probeIsGated = true }
+
+    /// Let a parked probe finish, and stop parking new ones.
+    ///
+    /// Ordering note for callers: wait until `capabilityProbeCount` has moved before releasing. The
+    /// count is incremented and the continuation stored in the same actor-synchronous run as the
+    /// suspension, so an *external* read of the count that returns 1 can only have been serviced
+    /// after this actor reached that suspension point — the continuation is therefore already
+    /// stored, and `releaseProbe()` cannot no-op past a probe that has not parked yet.
+    func releaseProbe() {
+        probeIsGated = false
+        parkedProbe?.resume()
+        parkedProbe = nil
+    }
+
+    func rawCapabilities(for source: ImageSource) async -> RAWCapabilities? {
         capabilityProbeCount += 1
+        if probeIsGated {
+            await withCheckedContinuation { parkedProbe = $0 }
+        }
         return stubbedCapabilities
     }
 

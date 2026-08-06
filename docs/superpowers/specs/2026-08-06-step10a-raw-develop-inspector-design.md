@@ -229,7 +229,7 @@ this rides on `FakeRenderEngine` recording requests. Two things need real pixels
 |---|---|
 | `testDevelopEditRendersTheChangedDocument` | the gate: a develop change reaches the engine as a render request carrying it |
 | `testADragIssuesFarFewerRendersThanTicks` | the debounce; N ticks → a handful of renders, not N |
-| `testDevelopEditsAreInertForAStandardImage` | a JPEG's render request is unchanged by `rawDevelop` |
+| `testDevelopEditsAreInertForAStandardImage` | a standard image's render is unchanged by `rawDevelop` |
 | `testCapabilitiesAreProbedOncePerOpen` | not per render, not per tick — the 25 ms stays off the drag |
 | `testUnsupportedAdjustmentsAreNotOffered` | **the gate `CODE_REVIEW.md` §5 called untestable** — `availableControls` omits Local Tone Map for the Leica, and `apply(to:)` drops a written value for it |
 | `testWritingTheAsShotValuesMatchesLeavingThemNil` | real pixels, tolerance 1 — the seeds are the decoder's actual values |
@@ -245,6 +245,22 @@ became three: `availableControls` gating against a synthetic capability value, t
 flags through the probe, and — because the pixel half of that row turned out to prove nothing about
 our own gate (§1) — a source-text test over `apply(to:)`. The seed table grew its own tests with the
 eight extra seeds (§2), including a range check that catches a seed opening a slider pinned.
+
+**`testDevelopEditsAreInertForAStandardImage` was listed here but not built**, and nothing else in
+the suite asserted that `RenderPipeline.developedSource` ignores `rawDevelop` on the `.standard`
+arm — a row in this table standing in for coverage that did not exist. It has since been written,
+in `RenderPipelineTests`, and it needs no RAW: build a document with every develop knob set far from
+its default, render the PNG fixture with it and without it, and assert the pixels match. It runs
+everywhere, CI included.
+
+**A row the table did not have, added after the fact.** The panel has **three** states, not two —
+not a RAW, a RAW whose 25–170 ms capability probe has not landed, and a probed RAW — and shipping it
+with two meant a RAW opened on the Develop tab read "No develop stage … this image is already
+rendered" for the length of the probe. The distinction lives in
+`AppViewModel.DevelopPanelState` for the usual reason (no SwiftUI view tests here), and is pinned by
+`testThePanelStateMappingCoversAllThreeStates` (the mapping, on any machine) plus
+`testARAWStaysOnProbingUntilTheProbeAnswers` (that a real RAW genuinely occupies the middle state —
+RAW-gated, so it skips on CI).
 
 Every regression test is mutation-checked with a harness reporting *caught*, *survived*, *did not
 compile*, *no tests ran* and *skipped* separately — `scripts/mutate-step9.sh` is the template, and

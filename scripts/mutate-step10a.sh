@@ -61,19 +61,37 @@ mutate() {
     return
   fi
 
-  if grep -qE "with [0-9]+ tests? skipped and 0 failures" <<<"$out" && ! grep -q "with [0-9]* failures" <<<"$out"; then
+  # **A failure is looked for FIRST, and SKIPPED only after.** These two were the other way round,
+  # and the old skip test — `with N tests skipped and 0 failures`, negated against a loose
+  # `with [0-9]* failures` — matched a run that both skipped *and* failed on a machine without the
+  # DNG: several filters here name suites that mix RAW-gated tests with ordinary ones, so a genuine
+  # survivor in such a suite was reported SKIPPED, and SKIPPED is (correctly) excluded from the
+  # `exit 1` at the bottom. The harness would have exited 0 on an uncaught mutation. Detecting the
+  # failure first cannot make that mistake: a run that skipped some tests and failed others is
+  # caught, which is what it is.
+  #
+  # Note the failure pattern has to tolerate the skip clause sitting between "with" and the failure
+  # count — xctest prints `with 1 test skipped and 2 failures` — and the previous `with [1-9]`
+  # shorthand cannot be reused here, because it also matches `with 1 test skipped and 0 failures`.
+  # That is precisely why the skip branch had to run first before, and why it no longer has to.
+  #
+  # **The tally recorded in the commit message / PR body was produced on a machine where the DNG in
+  # `realworldtest/` was present and every filter above ran with zero skips.** A run reporting any
+  # SKIPPED is a weaker run than that one, whatever its caught count says.
+  if grep -qE "with ([0-9]+ tests? skipped and )?[1-9][0-9]* failures?" <<<"$out"; then
+    echo "caught    $label"
+    PASS=$((PASS+1))
+    return
+  fi
+
+  if grep -qE "with [0-9]+ tests? skipped and 0 failures" <<<"$out"; then
     echo "SKIPPED   $label — the test skipped rather than running"
     SKIPPED=$((SKIPPED+1))
     return
   fi
 
-  if grep -qE "Executed [0-9]+ tests?, with [1-9]" <<<"$out"; then
-    echo "caught    $label"
-    PASS=$((PASS+1))
-  else
-    echo "SURVIVED  $label — '$filter' still passed with the code broken"
-    SURVIVED=$((SURVIVED+1)); SURVIVOR_NAMES+=("$label -> $filter")
-  fi
+  echo "SURVIVED  $label — '$filter' still passed with the code broken"
+  SURVIVED=$((SURVIVED+1)); SURVIVOR_NAMES+=("$label -> $filter")
 }
 
 VM=Sources/LUTzyKit/ViewModels/AppViewModel.swift
@@ -121,6 +139,22 @@ mutate "RenderEngine: return a blank as-shot temperature" "$RE" \
 mutate "RenderEngine: the probe evaluates outputImage" "$RE" \
   's/        guard let filter = RenderPipeline\.rawFilter\(for: source\.backing\) else \{ return nil \}\n/        guard let filter = RenderPipeline.rawFilter(for: source.backing) else { return nil }\n        _ = filter.outputImage\n/' \
   "RAWCapabilitiesTests"
+
+echo "=== the panel's three states ==="
+# `rawCapabilities` is nil both for "no develop stage" and for "the probe has not landed", and the
+# panel used to collapse the two — so a RAW opened on the Develop tab was told, in words, that it had
+# no develop stage for the 25-170 ms of the probe. The first mutation is that regression exactly.
+mutate "AppViewModel: the in-flight probe reports 'no develop stage' again" "$VM" \
+  's/                self = sourceIsRAW \? \.probing : \.noDevelopStage/                self = .noDevelopStage/' \
+  "DevelopInspectorTests"
+mutate "AppViewModel: capabilities no longer win over the source kind" "$VM" \
+  's/            if let capabilities \{\n                self = \.ready\(capabilities\)\n            \} else \{/            if let capabilities, sourceIsRAW {\n                self = .ready(capabilities)\n            } else {/' \
+  "DevelopInspectorTests"
+# RAW-gated: `ImageSource.kind` for a URL comes from the file extension, and `AppViewModel` only
+# records a source for a file that actually decoded, so only a real DNG reaches the `.raw` arm.
+mutate "AppViewModel: no image is ever a RAW" "$VM" \
+  's/    var sourceIsRAW: Bool \{ imageSource\?\.kind == \.raw \}/    var sourceIsRAW: Bool { false }/' \
+  "DevelopInspectorTests"
 
 echo "=== the twelve seeds: read behind the right flag, and read at all ==="
 # Task 1 shipped four per-image seeds; Tasks 3-6 grew that to twelve, because
@@ -195,7 +229,7 @@ mutate "AppViewModel: the debounce decision is inverted" "$VM" \
 
 echo "=== nil semantics ==="
 mutate "AppViewModel: an unset white balance reads back 0" "$VM" \
-  's/case \.whiteBalance: return develop\.neutralTemperature \?\? seed\?\.asShotTemperature \?\? 6500/case .whiteBalance: return 0/' \
+  's/case \.whiteBalance: return develop\.neutralTemperature \?\? seed\?\.asShotTemperature \?\? 0/case .whiteBalance: return 0/' \
   "DevelopInspectorTests"
 mutate "AppViewModel: reset writes zero instead of nil" "$VM" \
   's/            case \.exposure: document\.rawDevelop\.exposure = nil/            case .exposure: document.rawDevelop.exposure = 0/' \

@@ -307,8 +307,15 @@ Worth knowing before leaning on the suite:
   adjustment changes nothing end to end (because `CIRAWFilter` itself silently discards the write,
   independent of our own gate — measured worst pixel delta: 0), and a source-text test
   (`RAWDevelopSettingsTests.testEveryGatedAdjustmentIsAppliedOnlyBehindItsOwnSupportedFlag`)
-  independently verifies that `apply(to:)` itself writes each of the eight gated properties only
-  behind its own `is*Supported` flag, which is the part the pixel test cannot see.
+  independently checks that each of the eight gated properties in `apply(to:)` is written inside a
+  condition that **names** its own `is*Supported` flag, which is the part the pixel test cannot see.
+
+  **That is deliberately narrower than "verifies the gate holds", and the entry should not round it
+  up.** The test reads the source of `apply(to:)` and asserts each write's condition mentions the
+  right flag; it says nothing about what the condition then does with it. As its own doc comment puts
+  it, a rewrite that keeps the flag but inverts the check would slip through. It is a guard against
+  **deletion** — the failure that actually happens to a line like that — and the whole point of
+  rewriting this entry was to state coverage exactly rather than approximately.
 
   Two patterns worth carrying forward. The original claim was plausible, went unchecked for several
   steps, and cost nothing to disprove once someone printed the flags. And the obvious replacement —

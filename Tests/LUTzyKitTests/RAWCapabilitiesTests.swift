@@ -34,7 +34,7 @@ final class RAWCapabilitiesTests: XCTestCase {
         }
 
         XCTAssertEqual(
-            Set(RAWCapabilities.everythingSupported.availableControls),
+            Set(RAWCapabilities.everyGateOpen.availableControls),
             Set(DevelopControl.allCases),
             "a decoder supporting everything should offer every control"
         )
@@ -43,7 +43,7 @@ final class RAWCapabilitiesTests: XCTestCase {
     /// One flag off, everything else on — the shape a real camera actually has, and the one a
     /// blanket `allCases` or a blanket `[]` would both pass.
     func testASingleUnsupportedAdjustmentIsTheOnlyOneMissing() {
-        var caps = RAWCapabilities.everythingSupported
+        var caps = RAWCapabilities.everyGateOpen
         caps.isLocalToneMapSupported = false
 
         XCTAssertFalse(caps.availableControls.contains(.localToneMap))
@@ -55,24 +55,29 @@ final class RAWCapabilitiesTests: XCTestCase {
 
     /// Order is the panel's layout, so it is part of the contract rather than an accident of
     /// however the flags happen to be read.
+    ///
+    /// **One assertion, not two.** This used to also assert `all == DevelopControl.allCases`, which
+    /// against `everyGateOpen` is a tautology dressed as coverage: `availableControls` is
+    /// `allCases.filter(supports)`, and with every gate open the predicate is constantly `true`, so
+    /// that assertion reduces to "`Array.filter` preserves order" — a property of the standard
+    /// library, not of ours. `all.first` is the half that carries something: a `sorted()` or a
+    /// `reversed()` slipped into `availableControls` moves it off `.exposure`. *Which* controls come
+    /// out is pinned by `testGatedControlsAppearOnlyWhenSupported` and
+    /// `testEachGatedControlIsWithdrawnByExactlyItsOwnFlag` already.
     func testControlsComeOutInPanelOrder() {
-        let all = RAWCapabilities.everythingSupported.availableControls
+        let all = RAWCapabilities.everyGateOpen.availableControls
         XCTAssertEqual(all.first, .exposure, "tone leads the panel")
-        XCTAssertEqual(
-            all, DevelopControl.allCases,
-            "availableControls must preserve the declared order, not re-sort it"
-        )
     }
 
-    func testEveryControlHasATitle() {
-        for control in DevelopControl.allCases {
-            XCTAssertFalse(control.title.isEmpty, "\(control.rawValue) has no label")
-        }
-    }
+    // **`testEveryControlHasATitle` was deleted, deliberately.** It looped over `allCases` asserting
+    // `!title.isEmpty` against seventeen string literals in a `switch` with no `default:` arm — so
+    // the compiler already forces a new case to bring a title, and all the test added was "none of
+    // these seventeen literals is the empty string", which is visible by reading them. It could not
+    // fail without someone typing `return ""` on purpose.
 
     /// `supports(_:)` is nine near-identical `case .x: return isXSupported` arms, and the tests
     /// above cannot tell one arm from its neighbour: they either flip every gated flag together
-    /// (`RAWCapabilities()`, `.everythingSupported`) or isolate only `.localToneMap`. A copy-paste
+    /// (`RAWCapabilities()`, `.everyGateOpen`) or isolate only `.localToneMap`. A copy-paste
     /// slip that swaps, say, the `.contrast` and `.detail` arms passes every one of them.
     ///
     /// This drives every gated control through its own flag, one at a time, off a table so a
@@ -102,7 +107,7 @@ final class RAWCapabilitiesTests: XCTestCase {
         )
 
         for (control, flag) in gates {
-            var caps = RAWCapabilities.everythingSupported
+            var caps = RAWCapabilities.everyGateOpen
             caps[keyPath: flag] = false
 
             let withdrawn = Set(DevelopControl.allCases).subtracting(caps.availableControls)
@@ -181,14 +186,13 @@ final class RAWCapabilitiesTests: XCTestCase {
         XCTAssertEqual(DevelopControl.tintRange, -150...150, "documented as −150…150")
     }
 
-    /// A toggle's value is carried as 0 or 1 through a `Binding<Double>`, so its range has to contain
-    /// both — a 0…1 range is not decoration here.
-    func testEveryToggleRangeSpansItsTwoStates() {
-        for control in DevelopControl.allCases where control.isToggle {
-            XCTAssertTrue(control.range.contains(0) && control.range.contains(1),
-                          "\(control.rawValue) is a toggle; its range must hold both states")
-        }
-    }
+    // **`testEveryToggleRangeSpansItsTwoStates` was deleted, deliberately.** A toggle's value travels
+    // as 0 or 1 through a `Binding<Double>`, so its range must contain both — but that is already
+    // entailed, twice over, by the two tests above: `testExactlyTheBoolBackedControlsAreToggles` pins
+    // the toggle set to exactly `{lensCorrection, gamutMapping, highlightRecovery}`, and the range
+    // table pins each of those three to `0...1`, which contains 0 and 1. There is no edit to
+    // `DevelopControl` that breaks the toggle-range property while leaving both of those green, so
+    // the loop could only ever restate their conclusion.
 
     // MARK: - The real probe
 

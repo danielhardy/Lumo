@@ -28,12 +28,71 @@ final class AppViewModel: ObservableObject {
     private var imageSource: ImageSource?
 
     /// What the open image's RAW decoder can do, and where its own defaults sit. `nil` for a
-    /// standard image, which has no develop stage at all.
+    /// standard image, which has no develop stage at all — **and also `nil` while the probe is still
+    /// running on a RAW**, which is why the panel switches on `developPanelState` rather than on
+    /// this. See that property.
     ///
     /// Probed once per open rather than per render: the probe builds a `CIRAWFilter`, which measures
     /// ~25 ms on a 30 MB DNG. Not memoized across images — one entry would save that on returning to
     /// an image, at the cost of another cache whose invalidation nobody will remember.
     @Published private(set) var rawCapabilities: RAWCapabilities?
+
+    /// What the develop panel should be showing right now. **Three states, not two.**
+    ///
+    /// `rawCapabilities` is `nil` in two situations that mean opposite things, and the panel used to
+    /// treat them as one. `refreshCapabilities()` clears it **synchronously** on every open and
+    /// refills it 25–170 ms later, so a RAW opened with the Develop tab already showing spent the
+    /// whole probe reading "No develop stage — Develop controls come from the RAW decoder. This image
+    /// is already rendered." That is a false statement about the file, and because `inspectorTab` is
+    /// not reset on open it was shown again on every ←/→ step through a folder of RAWs.
+    ///
+    /// Deriving the state here rather than in the view is what makes it testable: this repo has no
+    /// SwiftUI view tests, so a distinction that lives only in a `ViewBuilder` cannot be asserted.
+    /// `DevelopInspectorView` is a `switch` over this value and nothing else.
+    ///
+    /// This — rather than a widened `imageSource` — is the whole of what the panel needs from the
+    /// source: not the backing bytes, not the native extent, only whether a develop stage exists at
+    /// all. See `sourceIsRAW` for the widening that does happen, and why it is a `Bool`.
+    var developPanelState: DevelopPanelState {
+        DevelopPanelState(sourceIsRAW: sourceIsRAW, capabilities: rawCapabilities)
+    }
+
+    /// Whether the open image goes through the RAW decoder at all.
+    ///
+    /// **Widened from `private` deliberately, and narrowly.** `imageSource` itself stays `private`:
+    /// the develop panel has no business with the backing bytes or the native extent, and the one
+    /// fact it needs — is there a decode stage that could offer develop controls — is a `Bool`.
+    /// Publishing the `Bool` instead of the struct keeps the reason for the widening legible and
+    /// stops anything else reaching through it. It is also the input the state mapping is tested
+    /// against directly.
+    ///
+    /// Not `@Published`: it only ever changes inside `load()`, which writes several `@Published`
+    /// properties in the same main-actor turn (`sourceImage` among them), so any view observing this
+    /// view model is already being invalidated when it moves.
+    var sourceIsRAW: Bool { imageSource?.kind == .raw }
+
+    /// The three states of the develop panel. See `AppViewModel.developPanelState`.
+    enum DevelopPanelState: Equatable, Sendable {
+        /// Not a RAW (or nothing open): there is no develop stage to offer, and saying so is honest.
+        case noDevelopStage
+        /// A RAW whose capability probe has not landed yet. The controls are coming, so the panel
+        /// must not claim there are none.
+        case probing
+        /// A RAW, probed. The panel draws `capabilities.availableControls`.
+        case ready(RAWCapabilities)
+
+        /// **The mapping, in one place, as a pure function of two inputs.** Written as an
+        /// initializer rather than inlined into the computed property so the whole table — two
+        /// inputs, three outcomes — can be asserted on any machine, including CI, which has no RAW
+        /// to open (`DevelopInspectorTests.testThePanelStateMappingCoversAllThreeStates`).
+        init(sourceIsRAW: Bool, capabilities: RAWCapabilities?) {
+            if let capabilities {
+                self = .ready(capabilities)
+            } else {
+                self = sourceIsRAW ? .probing : .noDevelopStage
+            }
+        }
+    }
 
     private var capabilitiesTask: Task<Void, Never>?
     private var developTask: Task<Void, Never>?
@@ -517,8 +576,16 @@ final class AppViewModel: ObservableObject {
     /// slider away from where the picture actually is, and the first nudge would jump it — the exact
     /// defect the white-balance seed was added to prevent.
     ///
-    /// The trailing `?? 0` after each seed is only the no-image / not-a-RAW case: `rawCapabilities` is
-    /// `nil` until the probe lands, and when it is nil there is no panel to display either.
+    /// The trailing `?? 0` after each seed is only the no-image / not-a-RAW case: `rawCapabilities`
+    /// is `nil` until the probe lands, and while it is nil the panel is showing
+    /// `DevelopPanelState.probing` or `.noDevelopStage`, neither of which draws a control.
+    ///
+    /// **That `0` is uniform, including white balance.** It used to be `?? 6500` for
+    /// `neutralTemperature` alone — D65, a plausible-looking Kelvin — which made the sentence above
+    /// untrue for exactly one line and, worse, made the unreachable branch return a number that
+    /// *looks* like a real answer. Nothing distinguishes a seed that failed to arrive from a decoder
+    /// that genuinely reports 6500 K. Every seeded control now falls back the same way, so the
+    /// fallback is legible as "no answer" wherever it surfaces.
     func developValue(for control: DevelopControl) -> Double {
         let develop = document.rawDevelop
         let seed = rawCapabilities
@@ -528,7 +595,7 @@ final class AppViewModel: ObservableObject {
         case .shadowBias: return develop.shadowBias ?? seed?.shadowBias ?? 0
         case .boost: return develop.boostAmount ?? 1
         case .boostShadow: return develop.boostShadowAmount ?? 1
-        case .whiteBalance: return develop.neutralTemperature ?? seed?.asShotTemperature ?? 6500
+        case .whiteBalance: return develop.neutralTemperature ?? seed?.asShotTemperature ?? 0
         case .sharpness: return develop.sharpnessAmount ?? seed?.sharpnessAmount ?? 0
         case .contrast: return develop.contrastAmount ?? seed?.contrastAmount ?? 0
         case .detail: return develop.detailAmount ?? seed?.detailAmount ?? 0

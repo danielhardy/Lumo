@@ -137,23 +137,23 @@ struct RAWCapabilities: Sendable, Equatable {
 
     // MARK: - Gates
 
-    var isSharpnessSupported: Bool
-    var isContrastSupported: Bool
-    var isDetailSupported: Bool
-    var isMoireReductionSupported: Bool
-    var isLocalToneMapSupported: Bool
-    var isLuminanceNoiseReductionSupported: Bool
-    var isColorNoiseReductionSupported: Bool
-    var isLensCorrectionSupported: Bool
+    var isSharpnessSupported: Bool = false
+    var isContrastSupported: Bool = false
+    var isDetailSupported: Bool = false
+    var isMoireReductionSupported: Bool = false
+    var isLocalToneMapSupported: Bool = false
+    var isLuminanceNoiseReductionSupported: Bool = false
+    var isColorNoiseReductionSupported: Bool = false
+    var isLensCorrectionSupported: Bool = false
     /// Always false below macOS 26, where the property is not in the imported interface at all.
-    var isHighlightRecoverySupported: Bool
+    var isHighlightRecoverySupported: Bool = false
 
     // MARK: - Per-image seeds
 
-    var asShotTemperature: Double
-    var asShotTint: Double
-    var baselineExposure: Double
-    var shadowBias: Double
+    var asShotTemperature: Double = 0
+    var asShotTint: Double = 0
+    var baselineExposure: Double = 0
+    var shadowBias: Double = 0
 
     /// The eight below are the *gated* seeds: each is only meaningful when its `is*Supported`
     /// neighbour is true, and `RenderEngine.rawCapabilities(for:)` reads each one only then. Asking a
@@ -164,63 +164,41 @@ struct RAWCapabilities: Sendable, Equatable {
     /// explicit that the noise-reduction and sharpening defaults **vary per image**, so a slider bound
     /// to one of these while its setting is `nil` has nothing to display without a seed — and a
     /// guessed `0` means the control opens in the wrong place and the first nudge jumps the picture.
-    var sharpnessAmount: Double
-    var contrastAmount: Double
-    var detailAmount: Double
-    var moireReductionAmount: Double
-    var localToneMapAmount: Double
-    var luminanceNoiseReductionAmount: Double
-    var colorNoiseReductionAmount: Double
-    var lensCorrectionEnabled: Bool
+    var sharpnessAmount: Double = 0
+    var contrastAmount: Double = 0
+    var detailAmount: Double = 0
+    var moireReductionAmount: Double = 0
+    var localToneMapAmount: Double = 0
+    var luminanceNoiseReductionAmount: Double = 0
+    var colorNoiseReductionAmount: Double = 0
+    var lensCorrectionEnabled: Bool = false
 
-    init(
-        isSharpnessSupported: Bool = false,
-        isContrastSupported: Bool = false,
-        isDetailSupported: Bool = false,
-        isMoireReductionSupported: Bool = false,
-        isLocalToneMapSupported: Bool = false,
-        isLuminanceNoiseReductionSupported: Bool = false,
-        isColorNoiseReductionSupported: Bool = false,
-        isLensCorrectionSupported: Bool = false,
-        isHighlightRecoverySupported: Bool = false,
-        asShotTemperature: Double = 0,
-        asShotTint: Double = 0,
-        baselineExposure: Double = 0,
-        shadowBias: Double = 0,
-        sharpnessAmount: Double = 0,
-        contrastAmount: Double = 0,
-        detailAmount: Double = 0,
-        moireReductionAmount: Double = 0,
-        localToneMapAmount: Double = 0,
-        luminanceNoiseReductionAmount: Double = 0,
-        colorNoiseReductionAmount: Double = 0,
-        lensCorrectionEnabled: Bool = false
-    ) {
-        self.isSharpnessSupported = isSharpnessSupported
-        self.isContrastSupported = isContrastSupported
-        self.isDetailSupported = isDetailSupported
-        self.isMoireReductionSupported = isMoireReductionSupported
-        self.isLocalToneMapSupported = isLocalToneMapSupported
-        self.isLuminanceNoiseReductionSupported = isLuminanceNoiseReductionSupported
-        self.isColorNoiseReductionSupported = isColorNoiseReductionSupported
-        self.isLensCorrectionSupported = isLensCorrectionSupported
-        self.isHighlightRecoverySupported = isHighlightRecoverySupported
-        self.asShotTemperature = asShotTemperature
-        self.asShotTint = asShotTint
-        self.baselineExposure = baselineExposure
-        self.shadowBias = shadowBias
-        self.sharpnessAmount = sharpnessAmount
-        self.contrastAmount = contrastAmount
-        self.detailAmount = detailAmount
-        self.moireReductionAmount = moireReductionAmount
-        self.localToneMapAmount = localToneMapAmount
-        self.luminanceNoiseReductionAmount = luminanceNoiseReductionAmount
-        self.colorNoiseReductionAmount = colorNoiseReductionAmount
-        self.lensCorrectionEnabled = lensCorrectionEnabled
-    }
+    // **No hand-written `init` here, deliberately.** Every property above carries its own default, so
+    // Swift synthesizes the memberwise initializer with exactly the signature the twenty-one-parameter
+    // one used to spell out by hand — same labels, same order, same defaults, every call site
+    // unchanged including the bare `RAWCapabilities()`. The hand-written version existed only because
+    // the defaults were written in the parameter list instead of on the properties, and it carried a
+    // real hazard for free: forty-two lines of `self.x = x` in which one transposed pair
+    // (`self.contrastAmount = detailAmount`) is invisible to review *and* to this suite, since
+    // `contrast`, `detail`, `moireReduction` and `luminanceNoiseReduction` all read exactly 0.0 on the
+    // only camera available to test against. Synthesis makes that class of defect unwritable rather
+    // than merely unlikely.
+    //
+    // The consequence to keep in mind: **property order is now call-site order.** Reordering the
+    // stored properties reorders the memberwise init's parameters, and Swift requires memberwise
+    // arguments in declaration order — so a reorder is a compile error at every call site that passes
+    // more than one argument, not a silent cross-wire.
 
-    /// A decoder that refuses nothing. For tests, and for reasoning about the upper bound.
-    static let everythingSupported = RAWCapabilities(
+    /// **Every gate open, every seed left at its default.** For gating questions only.
+    ///
+    /// **Not a stub for anything that reads a seed.** All twelve seeds here are `0`/`false` — the
+    /// field defaults, and precisely what a getter that ignored the seed and returned a hardcoded
+    /// constant would produce. Against this value "read the decoder's seed" and "guess a constant"
+    /// are the same number, so a seed test written on top of it asserts nothing;
+    /// `RAWCapabilities.distinctivelySeeded` in the test target exists for that, with a distinct
+    /// non-default value per field. Use this one to ask which controls a decoder offers, and to
+    /// reason about the upper bound of that set.
+    static let everyGateOpen = RAWCapabilities(
         isSharpnessSupported: true,
         isContrastSupported: true,
         isDetailSupported: true,

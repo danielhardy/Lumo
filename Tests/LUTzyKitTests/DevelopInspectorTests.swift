@@ -28,10 +28,11 @@ final class DevelopInspectorTests: TempDirectoryTestCase {
     // MARK: - Probing
 
     func testCapabilitiesArePublishedAfterOpeningAnImage() async throws {
-        // Not `.everythingSupported`: that value is also `FakeRenderEngine.stubbedCapabilities`'
-        // own field default, so an `AppViewModel` that hardcoded `.everythingSupported` and never
-        // called the engine would pass this test just as happily. This is the "wrote a value that
-        // equals the default" weakness (docs/CODE_REVIEW.md §2) — use a distinctive value, with a
+        // Neither `.everyGateOpen` nor `.distinctivelySeeded`: the second is
+        // `FakeRenderEngine.stubbedCapabilities`' own field default, so an `AppViewModel` that
+        // hardcoded it and never called the engine would pass this test just as happily, and the
+        // first is a named constant in the module under test. This is the "wrote a value that
+        // equals the default" weakness (docs/CODE_REVIEW.md §2) — use a value built here, with a
         // mixed set of flags and non-round seeds, so the test can only pass if the engine's answer
         // actually made it through.
         let distinctiveCapabilities = RAWCapabilities(
@@ -89,6 +90,113 @@ final class DevelopInspectorTests: TempDirectoryTestCase {
         let probeCount = await fake.capabilityProbeCount
         XCTAssertEqual(probeCount, 1, "the engine must still be consulted even with no develop stage")
         XCTAssertNil(viewModel.rawCapabilities)
+    }
+
+    // MARK: - Three panel states, not two
+
+    /// **The panel used to lie while the probe was in flight.**
+    ///
+    /// `DevelopInspectorView` was `if let capabilities = viewModel.rawCapabilities { … } else {
+    /// notRAW }`, and `rawCapabilities` is `nil` in two situations that mean opposite things:
+    /// "this file has no develop stage" and "this file's develop stage has not been measured yet".
+    /// `refreshCapabilities()` clears it **synchronously** on open and refills it 25–170 ms later, so
+    /// opening a RAW with the Develop tab showing displayed *"No develop stage — Develop controls
+    /// come from the RAW decoder. This image is already rendered."* for the duration of the probe —
+    /// a false statement about the file, on every ←/→ step through a folder of RAWs, since
+    /// `inspectorTab` is not reset on open.
+    ///
+    /// The mapping is asserted here rather than in the view because this repo has no SwiftUI view
+    /// tests; that is the same reason `availableControls` is a value. Both inputs are exercised in
+    /// both positions, so collapsing `.probing` back into `.noDevelopStage` — the regression — fails
+    /// on the row that matters, and so does the mirror-image mistake of reporting `.probing` for a
+    /// standard image whose answer has already arrived.
+    func testThePanelStateMappingCoversAllThreeStates() {
+        typealias State = AppViewModel.DevelopPanelState
+        let caps = RAWCapabilities.distinctivelySeeded
+
+        XCTAssertEqual(
+            State(sourceIsRAW: true, capabilities: nil), .probing,
+            "a RAW whose probe has not landed must not be told it has no develop stage — this is "
+            + "the whole defect"
+        )
+        XCTAssertEqual(
+            State(sourceIsRAW: false, capabilities: nil), .noDevelopStage,
+            "a standard image genuinely has no develop stage"
+        )
+        XCTAssertEqual(
+            State(sourceIsRAW: true, capabilities: caps), .ready(caps),
+            "a probed RAW draws its own controls"
+        )
+        // The fourth combination is not reachable through `AppViewModel` — `RenderEngine` answers
+        // `nil` for a standard image — but the mapping is a total function of two inputs and a
+        // caller reading it as "capabilities win" should be able to rely on that, rather than on the
+        // reachability argument holding forever.
+        XCTAssertEqual(State(sourceIsRAW: false, capabilities: caps), .ready(caps))
+    }
+
+    /// The wiring on the CI-reachable side: a standard image is `.noDevelopStage` once the probe has
+    /// answered, and `sourceIsRAW` is what says so.
+    func testAStandardImageEndsOnNoDevelopStage() async throws {
+        let fake = FakeRenderEngine()
+        await fake.setStubbedCapabilities(nil)
+        let viewModel = AppViewModel(engine: fake)
+        XCTAssertEqual(viewModel.developPanelState, .noDevelopStage, "nothing open yet")
+
+        try await openStandardImage(viewModel)
+        try await waitUntil("the probe to answer") { await fake.capabilityProbeCount == 1 }
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertFalse(viewModel.sourceIsRAW, "a PNG does not go through the RAW decoder")
+        XCTAssertEqual(viewModel.developPanelState, .noDevelopStage)
+    }
+
+    /// And the `.ready` side, end to end: the engine's answer becomes the panel's state.
+    func testAProbedImageEndsOnReadyCarryingTheProbedCapabilities() async throws {
+        let caps = RAWCapabilities.distinctivelySeeded
+        let fake = FakeRenderEngine()
+        await fake.setStubbedCapabilities(caps)
+        let viewModel = AppViewModel(engine: fake)
+
+        try await openStandardImage(viewModel)
+        try await waitUntil("capabilities") { viewModel.rawCapabilities != nil }
+
+        XCTAssertEqual(viewModel.developPanelState, .ready(caps))
+    }
+
+    /// **The state the defect was actually about, end to end on a real RAW.**
+    ///
+    /// The mapping test above pins `.probing` as a function of its inputs; this pins that the inputs
+    /// genuinely take that combination on a real file — `sourceIsRAW` true while `rawCapabilities`
+    /// is still `nil` — which is the part no synthetic value can vouch for, because
+    /// `ImageSource.kind` for a URL comes from the file extension and `AppViewModel` only records a
+    /// source for a file that actually decoded. The probe is gated so the window is held open rather
+    /// than raced.
+    ///
+    /// Skips on CI, which has no DNG — read a green CI run as saying nothing about this row.
+    func testARAWStaysOnProbingUntilTheProbeAnswers() async throws {
+        guard let rawURL = Fixtures.localRAWURL else {
+            throw XCTSkip("no local RAW; see Fixtures.localRAWURL and PHASE2_SPEC §8.9")
+        }
+        let caps = RAWCapabilities.distinctivelySeeded
+        let fake = FakeRenderEngine()
+        await fake.setStubbedCapabilities(caps)
+        await fake.gateProbe()
+        let viewModel = AppViewModel(engine: fake)
+
+        viewModel.openImage(url: rawURL)
+        try await waitUntil("the RAW to load") { viewModel.sourceImage != nil }
+        try await waitUntil("the probe to start") { await fake.capabilityProbeCount == 1 }
+
+        XCTAssertTrue(viewModel.sourceIsRAW, "a DNG goes through the RAW decoder")
+        XCTAssertNil(viewModel.rawCapabilities, "precondition: the probe is still parked")
+        XCTAssertEqual(
+            viewModel.developPanelState, .probing,
+            "the panel would be telling the user this RAW has no develop stage"
+        )
+
+        await fake.releaseProbe()
+        try await waitUntil("the probe to answer") { viewModel.rawCapabilities != nil }
+        XCTAssertEqual(viewModel.developPanelState, .ready(caps))
     }
 
     // MARK: - Debounce
