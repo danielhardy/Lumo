@@ -127,6 +127,19 @@ final class AppViewModel: ObservableObject {
     /// **Shim.** Reads through to the document so the toolbar slider keeps working unchanged.
     var lutIntensity: Double { document.lut.intensity }
 
+    /// Whether the A/B comparison has anything to show.
+    ///
+    /// **Not `selectedLUT != nil`**, which is what this was until Step 10b. That was defensible while
+    /// a LUT was the only thing that could change the picture; the Adjust panel made it wrong, and an
+    /// image with exposure pushed two stops and no LUT had a dead V key and a dead Space bar (§8.5).
+    ///
+    /// Comparing the document against its own baseline rather than enumerating the look-bearing
+    /// fields is deliberate: it is exactly the set of edits the split view would show a difference
+    /// for, and it stays correct the next time the document grows a field. Note that a develop-only
+    /// edit correctly reads `false` — `originalForComparison` keeps `rawDevelop`, so both halves
+    /// would be the same picture.
+    var isComparisonAvailable: Bool { document != document.originalForComparison }
+
     @Published var previewNSImage: NSImage?
     @Published var originalPreviewNSImage: NSImage?
     @Published var isShowingOriginal: Bool = false

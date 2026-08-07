@@ -201,3 +201,64 @@ extension AdjustInspectorTests {
                        "a develop edit moves the baseline too — preview plus baseline")
     }
 }
+
+// MARK: - The A/B gate
+
+extension AdjustInspectorTests {
+
+    /// **§8.5, forced by this step.** Comparison used to be gated on `selectedLUT != nil`, which was
+    /// defensible while a LUT was the only thing that could change the picture. The Adjust panel
+    /// makes it wrong: an image with exposure pushed two stops and no LUT selected had a dead V key
+    /// and a dead Space bar.
+    ///
+    /// The gate is now "does the document differ from its own comparison baseline", which is exactly
+    /// the set of edits the split view would show a difference for — and, unlike enumerating the
+    /// look-bearing fields, it stays correct the next time the document grows one.
+    func testComparisonBecomesAvailableWithAnAdjustmentAndNoLUT() async throws {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        try await openStandardImage(viewModel)
+
+        XCTAssertFalse(viewModel.isComparisonAvailable, "an untouched image has nothing to compare")
+
+        viewModel.adjustmentBinding(for: .exposure).wrappedValue = 2.0
+
+        XCTAssertNil(viewModel.selectedLUT, "no LUT — this is the case the old gate got wrong")
+        XCTAssertTrue(viewModel.isComparisonAvailable)
+    }
+
+    /// The old behaviour must survive: a LUT alone still offers comparison.
+    func testComparisonIsStillAvailableWithALUTAndNoAdjustments() async throws {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        try await openStandardImage(viewModel)
+
+        viewModel.selectLUT(TestImages.warmLUT())
+
+        XCTAssertEqual(viewModel.document.adjustments, [])
+        XCTAssertTrue(viewModel.isComparisonAvailable)
+    }
+
+    /// A **develop-only** edit must not offer comparison, because the baseline keeps `rawDevelop`
+    /// (§8.5) — both sides would render identically, and a split view showing two identical
+    /// pictures is worse than no split view.
+    func testADevelopOnlyEditDoesNotOfferComparison() async throws {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        try await openStandardImage(viewModel)
+
+        viewModel.updateDocument { $0.rawDevelop.exposure = 0.7 }
+
+        XCTAssertFalse(viewModel.isComparisonAvailable,
+                       "the baseline keeps rawDevelop, so both halves would be the same picture")
+    }
+
+    /// Undoing the edit by hand withdraws the offer again — the sparse array is what makes this work.
+    func testComparisonWithdrawsWhenTheAdjustmentReturnsToNeutral() async throws {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        try await openStandardImage(viewModel)
+
+        viewModel.adjustmentBinding(for: .exposure).wrappedValue = 2.0
+        XCTAssertTrue(viewModel.isComparisonAvailable)
+
+        viewModel.resetAdjustment(.exposure)
+        XCTAssertFalse(viewModel.isComparisonAvailable)
+    }
+}
