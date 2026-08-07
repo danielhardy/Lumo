@@ -171,3 +171,74 @@ enum AdjustmentControl: String, Sendable, CaseIterable, Hashable {
         }
     }
 }
+
+// MARK: - The sparse contract
+
+/// `EditDocument.adjustments` holds **only non-identity nodes**, kept in canonical order.
+///
+/// A row sitting at its neutral value contributes nothing to the array, which is what keeps
+/// `EditDocument()` equal to `[]` — and with it §5's "empty document is identity" invariant, and
+/// `originalForComparison`, which sets `adjustments: []` to build the A/B baseline. It also keeps
+/// Step 11's undo snapshots small, since an untouched panel costs nothing to snapshot.
+///
+/// Both functions are pure — no view model, no `CIContext`, no image — which is what lets the whole
+/// contract be asserted on CI.
+extension AdjustmentControl {
+
+    /// This control's current value: the stored one, or its neutral when no node holds it.
+    ///
+    /// **No `default:` arm** — exhaustive over `self`, so a tenth control is a compile error naming
+    /// this file rather than a row that silently always reads neutral.
+    func value(in adjustments: [AdjustmentNode]) -> Double {
+        let node = adjustments.first { $0.slot == slot }
+        switch self {
+        case .exposure:
+            guard case .exposure(let ev)? = node else { return neutral }
+            return ev
+        case .brightness:
+            guard case .colorControls(let brightness, _, _)? = node else { return neutral }
+            return brightness
+        case .contrast:
+            guard case .colorControls(_, let contrast, _)? = node else { return neutral }
+            return contrast
+        case .saturation:
+            guard case .colorControls(_, _, let saturation)? = node else { return neutral }
+            return saturation
+        case .highlights:
+            guard case .highlightShadow(let highlights, _)? = node else { return neutral }
+            return highlights
+        case .shadows:
+            guard case .highlightShadow(_, let shadows)? = node else { return neutral }
+            return shadows
+        case .temperature:
+            guard case .temperatureTint(let temp, _)? = node else { return neutral }
+            return temp
+        case .tint:
+            guard case .temperatureTint(_, let tint)? = node else { return neutral }
+            return tint
+        case .vibrance:
+            guard case .vibrance(let amount)? = node else { return neutral }
+            return amount
+        }
+    }
+
+    /// `adjustments` with this control set to `value` — still sparse, still in canonical order.
+    ///
+    /// Rebuilds the whole node from its controls (each read through `value(in:)`, so an absent node
+    /// reads as neutral), then inserts it at its canonical index or drops it, according to
+    /// `isIdentity`. Insertion is by slot rather than appended: order is meaningful to the render, so
+    /// writing the rows bottom-up must produce the same graph as writing them top-down.
+    func setting(_ value: Double, in adjustments: [AdjustmentNode]) -> [AdjustmentNode] {
+        var values: [AdjustmentControl: Double] = [:]
+        for sibling in slot.controls { values[sibling] = sibling.value(in: adjustments) }
+        values[self] = value
+
+        var result = adjustments.filter { $0.slot != slot }
+        let updated = slot.node(from: values)
+        guard !updated.isIdentity else { return result }
+
+        let index = result.firstIndex { $0.slot > slot } ?? result.count
+        result.insert(updated, at: index)
+        return result
+    }
+}

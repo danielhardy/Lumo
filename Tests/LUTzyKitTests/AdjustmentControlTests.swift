@@ -67,3 +67,123 @@ final class AdjustmentControlTests: XCTestCase {
         }
     }
 }
+
+// MARK: - The sparse contract
+
+extension AdjustmentControlTests {
+
+    /// Every control's neutral must be the value `AdjustmentNode.isIdentity` already names.
+    ///
+    /// Looped rather than spelled out nine times, so a tenth control cannot ship with a neutral that
+    /// silently disagrees with the model — which would show a slider parked away from where the
+    /// picture actually is, the same defect 10a's white-balance seed was added to prevent.
+    func testEveryControlsNeutralMatchesTheNodesIdentity() {
+        for slot in AdjustmentSlot.allCases {
+            for control in slot.controls {
+                XCTAssertEqual(
+                    control.value(in: [slot.neutralNode]), control.neutral, accuracy: 1e-12,
+                    "\(control)'s neutral disagrees with its node's identity value"
+                )
+            }
+        }
+    }
+
+    /// Reading a control whose node is absent returns its neutral. This is what lets the document
+    /// stay empty until the user actually touches something — the same "reading never writes"
+    /// property `developBinding(for:)` has, and for the same reason: seeding every field when the
+    /// panel opened would silently make every document non-neutral.
+    func testReadingAnAbsentNodeReturnsNeutral() {
+        for control in AdjustmentControl.allCases {
+            XCTAssertEqual(control.value(in: []), control.neutral, accuracy: 1e-12, "\(control)")
+        }
+    }
+
+    /// Writing a non-neutral value into an empty document creates exactly one node.
+    func testWritingCreatesExactlyOneNode() {
+        let result = AdjustmentControl.contrast.setting(1.4, in: [])
+        XCTAssertEqual(result, [.colorControls(brightness: 0, contrast: 1.4, saturation: 1)])
+    }
+
+    /// Round-trip: what you write is what you read, for every control.
+    func testEveryControlRoundTrips() {
+        for control in AdjustmentControl.allCases {
+            // A value that is inside the range and is definitely not the neutral.
+            let midpoint = (control.range.lowerBound + control.range.upperBound) / 2
+            let value = midpoint == control.neutral
+                ? (midpoint + control.range.upperBound) / 2
+                : midpoint
+            XCTAssertNotEqual(value, control.neutral, "\(control): test value must not be neutral")
+
+            let written = control.setting(value, in: [])
+            XCTAssertEqual(control.value(in: written), value, accuracy: 1e-12, "\(control)")
+        }
+    }
+
+    /// Writing one parameter must not disturb its siblings in the same node.
+    func testWritingOneParameterPreservesItsSiblings() {
+        var adjustments = AdjustmentControl.contrast.setting(1.4, in: [])
+        adjustments = AdjustmentControl.saturation.setting(0.5, in: adjustments)
+
+        XCTAssertEqual(AdjustmentControl.contrast.value(in: adjustments), 1.4, accuracy: 1e-12)
+        XCTAssertEqual(AdjustmentControl.saturation.value(in: adjustments), 0.5, accuracy: 1e-12)
+        XCTAssertEqual(AdjustmentControl.brightness.value(in: adjustments), 0, accuracy: 1e-12)
+        XCTAssertEqual(adjustments.count, 1, "all three share one colorControls node")
+    }
+
+    /// Returning the last non-neutral parameter of a node to its neutral removes the node entirely.
+    /// This is what keeps `EditDocument() == []` true after an edit is undone by hand, which §5's
+    /// "empty document is identity" invariant and `originalForComparison` both rest on.
+    func testReturningToNeutralRemovesTheNode() {
+        var adjustments = AdjustmentControl.contrast.setting(1.4, in: [])
+        XCTAssertEqual(adjustments.count, 1)
+
+        adjustments = AdjustmentControl.contrast.setting(AdjustmentControl.contrast.neutral, in: adjustments)
+        XCTAssertEqual(adjustments, [], "a node at its identity must not linger in the document")
+    }
+
+    /// A node whose siblings are still non-neutral must survive one parameter going back to neutral.
+    func testReturningOneParameterToNeutralKeepsANodeItsSiblingsStillNeed() {
+        var adjustments = AdjustmentControl.contrast.setting(1.4, in: [])
+        adjustments = AdjustmentControl.saturation.setting(0.5, in: adjustments)
+        adjustments = AdjustmentControl.contrast.setting(1, in: adjustments)
+
+        XCTAssertEqual(adjustments, [.colorControls(brightness: 0, contrast: 1, saturation: 0.5)])
+    }
+
+    /// **Inserted at the canonical index, not appended.** Order is meaningful to the render —
+    /// `AdjustmentNode`'s doc comment is explicit that exposure-then-colorControls is not the same
+    /// picture as the reverse — so writing the rows out of order must not produce a different graph
+    /// from writing them in order.
+    func testNodesLandInCanonicalOrderWhateverOrderTheyAreWrittenIn() {
+        var backwards: [AdjustmentNode] = []
+        backwards = AdjustmentControl.vibrance.setting(0.3, in: backwards)
+        backwards = AdjustmentControl.temperature.setting(5000, in: backwards)
+        backwards = AdjustmentControl.shadows.setting(0.2, in: backwards)
+        backwards = AdjustmentControl.saturation.setting(1.2, in: backwards)
+        backwards = AdjustmentControl.exposure.setting(0.5, in: backwards)
+
+        XCTAssertEqual(backwards.map(\.slot), [.exposure, .colorControls, .highlightShadow,
+                                               .temperatureTint, .vibrance])
+
+        var forwards: [AdjustmentNode] = []
+        forwards = AdjustmentControl.exposure.setting(0.5, in: forwards)
+        forwards = AdjustmentControl.saturation.setting(1.2, in: forwards)
+        forwards = AdjustmentControl.shadows.setting(0.2, in: forwards)
+        forwards = AdjustmentControl.temperature.setting(5000, in: forwards)
+        forwards = AdjustmentControl.vibrance.setting(0.3, in: forwards)
+
+        XCTAssertEqual(backwards, forwards, "write order must not change the resulting graph")
+    }
+
+    /// No slot may ever appear twice. The UI is one-of-each even though the model permits stacking.
+    func testNoSlotEverAppearsTwice() {
+        var adjustments: [AdjustmentNode] = []
+        for control in AdjustmentControl.allCases {
+            let value = control == .highlights ? 0.5 : control.range.upperBound
+            adjustments = control.setting(value, in: adjustments)
+        }
+        let slots = adjustments.map(\.slot)
+        XCTAssertEqual(slots.count, Set(slots).count, "a slot appeared twice: \(slots)")
+        XCTAssertEqual(slots, AdjustmentSlot.allCases, "all five slots, once each, in order")
+    }
+}
