@@ -190,7 +190,17 @@ extension AdjustInspectorTests {
     /// `DevelopInspectorTests.testAMixedBurstStillRendersTheComparisonBaseline` and
     /// `testAPendingDevelopFlagDoesNotSurviveOpeningAnotherImage` already use, this also confirms
     /// *which* two renders landed: one of them must be the baseline itself, a request whose document
-    /// equals `originalForComparison` and which carries no LUT.
+    /// equals `originalForComparison` and which carries no LUT — and the other must be the graded
+    /// document, distinct in value from the baseline.
+    ///
+    /// That last clause is why an adjustment is set **before** the develop edit below. Left out, this
+    /// test's document would have `adjustments == []` and `lut == .none` throughout, so
+    /// `originalForComparison` — which only strips those two fields — is byte-for-byte equal to the
+    /// current document. Both `schedulePreview()` and `scheduleOriginalPreview()` would then send
+    /// identical payloads, and a regression that rendered the current document twice and never called
+    /// `scheduleOriginalPreview()` at all would still satisfy `$0.document == expectedBaseline`. The
+    /// pre-set adjustment gives the baseline a value the graded document does not share, so the two
+    /// renders are actually distinguishable — do not delete it as unrelated setup.
     func testADevelopEditStillReRendersTheComparisonBaseline() async throws {
         let fake = FakeRenderEngine()
         let viewModel = AppViewModel(engine: fake)
@@ -198,10 +208,19 @@ extension AdjustInspectorTests {
 
         try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
         try await Task.sleep(for: .milliseconds(200))
+
+        // Set apart from the develop edit below and allowed to settle first, so its own render
+        // isn't counted against the develop edit's expected delta of 2.
+        viewModel.adjustmentBinding(for: .exposure).wrappedValue = 1.5
+        try await waitUntil("the adjustment render") {
+            await fake.previewRequests.contains { $0.document.adjustments == [.exposure(ev: 1.5)] }
+        }
+        try await Task.sleep(for: .milliseconds(200))
         let before = await fake.previewRequests.count
 
         viewModel.updateDocument { $0.rawDevelop.exposure = 0.7 }
         let expectedBaseline = viewModel.document.originalForComparison
+        let expectedGraded = viewModel.document
         try await Task.sleep(for: .milliseconds(300))
 
         let requests = await fake.previewRequests
@@ -210,6 +229,12 @@ extension AdjustInspectorTests {
         XCTAssertTrue(
             requests.contains { $0.document == expectedBaseline && $0.lutID == nil },
             "one of the two renders must be the comparison baseline itself, not just any two renders"
+        )
+        XCTAssertTrue(
+            requests.contains { $0.document == expectedGraded },
+            "the other render must be the graded document — the pre-set adjustment makes it differ "
+            + "in value from the baseline, so this and the assertion above cannot both be satisfied "
+            + "by two copies of the same render"
         )
     }
 }
