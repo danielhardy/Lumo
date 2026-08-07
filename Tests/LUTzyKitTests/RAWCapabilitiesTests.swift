@@ -694,18 +694,17 @@ final class RAWCapabilitiesTests: XCTestCase {
     ///
     /// `PHASE2_SPEC.md` §8.7 measured `CITemperatureAndTint` — the *adjustment* node — and found that
     /// raising Kelvin cools, inverting the photographic convention. `CIRAWFilter.neutralTemperature` is
-    /// a different knob with different semantics: it declares the illuminant the decoder should treat as
-    /// neutral, so it should move the opposite way. "Should" is not a measurement, and Step 10b puts
-    /// both sliders in the same inspector, where disagreeing directions would be indefensible.
+    /// a different knob, declaring the illuminant the decoder should treat as neutral, and it had never
+    /// been measured. Step 10b puts both sliders in the same inspector, where disagreeing directions
+    /// would be indefensible.
     ///
     /// Renders the same RAW at 3200 K and 9000 K with everything else at the decoder's default, and
     /// compares the red/blue balance. Skips without a DNG, so CI proves nothing here.
     ///
-    /// **OBSERVED on the Leica M11 DNG in `realworldtest/`** (macOS 26 / Xcode 26; one camera's worth
-    /// of data, not a general proof): R−B is **−101.19** at 3200 K and **54.22** at 9000 K. Raising
-    /// `neutralTemperature` does warm the image — the sign flips from cool-leaning to warm-leaning
-    /// across the two ends — confirming it runs opposite to `CITemperatureAndTint` (§8.7), exactly as
-    /// the two knobs' different semantics predicted.
+    /// **Probed on the Leica M11 DNG in `realworldtest/`** (macOS 26 / Xcode 26; one camera's worth of
+    /// data, not a general proof): R−B is **−101.19** at 3200 K and **54.22** at 9000 K. Raising
+    /// `neutralTemperature` warms the image — the sign flips from cool-leaning to warm-leaning across
+    /// the two ends — running opposite to `CITemperatureAndTint` (§8.7).
     func testRaisingNeutralTemperatureWarmsTheImage() async throws {
         guard let rawURL = Fixtures.localRAWURL else {
             throw XCTSkip("no local RAW; see Fixtures.localRAWURL and PHASE2_SPEC §8.9")
