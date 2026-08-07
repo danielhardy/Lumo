@@ -99,16 +99,24 @@ final class AdjustInspectorTests: TempDirectoryTestCase {
 
     /// Resets are undebounced, per `updateDocument(debounced:)`'s contract — a button that lagged
     /// 60 ms would feel broken. Follows
-    /// `DevelopInspectorTests.testWritingAToggleThroughTheBindingSkipsTheDebounce`: spin on
-    /// `Task.yield()` rather than sleep, so this can only pass if the reset's render truly skipped
-    /// the debounce timer rather than the test simply outlasting it.
+    /// `DevelopInspectorTests.testWritingAToggleThroughTheBindingSkipsTheDebounce`: **sequence, not
+    /// elapsed time**, is the discriminator. Two debounced writes land on the same node first — both
+    /// through `adjustmentBinding`, which always debounces here, there being no toggles in this panel
+    /// — and then, with no suspension in between, the undebounced reset, so
+    /// `updateDocument(debounced:)`'s `developTask?.cancel()` is what has to pre-empt the pending
+    /// debounce task rather than merely outrunning it. Spinning on `Task.yield()` rather than
+    /// sleeping keeps the loop's own cost a tiny fraction of the 60 ms debounce, so the reset's render
+    /// can only appear this fast if it truly took the immediate path.
     func testResettingOneControlPreservesTheOthers() async throws {
         let fake = FakeRenderEngine()
         let viewModel = AppViewModel(engine: fake)
         try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
 
+        // Two debounced writes to the same node — this pair *should* wait ~60 ms.
         viewModel.adjustmentBinding(for: .contrast).wrappedValue = 1.4
         viewModel.adjustmentBinding(for: .saturation).wrappedValue = 0.5
+        // ...and immediately, with no suspension in between, the undebounced reset.
         viewModel.resetAdjustment(.contrast)
 
         XCTAssertEqual(viewModel.adjustmentValue(for: .contrast),
@@ -125,6 +133,21 @@ final class AdjustInspectorTests: TempDirectoryTestCase {
         XCTAssertTrue(sawReset,
                       "resetAdjustment must render immediately — a reset routed through the debounce "
                       + "would not have landed within this tight a loop")
+
+        // And the pre-reset writes' own render — contrast still at 1.4 — must never have landed: it
+        // can only appear if the debounced task outraced the reset's cancellation instead of being
+        // pre-empted by it.
+        let soFar = await fake.previewRequests
+        XCTAssertFalse(
+            soFar.contains { request in
+                guard case .colorControls(_, let contrast, let saturation)? =
+                    request.document.adjustments.first(where: { $0.slot == .colorControls }) else {
+                    return false
+                }
+                return contrast == 1.4 && saturation == 0.5
+            },
+            "the debounced writes' own render should have been pre-empted by the reset, not raced"
+        )
     }
 
     func testResetAllEmptiesTheArray() async throws {

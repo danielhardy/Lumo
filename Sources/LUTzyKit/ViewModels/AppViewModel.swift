@@ -147,13 +147,14 @@ final class AppViewModel: ObservableObject {
     /// A **develop-only** edit correctly reads `false` — `originalForComparison` keeps `rawDevelop`
     /// and strips only `adjustments` and the LUT, so both halves would render the same picture.
     ///
-    /// `adjustments.allSatisfy(\.isIdentity)` is a sound stand-in for "no adjustment is active" only
+    /// `adjustments.isEmpty` would have been a sound stand-in for "no adjustment is active" only
     /// because the array is sparse — `AdjustmentControl.setting(_:in:)` never stores an identity node, a
-    /// claim `AdjustmentControlTests` pins. It is written this exact way, rather than the cheaper
-    /// `adjustments.isEmpty`, for the same exactness reason as the paragraph above: it does not depend
-    /// on the sparse invariant holding for a document that arrived by decoding rather than by a slider
-    /// write, so a decoded or undo-restored document carrying a stray identity node still reads
-    /// correctly.
+    /// claim `AdjustmentControlTests` pins. `adjustments.allSatisfy(\.isIdentity)` needs no such
+    /// precondition: a stray identity node reads exactly the same as no node at all, so it is written
+    /// this exact way, rather than the cheaper `isEmpty`, for the same exactness reason as the
+    /// paragraph above — it stays correct even if the sparse invariant is ever violated, which matters
+    /// once Step 11's undo path can restore a document that arrived by decoding rather than by a
+    /// slider write.
     var isComparisonAvailable: Bool {
         !document.adjustments.allSatisfy(\.isIdentity) || !document.lut.isIdentity
     }

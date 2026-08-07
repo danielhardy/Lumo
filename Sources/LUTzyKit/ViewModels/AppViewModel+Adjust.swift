@@ -53,8 +53,12 @@ extension AppViewModel {
 
     /// Whether any row is off its neutral — the Reset button's enabled state.
     ///
-    /// Reads the array's emptiness rather than comparing nine values, which is only correct because
-    /// the array is sparse: an identity node never survives a write. `AdjustmentControlTests`
-    /// pins that.
-    var hasAdjustments: Bool { !document.adjustments.isEmpty }
+    /// Not `!document.adjustments.isEmpty` — that would have been correct only because the array is
+    /// sparse (`AdjustmentControl.setting(_:in:)` never stores an identity node, which
+    /// `AdjustmentControlTests` pins), and `isComparisonAvailable` in `AppViewModel.swift` gave up
+    /// that same shortcut for the same reason: it does not depend on the sparse invariant holding for
+    /// a document that arrived by decoding rather than by a slider write. Today the two properties
+    /// would agree either way; Step 11's undo path is what makes them diverge, so this is written to
+    /// match now rather than after that lands.
+    var hasAdjustments: Bool { !document.adjustments.allSatisfy(\.isIdentity) }
 }
