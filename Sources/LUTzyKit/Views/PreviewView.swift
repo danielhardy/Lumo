@@ -51,7 +51,7 @@ struct PreviewView: View {
                 // LUT applied
                 panelView(
                     image: viewModel.previewNSImage,
-                    label: viewModel.selectedLUT?.name ?? "LUT",
+                    label: viewModel.selectedLUT?.name ?? "Adjusted",
                     labelSide: .trailing,
                     width: geo.size.width / 2
                 )
