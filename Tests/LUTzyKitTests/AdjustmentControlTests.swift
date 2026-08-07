@@ -187,3 +187,58 @@ extension AdjustmentControlTests {
         XCTAssertEqual(slots, AdjustmentSlot.allCases, "all five slots, once each, in order")
     }
 }
+
+// MARK: - The temperature mapping
+
+extension AdjustmentControlTests {
+
+    /// The map is its own inverse, which is what lets one function serve both directions of the
+    /// binding. A non-involutive map would need two functions that could drift apart.
+    func testTheSliderMapIsItsOwnInverse() {
+        for control in AdjustmentControl.allCases {
+            for value in [control.range.lowerBound, control.neutral, control.range.upperBound] {
+                XCTAssertEqual(control.sliderMapped(control.sliderMapped(value)), value,
+                               accuracy: 1e-9, "\(control) at \(value)")
+            }
+        }
+    }
+
+    /// Only temperature maps. Everything else is the identity, and stays that way.
+    func testOnlyTemperatureIsMapped() {
+        for control in AdjustmentControl.allCases where control != .temperature {
+            let midpoint = (control.range.lowerBound + control.range.upperBound) / 2
+            XCTAssertEqual(control.sliderMapped(midpoint), midpoint, accuracy: 1e-12, "\(control)")
+        }
+    }
+
+    /// **The reason the range is 2000…11000 and not Develop's 2000…50000.** The reflection must land
+    /// back inside the range at both ends, or the slider has a dead zone at one end and demands a
+    /// negative colour temperature at the other. Reflecting 2000…50000 about 6500 would ask
+    /// `CITemperatureAndTint` for −37000 K.
+    func testTheTemperatureRangeIsClosedUnderTheReflection() {
+        let range = AdjustmentControl.temperature.range
+        for value in [range.lowerBound, range.upperBound] {
+            XCTAssertTrue(range.contains(AdjustmentControl.temperature.sliderMapped(value)),
+                          "\(value) K reflects to \(AdjustmentControl.temperature.sliderMapped(value)) K, "
+                          + "outside \(range)")
+        }
+    }
+
+    /// Neutral is the fixed point, so identity survives the map — a panel at its defaults must still
+    /// produce an empty adjustments array.
+    func testNeutralIsTheFixedPointOfTheMap() {
+        XCTAssertEqual(AdjustmentControl.temperature.sliderMapped(6500), 6500, accuracy: 1e-12)
+    }
+
+    /// Dragging the slider **right** must warm the picture, matching the Develop tab's white-balance
+    /// slider and every other photo application. Since the node's own Kelvin cools as it rises
+    /// (`PHASE2_SPEC.md` §8.7, `testRaisingKelvinCoolsTheImage`), a higher slider value has to reach
+    /// the node as a *lower* stored temperature.
+    func testDraggingRightWarmsByStoringALowerNodeTemperature() {
+        let cool = AdjustmentControl.temperature.sliderMapped(3000)
+        let warm = AdjustmentControl.temperature.sliderMapped(10000)
+        XCTAssertLessThan(warm, cool,
+                          "a higher slider reading must store a lower node temperature, because the "
+                          + "node's Kelvin runs backwards — see PHASE2_SPEC.md §8.7")
+    }
+}

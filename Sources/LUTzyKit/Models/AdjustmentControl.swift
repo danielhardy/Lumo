@@ -242,3 +242,43 @@ extension AdjustmentControl {
         return result
     }
 }
+
+// MARK: - Slider ↔ model mapping
+
+extension AdjustmentControl {
+
+    /// Convert between what the slider reads and what the node stores. **Self-inverse**, so one
+    /// function serves both directions and they cannot drift apart.
+    ///
+    /// The identity for eight of the nine controls. Temperature is the exception, and the reason is
+    /// measured rather than assumed:
+    ///
+    /// `RenderPipeline` pins `CITemperatureAndTint.neutral` at D65 and moves only `targetNeutral`,
+    /// which makes the node's Kelvin run **backwards** — 3200 K warms, 9000 K cools
+    /// (`PHASE2_SPEC.md` §8.7, pinned by `testRaisingKelvinCoolsTheImage`). `CIRAWFilter`'s
+    /// `neutralTemperature`, one inspector tab away, runs the photographic way round
+    /// (`RAWCapabilitiesTests.testRaisingNeutralTemperatureWarmsTheImage`). Two Kelvin sliders in one
+    /// inspector that move opposite ways is not a defensible thing to ship, so this reflects the
+    /// adjustment slider about D65 and the Develop slider is left alone.
+    ///
+    /// **The reflection is why the temperature range is 2000…11000 rather than Develop's
+    /// 2000…50000.** `13000 − K` maps 2000…50000 onto 11000…−37000, and negative Kelvin is not a
+    /// colour. A range symmetric about 6500 makes the map a closed involution over itself: no
+    /// clamping, no dead zone, and 6500 as the fixed point so identity survives the round trip.
+    /// 2000…11000 is also the more useful photographic throw — Develop's upper bound is
+    /// `CIRAWFilter`'s documented limit, which is a limit rather than a recommendation.
+    ///
+    /// The model still stores filter-native values. Reversing this decision later means changing
+    /// this one function.
+    func sliderMapped(_ value: Double) -> Double {
+        switch self {
+        case .temperature:
+            return 2 * Self.temperaturePivot - value
+        case .exposure, .brightness, .contrast, .saturation, .highlights, .shadows, .tint, .vibrance:
+            return value
+        }
+    }
+
+    /// D65 — the fixed point of the temperature reflection, and `temperatureTint`'s identity.
+    private static let temperaturePivot: Double = 6500
+}
