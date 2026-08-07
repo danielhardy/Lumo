@@ -188,9 +188,13 @@ enum RenderPipeline {
             let f = CIFilter.temperatureAndTint()
             f.inputImage = input
             // Source neutral is pinned at D65; only the target moves. This is what makes identity
-            // land at (6500, 0) — and also what inverts the slider against the Lightroom
-            // convention, which §8.7 leaves open. Changing the mapping later means changing this
-            // line, not the node.
+            // land at (6500, 0) — and also what pins the node's own Kelvin direction backwards:
+            // raising Kelvin cools the image, held by testRaisingKelvinCoolsTheImage. §8.7 is
+            // closed: the Adjust panel's slider is reflected about D65 in
+            // AdjustmentControl.sliderMapped(_:), so both Kelvin sliders in the inspector warm
+            // rightward without touching this line. Changing *this* line instead changes stored
+            // pixel behaviour for every document — a different and much larger act than flipping a
+            // slider's display mapping.
             f.neutral = CIVector(x: 6500, y: 0)
             f.targetNeutral = CIVector(x: temp, y: tint)
             return f.outputImage

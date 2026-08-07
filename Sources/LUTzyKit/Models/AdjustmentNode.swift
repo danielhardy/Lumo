@@ -25,10 +25,11 @@ enum AdjustmentNode: Codable, Sendable, Equatable {
     case highlightShadow(highlights: Double, shadows: Double)
     /// `CITemperatureAndTint`. Identity at (6500, 0).
     ///
-    /// Note the direction is still open (`docs/PHASE2_SPEC.md` §8.7): the filter only sets
-    /// `targetNeutral` against a fixed 6500 K source, so raising Kelvin *cools* the image, inverting
-    /// the Lightroom convention. Identity at (6500, 0) holds either way, which is why it is a safe
-    /// seed to define now.
+    /// The filter only sets `targetNeutral` against a fixed 6500 K source, so raising Kelvin *cools*
+    /// the image, inverting the Lightroom convention (`docs/PHASE2_SPEC.md` §8.7, pinned by
+    /// `testRaisingKelvinCoolsTheImage`). §8.7 is closed: rather than change this node's convention,
+    /// the Adjust panel's slider is reflected about D65 in `AdjustmentControl.sliderMapped(_:)`.
+    /// Identity at (6500, 0) holds either way, which is why it was a safe seed to define from the start.
     case temperatureTint(temp: Double, tint: Double)
     /// `CIVibrance`. Identity at 0.
     case vibrance(amount: Double)
