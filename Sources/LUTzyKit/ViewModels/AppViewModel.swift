@@ -127,18 +127,32 @@ final class AppViewModel: ObservableObject {
     /// **Shim.** Reads through to the document so the toolbar slider keeps working unchanged.
     var lutIntensity: Double { document.lut.intensity }
 
-    /// Whether the A/B comparison has anything to show.
+    /// Whether the A/B comparison — the split view and the Space-hold — has anything to show.
     ///
     /// **Not `selectedLUT != nil`**, which is what this was until Step 10b. That was defensible while
     /// a LUT was the only thing that could change the picture; the Adjust panel made it wrong, and an
-    /// image with exposure pushed two stops and no LUT had a dead V key and a dead Space bar (§8.5).
+    /// image with exposure pushed two stops and no LUT selected had a dead V key and a dead Space bar.
+    /// `docs/PHASE2_SPEC.md` §8.5 recorded this as open.
     ///
-    /// Comparing the document against its own baseline rather than enumerating the look-bearing
-    /// fields is deliberate: it is exactly the set of edits the split view would show a difference
-    /// for, and it stays correct the next time the document grows a field. Note that a develop-only
-    /// edit correctly reads `false` — `originalForComparison` keeps `rawDevelop`, so both halves
-    /// would be the same picture.
-    var isComparisonAvailable: Bool { document != document.originalForComparison }
+    /// **Not `document != document.originalForComparison` either**, which is what Step 10b first
+    /// reached for: compare the document against its own baseline rather than enumerate the
+    /// look-bearing fields, and the rule "stays correct the next time the document grows a field."
+    /// That reasoning is wrong for a LUT at 0% intensity — `LUTSettings.isIdentity` treats it as
+    /// contributing nothing, but the plain `!=` sees `lutID` still set and calls the document
+    /// non-neutral, so the gate opened a split view of two pixel-identical halves. Exactness beat the
+    /// "survives a new field" property. The cost is real: the next look-bearing field added to
+    /// `EditDocument` must be added to this expression by hand, or this comment starts lying the same
+    /// way the old one did.
+    ///
+    /// A **develop-only** edit correctly reads `false` — `originalForComparison` keeps `rawDevelop`
+    /// and strips only `adjustments` and the LUT, so both halves would render the same picture.
+    ///
+    /// `adjustments.isEmpty` is a sound stand-in for "no adjustment is active" only because the array
+    /// is sparse — `AdjustmentControl.setting(_:in:)` never stores an identity node, a claim
+    /// `AdjustmentControlTests` pins.
+    var isComparisonAvailable: Bool {
+        !document.adjustments.isEmpty || !document.lut.isIdentity
+    }
 
     @Published var previewNSImage: NSImage?
     @Published var originalPreviewNSImage: NSImage?

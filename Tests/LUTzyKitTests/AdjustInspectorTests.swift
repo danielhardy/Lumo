@@ -261,4 +261,19 @@ extension AdjustInspectorTests {
         viewModel.resetAdjustment(.exposure)
         XCTAssertFalse(viewModel.isComparisonAvailable)
     }
+
+    /// The case that motivated the move off `document != document.originalForComparison`: a LUT at
+    /// 0% intensity is structurally non-neutral — `lutID` is still set — but `LUTSettings.isIdentity`
+    /// correctly calls it contributing nothing, and the render is pixel-identical to no LUT at all.
+    /// The old structural gate offered a split view of two identical pictures here; it must not.
+    func testComparisonIsNotAvailableWithALUTAtZeroIntensity() async throws {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        try await openStandardImage(viewModel)
+
+        viewModel.selectLUT(TestImages.warmLUT())
+        viewModel.setLUTIntensity(0)
+
+        XCTAssertNotNil(viewModel.document.lut.lutID, "the LUT is still selected, just at zero strength")
+        XCTAssertFalse(viewModel.isComparisonAvailable)
+    }
 }
