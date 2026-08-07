@@ -148,3 +148,56 @@ extension AdjustInspectorTests {
                       "the Adjust tab has no histogram; \(requests.count) tallies were issued")
     }
 }
+
+// MARK: - Render cost
+
+extension AdjustInspectorTests {
+
+    /// **An adjustment edit costs one render; a develop edit costs two.**
+    ///
+    /// `EditDocument.originalForComparison` keeps `rawDevelop` and strips `adjustments` (§8.5), so
+    /// the comparison baseline moves when develop moves and stays put when an adjustment moves.
+    /// That falls out of `pendingDevelopChange` never being set here, which is to say it works by
+    /// accident of the current code — hence this test. Without it, a later edit that started
+    /// scheduling the baseline unconditionally would double every slider tick's cost silently.
+    func testAnAdjustmentEditDoesNotReRenderTheComparisonBaseline() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+
+        // Let the opening renders settle so the count below is only this edit's.
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+        try await Task.sleep(for: .milliseconds(200))
+        let before = await fake.previewRequests.count
+
+        viewModel.adjustmentBinding(for: .exposure).wrappedValue = 1.5
+        try await waitUntil("the adjusted render") {
+            await fake.previewRequests.contains { $0.document.adjustments == [.exposure(ev: 1.5)] }
+        }
+        try await Task.sleep(for: .milliseconds(200))   // a second render would have landed by now
+
+        let after = await fake.previewRequests.count
+        XCTAssertEqual(after - before, 1,
+                       "an adjustment must schedule the preview and nothing else; the A/B baseline "
+                       + "strips adjustments, so it cannot have moved")
+    }
+
+    /// The other half of the same claim, so the test above cannot pass by the renderer being broken:
+    /// a **develop** edit must still cost two.
+    func testADevelopEditStillReRendersTheComparisonBaseline() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+        try await Task.sleep(for: .milliseconds(200))
+        let before = await fake.previewRequests.count
+
+        viewModel.updateDocument { $0.rawDevelop.exposure = 0.7 }
+        try await Task.sleep(for: .milliseconds(300))
+
+        let after = await fake.previewRequests.count
+        XCTAssertEqual(after - before, 2,
+                       "a develop edit moves the baseline too — preview plus baseline")
+    }
+}
