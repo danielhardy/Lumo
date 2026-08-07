@@ -184,6 +184,13 @@ extension AdjustInspectorTests {
 
     /// The other half of the same claim, so the test above cannot pass by the renderer being broken:
     /// a **develop** edit must still cost two.
+    ///
+    /// The count alone is not enough — a regression that called `schedulePreview()` twice and never
+    /// `scheduleOriginalPreview()` would also produce a delta of 2 and pass. So, following the pattern
+    /// `DevelopInspectorTests.testAMixedBurstStillRendersTheComparisonBaseline` and
+    /// `testAPendingDevelopFlagDoesNotSurviveOpeningAnotherImage` already use, this also confirms
+    /// *which* two renders landed: one of them must be the baseline itself, a request whose document
+    /// equals `originalForComparison` and which carries no LUT.
     func testADevelopEditStillReRendersTheComparisonBaseline() async throws {
         let fake = FakeRenderEngine()
         let viewModel = AppViewModel(engine: fake)
@@ -194,11 +201,16 @@ extension AdjustInspectorTests {
         let before = await fake.previewRequests.count
 
         viewModel.updateDocument { $0.rawDevelop.exposure = 0.7 }
+        let expectedBaseline = viewModel.document.originalForComparison
         try await Task.sleep(for: .milliseconds(300))
 
-        let after = await fake.previewRequests.count
-        XCTAssertEqual(after - before, 2,
+        let requests = await fake.previewRequests
+        XCTAssertEqual(requests.count - before, 2,
                        "a develop edit moves the baseline too — preview plus baseline")
+        XCTAssertTrue(
+            requests.contains { $0.document == expectedBaseline && $0.lutID == nil },
+            "one of the two renders must be the comparison baseline itself, not just any two renders"
+        )
     }
 }
 
