@@ -72,10 +72,39 @@ final class AdjustInspectorTests: TempDirectoryTestCase {
         }
     }
 
+    /// Nothing asserted that adjustment sliders actually debounce. `adjustmentBinding(for:)` passes
+    /// `debounced: true`, and a regression to `debounced: false` would mean one full render per
+    /// slider tick on a 60 MP RAW — shipping silently, because
+    /// `testAnAdjustmentEditRendersThroughTheEngine` makes a single edit and passes either way.
+    /// Follows `DevelopInspectorTests.testWritingASliderThroughTheBindingStillDebounces`.
+    func testWritingAnAdjustmentSliderThroughTheBindingStillDebounces() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+        let atRest = await fake.previewRequests.count
+
+        for step in 1...20 {
+            viewModel.adjustmentBinding(for: .exposure).wrappedValue = Double(step) / 20.0
+        }
+        try await waitUntil("the settled render") {
+            await fake.previewRequests.contains { $0.document.adjustments == [.exposure(ev: 1.0)] }
+        }
+
+        let issued = await fake.previewRequests.count - atRest
+        XCTAssertLessThan(issued, 10,
+                          "20 slider ticks issued \(issued) renders — adjustmentBinding stopped "
+                          + "debouncing")
+    }
+
     /// Resets are undebounced, per `updateDocument(debounced:)`'s contract — a button that lagged
-    /// 60 ms would feel broken.
+    /// 60 ms would feel broken. Follows
+    /// `DevelopInspectorTests.testWritingAToggleThroughTheBindingSkipsTheDebounce`: spin on
+    /// `Task.yield()` rather than sleep, so this can only pass if the reset's render truly skipped
+    /// the debounce timer rather than the test simply outlasting it.
     func testResettingOneControlPreservesTheOthers() async throws {
-        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
         try await openStandardImage(viewModel)
 
         viewModel.adjustmentBinding(for: .contrast).wrappedValue = 1.4
@@ -85,6 +114,17 @@ final class AdjustInspectorTests: TempDirectoryTestCase {
         XCTAssertEqual(viewModel.adjustmentValue(for: .contrast),
                        AdjustmentControl.contrast.neutral, accuracy: 1e-12)
         XCTAssertEqual(viewModel.adjustmentValue(for: .saturation), 0.5, accuracy: 1e-12)
+
+        let expectedAfterReset: [AdjustmentNode] = [.colorControls(brightness: 0, contrast: 1, saturation: 0.5)]
+        var sawReset = false
+        for _ in 0..<1000 {
+            sawReset = await fake.previewRequests.contains { $0.document.adjustments == expectedAfterReset }
+            if sawReset { break }
+            await Task.yield()
+        }
+        XCTAssertTrue(sawReset,
+                      "resetAdjustment must render immediately — a reset routed through the debounce "
+                      + "would not have landed within this tight a loop")
     }
 
     func testResetAllEmptiesTheArray() async throws {
@@ -130,11 +170,12 @@ extension AdjustInspectorTests {
 
     /// The histogram is gated on the Info tab being on screen. Adjust is as much "a panel nobody is
     /// looking at" as Develop is, so switching to it must not start tallying pixels — the same
-    /// finding `testTheDevelopTabDoesNotTallyAHistogram` pins for the other tab.
+    /// finding `testNoHistogramIsTalliedWhileTheDevelopTabIsShowing` pins for the other tab.
     func testTheAdjustTabDoesNotTallyAHistogram() async throws {
         let fake = FakeRenderEngine()
         let viewModel = AppViewModel(engine: fake)
         try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
 
         // Switch first, *then* open: opening with Info showing would legitimately tally one — see
         // testNoHistogramIsTalliedWhileTheDevelopTabIsShowing for the same pitfall on the other tab.
@@ -146,6 +187,7 @@ extension AdjustInspectorTests {
         let requests = await fake.histogramRequests
         XCTAssertTrue(requests.isEmpty,
                       "the Adjust tab has no histogram; \(requests.count) tallies were issued")
+        XCTAssertNil(viewModel.histogram)
     }
 }
 
