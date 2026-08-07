@@ -46,7 +46,7 @@ a baked image, which buys four things at once:
 | ✅ **Export and the histogram render from `EditDocument` too** — single *and* batch; `processedImage` deleted | Step 6 is **done** |
 | ✅ **`ImageProcessor` dissolved** — `ImageDecoder` + `Thumbnails` + `ExportFormat`; one `CIContext` in the render stack | Step 7 is **done** |
 | ✅ **Derive registers its result by ID** — content-hashed `derived://`, a session registry, save re-points | Step 9 is **done**; it fixed a shipped bug, see below |
-| ❌ No RAW develop UI, no undo | Steps 10–11 |
+| ✅ Both inspectors ship — RAW develop (10a) and Adjustments (10b) | Only undo is outstanding — Step 11 |
 
 ~~**Still true and still worth fixing:** `ImageProcessor` is a non-`Sendable` `final class` singleton
 holding a `CIContext`, captured into `Task.detached` in several places.~~ **Fixed in Step 7** — the
@@ -269,7 +269,7 @@ leaf by leaf, delete the old path last.
 | ~~8~~ | ~~Flip strict concurrency on~~ | ✅ **done** — full **Swift 6 language mode** (errors, not warnings) on all three targets; 214 tests; 9 mutations caught, 1 untestable and named |
 | ~~9~~ | ~~Wire derive into the new state: register the derived LUT by ID, keep the scratch-file bookkeeping~~ | ✅ **done** — 230 tests; 19 mutations caught, 1 shown equivalent by inspection; fixed a **shipped** bug where a derived LUT never resolved (see below) |
 | ~~10a~~ | ~~RAW develop inspector + the per-image capability probe~~ | ✅ **done** — `RAWCapabilities` crosses the actor boundary carrying nine gates and twelve per-image seeds; the probe measures **~25 ms warm** against **~183 ms** for a full develop, so it runs once per open and never per render. 33 mutations, 32 caught on the first run and the one survivor closed with the test it exposed. **The RAW-gated tests `XCTSkip` on CI**, which has no DNG — a green tick there says nothing about them |
-| 10b | Adjustments inspector — fixed slots, one node of each, canonical pipeline order | inspector drives live re-render |
+| ~~10b~~ | ~~Adjustments inspector — fixed slots, one node of each, canonical pipeline order~~ | ✅ **done** — 307 tests (up from 272), 3 skipped without a DNG; nine per-parameter rows over the five `AdjustmentNode` cases, driving `EditDocument.adjustments` live. `AdjustmentNode`, `RenderPipeline`, `RenderEngine` and `EditDocument` untouched — purely additive. Closed §8.5's, §8.6's and §8.7's remaining open halves, see below |
 | 11 | Per-image undo keyed by `Item.id`, plus an `EditDocumentStore` | ⌘Z scoped per image |
 | 12 | *(deferred)* export descriptor, metadata/ICC | — |
 
@@ -429,23 +429,35 @@ the next frame. `ImageProcessor.histogram` is gone; the tally is now a pure
    keeps `rawDevelop` and strips adjustments and the LUT — holding Space shows the same negative
    without the *look*, not a different rendering of it. Sharing `rawDevelop` also keeps the swap cheap,
    since both sides hit the same developed-source memo. Invisible until the Step 10 inspector exists,
-   which is why it was worth settling now rather than then. **Still open:** whether side-by-side
-   triggers on any non-neutral document or stays gated on "a LUT is set" as it is today.
-6. **Adjustment list semantics.** Allow duplicate node cases, or one-of-each fixed slots?
-   *Recommend: allow duplicates.*
-7. **`CITemperatureAndTint` direction.** Still open, but no longer a guess — **measured** in Step 3 on
-   a mid grey, with `neutral` pinned at D65 and only `targetNeutral` moving:
+   which is why it was worth settling now rather than then. **Closed at Step 10b:** side-by-side
+   triggers on any non-neutral document, not on "a LUT is set." `AppViewModel.isComparisonAvailable`
+   implements it as `!document.adjustments.isEmpty || !document.lut.isIdentity` — exact, unlike the
+   structural `document != originalForComparison` Step 10b first reached for, which read a LUT at 0%
+   intensity as non-neutral (`isIdentity` treats it as contributing nothing; `!=` still sees `lutID`
+   set) and offered a split view of two pixel-identical halves. One consequence worth naming: a
+   develop-only edit correctly reads `false`, because `originalForComparison` keeps `rawDevelop`, so
+   both halves render the same picture.
+6. ~~**Adjustment list semantics.**~~ **Decided at Step 10b: fixed slots**, overturning the original
+   recommendation to allow duplicates. Nine per-parameter rows over five nodes is a usable panel in one
+   step; a stacking editor needs add/remove/reorder UI and list identity for an enum that is not
+   `Identifiable`. The *model* still permits duplicates — `AdjustmentNode`'s doc comment stays true —
+   so nothing is foreclosed.
+7. ~~**`CITemperatureAndTint` direction.**~~ **Closed at Step 10b**, by measuring the *other* knob
+   rather than changing this one. Step 3's table stands — raising the node's Kelvin still *cools*,
+   pinned by `testRaisingKelvinCoolsTheImage` — and Step 10b measured `CIRAWFilter.neutralTemperature`
+   on the Leica M11 DNG in `realworldtest/`, moving only that property:
 
-   | target | result | |
-   |---|---|---|
-   | 3200 K | (158, 121, 74) | warmer |
-   | 6500 K | (128, 128, 128) | identity |
-   | 9000 K | (119, 128, 144) | cooler |
+   | target | mean R−B |
+   |---|---|
+   | 3200 K | −101.19 |
+   | 9000 K | +54.22 |
 
-   So raising Kelvin *cools*, inverting the Lightroom convention, exactly as suspected. Decide the
-   mapping before shipping the node; identity at (6500, 0) is a safe seed either way.
-   `testRaisingKelvinCoolsTheImage` pins today's direction, so flipping it later is a deliberate act
-   with a failing test attached rather than a silent look change.
+   Raising `neutralTemperature` *warms* — the photographic convention — pinned by
+   `RAWCapabilitiesTests.testRaisingNeutralTemperatureWarmsTheImage` (`XCTSkip`s without a DNG).
+   Neither filter's wiring changed: `AdjustmentControl.sliderMapped(_:)` reflects the Adjust
+   temperature slider about D65 instead, and that slider's range is **2000…11000 K** rather than
+   Develop's 2000…50000 because the reflection must be closed — `13000 − K` maps 2000…50000 onto
+   11000…−37000, and negative Kelvin is not a colour.
 8. **Edit persistence across launches.** `EditDocument` is `Codable` to enable it; v1 in-memory only.
 9. **RAW fixtures in CI.** Derive-invariance and RAW-parity tests need a license-clean small `.dng`+`.jpg`
    pair, else `XCTSkip`. Everything else in the suite generates its fixtures.
@@ -489,3 +501,9 @@ least one section, which is most of why it was so long.
   rather than copying the source tag onto already-rotated pixels.
 - `PreviewView` has no undefined symbol and no FIXME. The original draft argued with itself about this
   across four sections. It compiles; it always did.
+- `CIFilterBuiltins.h` documents no parameter ranges, only prose — the numbers live in the runtime
+  `CIFilter.attributes` dictionary.
+- `CIHighlightShadowAdjust.inputHighlightAmount`'s slider floor is **0.3** with identity **1**, at the
+  range maximum — the control travels one way only, downward.
+- `CIHighlightShadowAdjust` has a third parameter, `radius`, pixel-sized and a §5 violation if set.
+  Default and identity are both **0**; `RenderPipeline` never touches it.

@@ -23,6 +23,13 @@ if it needs to reach into the pipeline, it is wrong.
 | Kelvin direction | Both Kelvin sliders in the inspector must agree; measure Develop's first | §8.7, open since Step 3 |
 | A/B gate | Gate on a **non-neutral document**, not on `selectedLUT != nil` | §8.5, "still open" |
 
+> **Post-implementation note.** "Non-neutral document" above was first implemented as the structural
+> `document != document.originalForComparison`. That reads a LUT at 0% intensity as non-neutral —
+> `LUTSettings.isIdentity` treats it as contributing nothing, but the plain `!=` still sees `lutID`
+> set — and offered a split view of two pixel-identical halves. What shipped instead is
+> `AppViewModel.isComparisonAvailable`: `!document.adjustments.isEmpty || !document.lut.isIdentity`,
+> exact in every case. See `docs/PHASE2_SPEC.md` §8.5.
+
 `AdjustmentNode` keeps allowing duplicates *in the model* — its doc comment's "the array is a
 pipeline, not a set of slots" stays true. Only the UI is one-of-each. A stacking editor can be built
 later without a model migration, which is the whole reason to leave the model alone.
