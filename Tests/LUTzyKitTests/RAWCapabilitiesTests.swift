@@ -689,4 +689,69 @@ final class RAWCapabilitiesTests: XCTestCase {
             "an unsupported adjustment must be dropped by apply(to:), not written to the filter"
         )
     }
+
+    /// **Which way does the Develop tab's white-balance slider go?**
+    ///
+    /// `PHASE2_SPEC.md` §8.7 measured `CITemperatureAndTint` — the *adjustment* node — and found that
+    /// raising Kelvin cools, inverting the photographic convention. `CIRAWFilter.neutralTemperature` is
+    /// a different knob with different semantics: it declares the illuminant the decoder should treat as
+    /// neutral, so it should move the opposite way. "Should" is not a measurement, and Step 10b puts
+    /// both sliders in the same inspector, where disagreeing directions would be indefensible.
+    ///
+    /// Renders the same RAW at 3200 K and 9000 K with everything else at the decoder's default, and
+    /// compares the red/blue balance. Skips without a DNG, so CI proves nothing here.
+    ///
+    /// **OBSERVED on the Leica M11 DNG in `realworldtest/`** (macOS 26 / Xcode 26; one camera's worth
+    /// of data, not a general proof): R−B is **−101.19** at 3200 K and **54.22** at 9000 K. Raising
+    /// `neutralTemperature` does warm the image — the sign flips from cool-leaning to warm-leaning
+    /// across the two ends — confirming it runs opposite to `CITemperatureAndTint` (§8.7), exactly as
+    /// the two knobs' different semantics predicted.
+    func testRaisingNeutralTemperatureWarmsTheImage() async throws {
+        guard let rawURL = Fixtures.localRAWURL else {
+            throw XCTSkip("no local RAW; see Fixtures.localRAWURL and PHASE2_SPEC §8.9")
+        }
+        let engine = RenderEngine()
+        let source = ImageSource(url: rawURL, nativeExtent: .zero)
+
+        /// Mean red minus mean blue over the whole frame. Positive is warm.
+        ///
+        /// `Pixels.bytes(of:)` (in `PixelAssertions.swift`) returns tightly-packed RGBA8, and is the
+        /// only pixel-reading helper this suite has; there is no mean-channel helper, and this one test
+        /// does not warrant adding one to a file every other test shares.
+        func meanRedMinusBlue(at kelvin: Double) async throws -> Double {
+            var develop = RAWDevelopSettings.neutral
+            develop.neutralTemperature = kelvin
+            let document = EditDocument(rawDevelop: develop)
+
+            // `XCTUnwrap` takes an autoclosure, which cannot contain `await` — hop first, unwrap after.
+            let rendered = await engine.makeCGImage(
+                source: source, document: document, lut: nil,
+                scale: .preview(maxSize: CGSize(width: 400, height: 400)), space: .current
+            )
+            let cgImage = try XCTUnwrap(rendered)
+            let bytes = try Pixels.bytes(of: cgImage)
+
+            var redTotal = 0, blueTotal = 0
+            for pixel in stride(from: 0, to: bytes.count, by: 4) {
+                redTotal += Int(bytes[pixel])
+                blueTotal += Int(bytes[pixel + 2])
+            }
+            let pixelCount = Double(bytes.count / 4)
+            return (Double(redTotal) - Double(blueTotal)) / pixelCount
+        }
+
+        let warmEnd = try await meanRedMinusBlue(at: 3200)
+        let coolEnd = try await meanRedMinusBlue(at: 9000)
+
+        print("MEASURED CIRAWFilter.neutralTemperature: R−B at 3200 K = \(warmEnd), at 9000 K = \(coolEnd)")
+
+        XCTAssertNotEqual(warmEnd, coolEnd, accuracy: 0.5,
+                          "the knob must actually move the picture, or the rest of this says nothing")
+        XCTAssertGreaterThan(
+            coolEnd, warmEnd,
+            "raising neutralTemperature is expected to WARM the image (more red relative to blue), "
+            + "the opposite of CITemperatureAndTint. If this fails, the two knobs agree already and "
+            + "Step 10b's Adjust temperature mapping must be the identity — see the design doc §5."
+        )
+    }
 }
