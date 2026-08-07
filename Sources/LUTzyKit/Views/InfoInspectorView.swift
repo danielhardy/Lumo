@@ -22,6 +22,8 @@ struct InfoInspectorView: View {
                     infoContent
                 case .develop:
                     DevelopInspectorView(viewModel: viewModel)
+                case .adjust:
+                    AdjustInspectorView(viewModel: viewModel)
                 }
             }
         }

@@ -150,11 +150,12 @@ final class AppViewModel: ObservableObject {
     }
 
     enum InspectorTab: String, CaseIterable, Sendable {
-        case info, develop
+        case info, develop, adjust
         var title: String {
             switch self {
             case .info: return "Info"
             case .develop: return "Develop"
+            case .adjust: return "Adjust"
             }
         }
     }

@@ -117,3 +117,34 @@ final class AdjustInspectorTests: TempDirectoryTestCase {
         XCTAssertNotNil(viewModel.document.lut.lutID, "the LUT is a different panel again")
     }
 }
+
+// MARK: - The tab
+
+extension AdjustInspectorTests {
+
+    /// Three tabs, in pipeline order left to right.
+    func testTheInspectorHasThreeTabsInPipelineOrder() {
+        XCTAssertEqual(AppViewModel.InspectorTab.allCases, [.info, .develop, .adjust])
+        XCTAssertEqual(AppViewModel.InspectorTab.adjust.title, "Adjust")
+    }
+
+    /// The histogram is gated on the Info tab being on screen. Adjust is as much "a panel nobody is
+    /// looking at" as Develop is, so switching to it must not start tallying pixels — the same
+    /// finding `testTheDevelopTabDoesNotTallyAHistogram` pins for the other tab.
+    func testTheAdjustTabDoesNotTallyAHistogram() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+
+        // Switch first, *then* open: opening with Info showing would legitimately tally one — see
+        // testNoHistogramIsTalliedWhileTheDevelopTabIsShowing for the same pitfall on the other tab.
+        viewModel.inspectorTab = .adjust
+        viewModel.isInspectorPresented = true
+        viewModel.adjustmentBinding(for: .exposure).wrappedValue = 1.5
+        try await Task.sleep(for: .milliseconds(300))
+
+        let requests = await fake.histogramRequests
+        XCTAssertTrue(requests.isEmpty,
+                      "the Adjust tab has no histogram; \(requests.count) tallies were issued")
+    }
+}
