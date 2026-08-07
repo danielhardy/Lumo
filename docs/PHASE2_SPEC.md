@@ -1,9 +1,9 @@
 # LUTzy Phase 2 — non-destructive render pipeline + RAW develop
 
-**Status:** partly built. Steps 0–9 of the migration are done — the preview, both export paths and the
+**Status:** partly built. Steps 0–10b of the migration are done — the preview, both export paths and the
 histogram all render from the document, `ImageProcessor` is gone, derive registers its result by ID,
-and the whole package builds in **Swift 6 language mode** with no diagnostics and no escape hatches.
-The develop UI and undo are not built yet.
+both inspectors (RAW develop and Adjustments) ship, and the whole package builds in **Swift 6 language
+mode** with no diagnostics and no escape hatches. Only undo (Step 11) is outstanding.
 
 This is a distillation. The original draft ran 4,180 lines of multi-agent output that contradicted
 itself across sections and spent a good fraction of its length arguing with earlier drafts about bugs
@@ -269,7 +269,7 @@ leaf by leaf, delete the old path last.
 | ~~8~~ | ~~Flip strict concurrency on~~ | ✅ **done** — full **Swift 6 language mode** (errors, not warnings) on all three targets; 214 tests; 9 mutations caught, 1 untestable and named |
 | ~~9~~ | ~~Wire derive into the new state: register the derived LUT by ID, keep the scratch-file bookkeeping~~ | ✅ **done** — 230 tests; 19 mutations caught, 1 shown equivalent by inspection; fixed a **shipped** bug where a derived LUT never resolved (see below) |
 | ~~10a~~ | ~~RAW develop inspector + the per-image capability probe~~ | ✅ **done** — `RAWCapabilities` crosses the actor boundary carrying nine gates and twelve per-image seeds; the probe measures **~25 ms warm** against **~183 ms** for a full develop, so it runs once per open and never per render. 33 mutations, 32 caught on the first run and the one survivor closed with the test it exposed. **The RAW-gated tests `XCTSkip` on CI**, which has no DNG — a green tick there says nothing about them |
-| ~~10b~~ | ~~Adjustments inspector — fixed slots, one node of each, canonical pipeline order~~ | ✅ **done** — 307 tests (up from 272), 3 skipped without a DNG; nine per-parameter rows over the five `AdjustmentNode` cases, driving `EditDocument.adjustments` live. `AdjustmentNode`, `RenderPipeline`, `RenderEngine` and `EditDocument` untouched — purely additive. Closed §8.5's, §8.6's and §8.7's remaining open halves, see below |
+| ~~10b~~ | ~~Adjustments inspector — fixed slots, one node of each, canonical pipeline order~~ | ✅ **done** — 307 tests (up from 272), 3 skipped without a DNG; nine per-parameter rows over the five `AdjustmentNode` cases, driving `EditDocument.adjustments` live. `AdjustmentNode`, `RenderPipeline`, `RenderEngine` and `EditDocument` untouched — purely additive. No mutation run was performed here; `AdjustmentControl`'s sparse-array contract and the slider map are covered instead by pure-value tests needing no GPU, image or RAW, so — unlike 10a's RAW-gated tests — they run on CI. Closed §8.5's, §8.6's and §8.7's remaining open halves, see below |
 | 11 | Per-image undo keyed by `Item.id`, plus an `EditDocumentStore` | ⌘Z scoped per image |
 | 12 | *(deferred)* export descriptor, metadata/ICC | — |
 
