@@ -223,9 +223,9 @@ extension AdjustInspectorTests {
     /// makes it wrong: an image with exposure pushed two stops and no LUT selected had a dead V key
     /// and a dead Space bar.
     ///
-    /// The gate is now "does the document differ from its own comparison baseline", which is exactly
-    /// the set of edits the split view would show a difference for — and, unlike enumerating the
-    /// look-bearing fields, it stays correct the next time the document grows one.
+    /// This test pins the case that motivated the change. `isComparisonAvailable` itself carries the
+    /// full rationale for the enumerated gate it settled on instead — see that property for why the
+    /// obvious replacement, comparing the document against its own baseline, is not it.
     func testComparisonBecomesAvailableWithAnAdjustmentAndNoLUT() async throws {
         let viewModel = AppViewModel(engine: FakeRenderEngine())
         try await openStandardImage(viewModel)
