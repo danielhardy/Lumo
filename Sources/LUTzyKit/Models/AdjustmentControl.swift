@@ -137,12 +137,13 @@ enum AdjustmentControl: String, Sendable, CaseIterable, Hashable {
     /// **Measured, not guessed.** `CIFilterBuiltins.h` documents no ranges at all — only prose. The
     /// numbers live in the runtime `CIFilter.attributes` dictionary, probed directly on the macOS 26
     /// SDK. What it reports, as `kCIAttributeSliderMin…Max` with `kCIAttributeIdentity` in brackets:
-    /// `inputEV` −10…10 [0], `inputBrightness` −1…1 [0], `inputContrast` 0.25…4 [1],
+    /// `inputEV` −10…10 [0], `inputBrightness` −1…1 [0], `inputContrast` 0.25…4 [1] (with
+    /// `kCIAttributeMin` 0 — see below),
     /// `inputSaturation` 0…2 [1], `inputHighlightAmount` **0.3…1** [1], `inputShadowAmount` −1…1 [0],
     /// `inputAmount` (vibrance) −1…1 [0]. `CITemperatureAndTint` reports no range, because its
     /// parameters are `CIVector`s.
     ///
-    /// Three rows need their reasoning recorded, because each is a place a later reader would
+    /// Four rows need their reasoning recorded, because each is a place a later reader would
     /// otherwise assume a mistake:
     ///
     /// **Exposure is narrowed to −4…4**, though the filter accepts −10…10. `DevelopControl.exposure`
@@ -157,11 +158,25 @@ enum AdjustmentControl: String, Sendable, CaseIterable, Hashable {
     ///
     /// **Temperature is 2000…11000 K, narrower than `DevelopControl.whiteBalance`'s 2000…50000.**
     /// Forced by the inversion, not chosen for taste — see `sliderMapped(_:)`.
+    ///
+    /// **Contrast is 0…2, not the filter's suggested 0.25…4.** The suggestion puts identity (1) a
+    /// fifth of the way along the track: four fifths of the travel adds contrast and one fifth
+    /// removes it, next to a Saturation slider that is symmetric about the same identity. 0…2 is
+    /// symmetric, matches Saturation, and gives reducing contrast the same throw as adding it.
+    ///
+    /// Going below 0.25 is safe, and that was **measured rather than assumed** — the concern was a
+    /// dead zone in the bottom eighth of the track, the same defect the temperature range exists to
+    /// avoid. `inputContrast` reports `kCIAttributeSliderMin` 0.25 but `kCIAttributeMin` **0**: the
+    /// 0.25 is a suggested UI bound, not a limit. Rendered on a black-to-white gradient, contrast
+    /// 0.20 / 0.15 / 0.10 / 0.05 / 0 each differ from 0.25 and from each other, flattening
+    /// monotonically to a uniform 128 at 0. Nothing clamps. What the top of the range gives up is
+    /// real — the filter accepts up to 4 — but 2.0 already crushes a gradient to 2…253, so the
+    /// travel above it is mostly ornamental.
     var range: ClosedRange<Double> {
         switch self {
         case .exposure: return -4...4
         case .brightness: return -1...1
-        case .contrast: return 0.25...4
+        case .contrast: return 0...2
         case .saturation: return 0...2
         case .highlights: return 0.3...1
         case .shadows: return -1...1

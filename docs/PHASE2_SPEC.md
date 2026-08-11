@@ -503,6 +503,11 @@ least one section, which is most of why it was so long.
   across four sections. It compiles; it always did.
 - `CIFilterBuiltins.h` documents no parameter ranges, only prose — the numbers live in the runtime
   `CIFilter.attributes` dictionary.
+- **`kCIAttributeSliderMin` is a suggested UI bound, not a limit** — read `kCIAttributeMin` before
+  assuming a value is out of range. `inputContrast` reports slider 0.25…4 but a hard min of **0**,
+  and rendering 0.20 / 0.15 / 0.10 / 0.05 / 0 on a gradient gives five distinct results flattening
+  to a uniform 128. That is why the Contrast slider is 0…2, symmetric about identity like Saturation
+  beside it, rather than the suggested 0.25…4 which puts identity a fifth of the way along.
 - `CIHighlightShadowAdjust.inputHighlightAmount`'s slider floor is **0.3** with identity **1**, at the
   range maximum — the control travels one way only, downward.
 - `CIHighlightShadowAdjust` has a third parameter, `radius`, pixel-sized and a §5 violation if set.

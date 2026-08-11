@@ -108,7 +108,7 @@ rather than copied from memory:
 |---|---|---|---|---|
 | Exposure | `exposure(ev:)` | 0 | −10…10 | **−4…4** |
 | Brightness | `colorControls.brightness` | 0 | −1…1 | −1…1 |
-| Contrast | `colorControls.contrast` | 1 | 0.25…4 | 0.25…4 |
+| Contrast | `colorControls.contrast` | 1 | 0.25…4 *(hard min 0)* | **0…2** |
 | Saturation | `colorControls.saturation` | 1 | 0…2 | 0…2 |
 | Highlights | `highlightShadow.highlights` | 1 | **0.3…1** | 0.3…1 |
 | Shadows | `highlightShadow.shadows` | 0 | −1…1 | −1…1 |
