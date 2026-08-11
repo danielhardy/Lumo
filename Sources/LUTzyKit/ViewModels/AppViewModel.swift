@@ -127,6 +127,38 @@ final class AppViewModel: ObservableObject {
     /// **Shim.** Reads through to the document so the toolbar slider keeps working unchanged.
     var lutIntensity: Double { document.lut.intensity }
 
+    /// Whether the A/B comparison — the split view and the Space-hold — has anything to show.
+    ///
+    /// **Not `selectedLUT != nil`**, which is what this was until Step 10b. That was defensible while
+    /// a LUT was the only thing that could change the picture; the Adjust panel made it wrong, and an
+    /// image with exposure pushed two stops and no LUT selected had a dead V key and a dead Space bar.
+    /// `docs/PHASE2_SPEC.md` §8.5 recorded this as open.
+    ///
+    /// **Not `document != document.originalForComparison` either**, which is what Step 10b first
+    /// reached for: compare the document against its own baseline rather than enumerate the
+    /// look-bearing fields, and the rule "stays correct the next time the document grows a field."
+    /// That reasoning is wrong for a LUT at 0% intensity — `LUTSettings.isIdentity` treats it as
+    /// contributing nothing, but the plain `!=` sees `lutID` still set and calls the document
+    /// non-neutral, so the gate opened a split view of two pixel-identical halves. Exactness beat the
+    /// "survives a new field" property. The cost is real: the next look-bearing field added to
+    /// `EditDocument` must be added to this expression by hand, or this comment starts lying the same
+    /// way the old one did.
+    ///
+    /// A **develop-only** edit correctly reads `false` — `originalForComparison` keeps `rawDevelop`
+    /// and strips only `adjustments` and the LUT, so both halves would render the same picture.
+    ///
+    /// `adjustments.isEmpty` would have been a sound stand-in for "no adjustment is active" only
+    /// because the array is sparse — `AdjustmentControl.setting(_:in:)` never stores an identity node, a
+    /// claim `AdjustmentControlTests` pins. `adjustments.allSatisfy(\.isIdentity)` needs no such
+    /// precondition: a stray identity node reads exactly the same as no node at all, so it is written
+    /// this exact way, rather than the cheaper `isEmpty`, for the same exactness reason as the
+    /// paragraph above — it stays correct even if the sparse invariant is ever violated, which matters
+    /// once Step 11's undo path can restore a document that arrived by decoding rather than by a
+    /// slider write.
+    var isComparisonAvailable: Bool {
+        !document.adjustments.allSatisfy(\.isIdentity) || !document.lut.isIdentity
+    }
+
     @Published var previewNSImage: NSImage?
     @Published var originalPreviewNSImage: NSImage?
     @Published var isShowingOriginal: Bool = false
@@ -150,11 +182,12 @@ final class AppViewModel: ObservableObject {
     }
 
     enum InspectorTab: String, CaseIterable, Sendable {
-        case info, develop
+        case info, develop, adjust
         var title: String {
             switch self {
             case .info: return "Info"
             case .develop: return "Develop"
+            case .adjust: return "Adjust"
             }
         }
     }
@@ -542,148 +575,6 @@ final class AppViewModel: ObservableObject {
             }
             self.schedulePreview()
         }
-    }
-
-    // MARK: - RAW develop
-
-    /// A two-way binding for one develop control.
-    ///
-    /// **Reading never writes.** Every `RAWDevelopSettings` property is `Optional`, with `nil`
-    /// meaning "leave `CIRAWFilter` at its decoder default", and `.neutral` is byte-identical to
-    /// `ImageDecoder.developRAWNeutral` precisely *because it sets nothing*. So the getter falls back
-    /// to the decoder's own value — a fixed default where there is one, otherwise the per-image seed
-    /// from `rawCapabilities` — and only the setter stores anything. Seeding every field when the
-    /// panel opened would silently make every document non-neutral.
-    ///
-    /// **Writes for a toggle control are immediate, not debounced.** `updateDocument(debounced:)`'s
-    /// own doc comment is explicit that debouncing is for continuous controls only — "a checkbox that
-    /// lagged 60 ms would feel broken" — and this binding backs both sliders and the three Bool
-    /// controls (`lensCorrection`, `gamutMapping`, `highlightRecovery`), routed through `Toggle` in
-    /// the view. Only sliders get the 60 ms coalescing.
-    func developBinding(for control: DevelopControl) -> Binding<Double> {
-        Binding(
-            get: { self.developValue(for: control) },
-            set: { newValue in
-                self.updateDocument(debounced: !control.isToggle) { document in
-                    Self.setDevelop(control, to: newValue, in: &document.rawDevelop)
-                }
-            }
-        )
-    }
-
-    /// What a control should display: the stored setting, else the decoder's own starting point.
-    ///
-    /// **A literal appears here only where `CIRAWFilter` documents a fixed default** — `exposure` 0,
-    /// `boost`/`boostShadow` 1, `extendedDynamicRange` 0, `gamutMapping`/`highlightRecovery` true.
-    /// Everything else reads a per-image seed off `rawCapabilities`, because everything else *has* no
-    /// fixed default: `RAWDevelopSettings`' type doc says outright that the baseline exposure, shadow
-    /// bias, noise-reduction and sharpening defaults vary per image, and as-shot white balance on the
-    /// Leica in `realworldtest/` is 5842.2 K, not a round number. Guessing 0 for those would open the
-    /// slider away from where the picture actually is, and the first nudge would jump it — the exact
-    /// defect the white-balance seed was added to prevent.
-    ///
-    /// The trailing `?? 0` after each seed is only the no-image / not-a-RAW case: `rawCapabilities`
-    /// is `nil` until the probe lands, and while it is nil the panel is showing
-    /// `DevelopPanelState.probing` or `.noDevelopStage`, neither of which draws a control.
-    ///
-    /// **That `0` is uniform, including white balance.** It used to be `?? 6500` for
-    /// `neutralTemperature` alone — D65, a plausible-looking Kelvin — which made the sentence above
-    /// untrue for exactly one line and, worse, made the unreachable branch return a number that
-    /// *looks* like a real answer. Nothing distinguishes a seed that failed to arrive from a decoder
-    /// that genuinely reports 6500 K. Every seeded control now falls back the same way, so the
-    /// fallback is legible as "no answer" wherever it surfaces.
-    func developValue(for control: DevelopControl) -> Double {
-        let develop = document.rawDevelop
-        let seed = rawCapabilities
-        switch control {
-        case .exposure: return develop.exposure ?? 0
-        case .baselineExposure: return develop.baselineExposure ?? seed?.baselineExposure ?? 0
-        case .shadowBias: return develop.shadowBias ?? seed?.shadowBias ?? 0
-        case .boost: return develop.boostAmount ?? 1
-        case .boostShadow: return develop.boostShadowAmount ?? 1
-        case .whiteBalance: return develop.neutralTemperature ?? seed?.asShotTemperature ?? 0
-        case .sharpness: return develop.sharpnessAmount ?? seed?.sharpnessAmount ?? 0
-        case .contrast: return develop.contrastAmount ?? seed?.contrastAmount ?? 0
-        case .detail: return develop.detailAmount ?? seed?.detailAmount ?? 0
-        case .moireReduction:
-            return develop.moireReductionAmount ?? seed?.moireReductionAmount ?? 0
-        case .localToneMap: return develop.localToneMapAmount ?? seed?.localToneMapAmount ?? 0
-        case .luminanceNoiseReduction:
-            return develop.luminanceNoiseReductionAmount ?? seed?.luminanceNoiseReductionAmount ?? 0
-        case .colorNoiseReduction:
-            return develop.colorNoiseReductionAmount ?? seed?.colorNoiseReductionAmount ?? 0
-        case .lensCorrection:
-            return (develop.lensCorrectionEnabled ?? seed?.lensCorrectionEnabled ?? false) ? 1 : 0
-        case .gamutMapping: return (develop.gamutMappingEnabled ?? true) ? 1 : 0
-        case .extendedDynamicRange: return develop.extendedDynamicRangeAmount ?? 0
-        case .highlightRecovery: return (develop.highlightRecoveryEnabled ?? true) ? 1 : 0
-        }
-    }
-
-    /// The tint half of white balance. Separate because `whiteBalance` is one row with two sliders.
-    func developTintBinding() -> Binding<Double> {
-        Binding(
-            get: { self.document.rawDevelop.neutralTint ?? self.rawCapabilities?.asShotTint ?? 0 },
-            set: { newValue in
-                self.updateDocument(debounced: true) { $0.rawDevelop.neutralTint = newValue }
-            }
-        )
-    }
-
-    private static func setDevelop(
-        _ control: DevelopControl, to value: Double, in develop: inout RAWDevelopSettings
-    ) {
-        switch control {
-        case .exposure: develop.exposure = value
-        case .baselineExposure: develop.baselineExposure = value
-        case .shadowBias: develop.shadowBias = value
-        case .boost: develop.boostAmount = value
-        case .boostShadow: develop.boostShadowAmount = value
-        case .whiteBalance: develop.neutralTemperature = value
-        case .sharpness: develop.sharpnessAmount = value
-        case .contrast: develop.contrastAmount = value
-        case .detail: develop.detailAmount = value
-        case .moireReduction: develop.moireReductionAmount = value
-        case .localToneMap: develop.localToneMapAmount = value
-        case .luminanceNoiseReduction: develop.luminanceNoiseReductionAmount = value
-        case .colorNoiseReduction: develop.colorNoiseReductionAmount = value
-        case .lensCorrection: develop.lensCorrectionEnabled = value != 0
-        case .gamutMapping: develop.gamutMappingEnabled = value != 0
-        case .extendedDynamicRange: develop.extendedDynamicRangeAmount = value
-        case .highlightRecovery: develop.highlightRecoveryEnabled = value != 0
-        }
-    }
-
-    /// Return one control to "decoder default" — `nil`, not zero.
-    func resetDevelop(_ control: DevelopControl) {
-        updateDocument { document in
-            switch control {
-            case .exposure: document.rawDevelop.exposure = nil
-            case .baselineExposure: document.rawDevelop.baselineExposure = nil
-            case .shadowBias: document.rawDevelop.shadowBias = nil
-            case .boost: document.rawDevelop.boostAmount = nil
-            case .boostShadow: document.rawDevelop.boostShadowAmount = nil
-            case .whiteBalance:
-                document.rawDevelop.neutralTemperature = nil
-                document.rawDevelop.neutralTint = nil
-            case .sharpness: document.rawDevelop.sharpnessAmount = nil
-            case .contrast: document.rawDevelop.contrastAmount = nil
-            case .detail: document.rawDevelop.detailAmount = nil
-            case .moireReduction: document.rawDevelop.moireReductionAmount = nil
-            case .localToneMap: document.rawDevelop.localToneMapAmount = nil
-            case .luminanceNoiseReduction: document.rawDevelop.luminanceNoiseReductionAmount = nil
-            case .colorNoiseReduction: document.rawDevelop.colorNoiseReductionAmount = nil
-            case .lensCorrection: document.rawDevelop.lensCorrectionEnabled = nil
-            case .gamutMapping: document.rawDevelop.gamutMappingEnabled = nil
-            case .extendedDynamicRange: document.rawDevelop.extendedDynamicRangeAmount = nil
-            case .highlightRecovery: document.rawDevelop.highlightRecoveryEnabled = nil
-            }
-        }
-    }
-
-    /// Return every develop control to the decoder's defaults.
-    func resetAllDevelop() {
-        updateDocument { $0.rawDevelop = .neutral }
     }
 
     /// Resolve a document's LUT reference: the registry first, then the library. A miss returns

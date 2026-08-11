@@ -12,7 +12,7 @@ struct PreviewView: View {
             bgColor
 
             if viewModel.sourceImage != nil {
-                if viewModel.isSideBySide && viewModel.selectedLUT != nil {
+                if viewModel.isSideBySide && viewModel.isComparisonAvailable {
                     sideBySideView
                 } else {
                     singleView
@@ -51,7 +51,7 @@ struct PreviewView: View {
                 // LUT applied
                 panelView(
                     image: viewModel.previewNSImage,
-                    label: viewModel.selectedLUT?.name ?? "LUT",
+                    label: viewModel.selectedLUT?.name ?? "Adjusted",
                     labelSide: .trailing,
                     width: geo.size.width / 2
                 )
@@ -91,7 +91,7 @@ struct PreviewView: View {
                     .animation(.easeInOut(duration: 0.15), value: viewModel.selectedLUT)
 
                 // Comparison badge
-                if viewModel.isShowingOriginal && viewModel.selectedLUT != nil {
+                if viewModel.isShowingOriginal && viewModel.isComparisonAvailable {
                     VStack {
                         HStack {
                             ComparisonBadge(text: "Original")

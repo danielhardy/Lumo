@@ -150,6 +150,16 @@ any axis filled the whole table with NaN. Such an axis now falls back to the def
 `isActive = items.count > 1` meant a folder holding exactly one image left `selectedItem` nil and ←/→
 dead, while the browser panel still listed the row. Now `!items.isEmpty`.
 
+### B14 — `InfoInspectorView`'s histogram label still assumes a LUT · Low · [open]
+
+`InfoInspectorView.swift:105` derives its "Graded"/"Original" histogram label from
+`viewModel.selectedLUT != nil` — the same root cause as `PreviewView`'s split-view label, which read
+`selectedLUT?.name ?? "LUT"`. Phase 2 Step 10b's Adjust panel made both stale the same way:
+`isComparisonAvailable` now also goes true for an adjustment-only edit with no LUT selected, so this
+panel still calls that render "Original" while a real, non-identity edit is showing. `PreviewView`'s
+equivalent was fixed in Step 10b's follow-up pass (the fallback now reads "Adjusted"); this is the
+one remaining site, deliberately deferred out of that pass's scope.
+
 ---
 
 ## 2. Stubbed, incomplete, and dead
