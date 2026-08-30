@@ -1,0 +1,60 @@
+name: Lumo
+format_version: 2
+id_prefix: LUMO
+description: Native macOS RAW photo editor
+default_board: product
+statuses:
+  - backlog
+  - ready
+  - claimed
+  - review
+  - verification
+  - done
+git:
+  mode: manual
+  auto_commit: false
+  target_branch: main
+  branch_per_issue: false
+agents:
+  claim_ttl_minutes: 60
+  default_actor: codex
+  supported:
+    - cursor
+    - claude
+    - opencode
+    - codex
+    - pi
+  options:
+    cursor:
+      skip_permissions: true
+    claude:
+      skip_permissions: true
+    opencode:
+      skip_permissions: true
+    codex:
+      skip_permissions: true
+    pi:
+      skip_permissions: true
+  pickup:
+    enabled: true
+    yolo: true
+    runner:
+      kind: codex
+      model: gpt-5.6-luna
+    max_concurrency: 1
+    labels: []
+    context_budget: 12000
+    worktrees:
+      enabled: true
+      dir: ./dg-worktrees
+  verification:
+    enabled: true
+    max_concurrency: 1
+    default_actor: claude
+    runner:
+      kind: claude
+      model: sonnet
+    action_mode: safe_fixes
+    completion: auto
+    different_agent: warn
+    merge_on_done: true

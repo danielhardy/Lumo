@@ -1,0 +1,22 @@
+id: product
+name: DispatchGraph
+description: Default product board
+columns:
+  - id: backlog
+    name: Backlog
+    status: backlog
+  - id: ready
+    name: Ready
+    status: ready
+  - id: claimed
+    name: Claimed
+    status: claimed
+  - id: review
+    name: Review
+    status: review
+  - id: verification
+    name: Verification
+    status: verification
+  - id: done
+    name: Done
+    status: done
