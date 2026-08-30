@@ -1,6 +1,6 @@
 name: CI
 
-# Build LUTzy on every push to main and every PR targeting it, so broken
+# Build Lumo on every push to main and every PR targeting it, so broken
 # commits are caught automatically. Zero third-party actions beyond the
 # official checkout — matches the project's zero-dependency ethos.
 on:

@@ -18,7 +18,7 @@ case "$cmd" in
   create)
     ref="${2:-HEAD}"
     # Detached checkout in a temp dir → no branch to collide, nothing to push.
-    dir="$(mktemp -d "${TMPDIR:-/tmp}/lutzy-agent-XXXXXX")"
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/lumo-agent-XXXXXX")"
     git -C "$repo_root" worktree add --detach "$dir" "$ref" >&2
     echo "$dir"
     ;;

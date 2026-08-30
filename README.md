@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🎨 LUTzy
+# 🎨 Lumo
 
 ### Color-grade RAW photos with `.cube` LUTs — and reverse-engineer a camera's look back *into* one.
 
@@ -16,9 +16,9 @@ A fast, native macOS app for applying 3D LUTs to RAW/DNG and standard images, wi
 
 ---
 
-## What is LUTzy?
+## What is Lumo?
 
-LUTzy is a focused color tool built entirely on Apple frameworks — **SwiftUI** for the interface, **Core Image** (Metal-backed) for every pixel operation, and **zero third-party dependencies**. It does three things exceptionally well:
+Lumo is a focused color tool built entirely on Apple frameworks — **SwiftUI** for the interface, **Core Image** (Metal-backed) for every pixel operation, and **zero third-party dependencies**. It does three things exceptionally well:
 
 1. **Opens your photos** — native RAW/DNG demosaicing plus all the usual formats.
 2. **Grades them with `.cube` LUTs** — browse a whole folder of looks and preview them instantly on the GPU.
@@ -53,7 +53,7 @@ LUTzy is a focused color tool built entirely on Apple frameworks — **SwiftUI**
 - **Info inspector** (**`⌘I`**): live RGB / luma histogram of the displayed image — the graded result, or the original while you hold `Space` — plus the file's EXIF, TIFF, and GPS metadata.
 
 ### Work in batches
-- Point LUTzy at a **source folder** (**`⌘⌥I`**) and it scans recursively, groups by subfolder, and remembers the choice across launches. **`⌘R`** re-scans.
+- Point Lumo at a **source folder** (**`⌘⌥I`**) and it scans recursively, groups by subfolder, and remembers the choice across launches. **`⌘R`** re-scans.
 - A **filmstrip** appears along the bottom, with async-generated thumbnails.
 - **`←` / `→`** (or **`[` / `]`**) step through the set; the selected LUT stays applied as you go.
 
@@ -66,9 +66,9 @@ LUTzy is a focused color tool built entirely on Apple frameworks — **SwiftUI**
 
 ## 🔬 Derive a LUT from a JPG
 
-This is what makes LUTzy unusual. Most apps *apply* LUTs; LUTzy can also **manufacture** one.
+This is what makes Lumo unusual. Most apps *apply* LUTs; Lumo can also **manufacture** one.
 
-**The idea:** your camera shot a RAW and, at the same instant, rendered its own JPEG using the manufacturer's color science (or whatever film simulation / picture profile you had dialed in). That JPEG *is* a look. LUTzy compares the neutral RAW against that JPEG and bakes the difference into a portable `.cube` file you can apply to any other photo.
+**The idea:** your camera shot a RAW and, at the same instant, rendered its own JPEG using the manufacturer's color science (or whatever film simulation / picture profile you had dialed in). That JPEG *is* a look. Lumo compares the neutral RAW against that JPEG and bakes the difference into a portable `.cube` file you can apply to any other photo.
 
 **Menu:** `File ▸ Derive LUT from JPG…` (**`⌘D`**) → pick the RAW, pick the JPEG, hit **Derive**.
 
@@ -81,7 +81,7 @@ This is what makes LUTzy unusual. Most apps *apply* LUTs; LUTzy can also **manuf
 
 Under the hood the extractor:
 
-1. Renders the RAW through the **same** default `CIRAWFilter` pipeline LUTzy uses everywhere — so the derived LUT drops straight back into the normal apply path with no baseline mismatch.
+1. Renders the RAW through the **same** default `CIRAWFilter` pipeline Lumo uses everywhere — so the derived LUT drops straight back into the normal apply path with no baseline mismatch.
 2. Checks the pair actually describes one frame (same aspect ratio) and refuses mismatched files rather than silently stretching one onto the other. Lanczos-scales both onto a common working extent — capped at 3000 px on the long edge, since 200k samples describe the color mapping just as well from a 3000 px render as from a 9000 px one — and finds the integer-pixel alignment by luma cross-correlation.
 3. Builds an **edge mask** from the JPEG (so in-camera sharpening can't contaminate the color samples) and draws ~200k samples from smooth regions only.
 4. Accumulates them into a **33³ color cube**, smooths any sparse cells from their neighbors, and anchors the rest to identity.
@@ -127,7 +127,7 @@ The result previews live on your current image immediately and stays a scratch L
 
 ## 🚀 Build & run
 
-LUTzy is a Swift Package — no `.xcodeproj` to manage.
+Lumo is a Swift Package — no `.xcodeproj` to manage.
 
 **Quickest (CLI):**
 ```bash
@@ -139,7 +139,7 @@ Builds and launches the app for fast iteration. Note: the SwiftUI executable tar
 ```bash
 open Package.swift     # or: xed .
 ```
-Then select the **LUTzy** scheme and **Run** (`⌘R`). For a sandboxed build, add the **App Sandbox** capability and point it at the included [`LUTzy.entitlements`](Sources/LUTzy/LUTzy.entitlements) (user-selected read/write + app-scope bookmarks).
+Then select the **Lumo** scheme and **Run** (`⌘R`). For a sandboxed build, add the **App Sandbox** capability and point it at the included [`Lumo.entitlements`](Sources/Lumo/Lumo.entitlements) (user-selected read/write + app-scope bookmarks).
 
 **Tests:**
 ```bash
@@ -152,8 +152,8 @@ debug build → tests → release build on every push and PR.
 
 |  | |
 |---|---|
-| **To run LUTzy** | macOS **14.0+** — unchanged, and what the deployment target targets |
-| **To build LUTzy** | **Xcode 26+** (macOS 26 SDK) |
+| **To run Lumo** | macOS **14.0+** — unchanged, and what the deployment target targets |
+| **To build Lumo** | **Xcode 26+** (macOS 26 SDK) |
 
 Those are deliberately different. Building against a current SDK while deploying to macOS 14 is the
 normal Apple model, and the stricter one: the compiler refuses any API newer than macOS 14 unless it
@@ -165,16 +165,16 @@ on macOS 14.
 
 ## 🗂 Project structure
 
-LUTzy is split into a `LUTzyKit` library and a thin `@main` executable, so the app's own code can be
+Lumo is split into a `LumoKit` library and a thin `@main` executable, so the app's own code can be
 unit-tested — `@testable` cannot import an executable target.
 
 ```
 Sources/
-├── LUTzy/                      # thin entry point only
-│   ├── LUTzyApp.swift          # @main App + AppDelegate — window, default size, commands
+├── Lumo/                       # thin entry point only
+│   ├── LumoApp.swift           # @main App + AppDelegate — window, default size, commands
 │   ├── Assets.xcassets/        # App icon + accent color
-│   └── LUTzy.entitlements      # App Sandbox + user-selected file access
-└── LUTzyKit/                   # everything of substance
+│   └── Lumo.entitlements       # App Sandbox + user-selected file access
+└── LumoKit/                    # everything of substance
     ├── Models/
     │   ├── CubeLUT.swift           # .cube parser + writer → CIColorCube filter (also in-memory init)
     │   ├── WorkingSpace.swift      # the one colour space: LUT interpolation + output encoding
@@ -203,7 +203,7 @@ Sources/
         └── RecipeReportView.swift  # Analysis card — Swift Charts tone curve + stat badges
 
 Tests/
-└── LUTzyKitTests/              # XCTest; fixtures are generated, never committed
+└── LumoKitTests/               # XCTest; fixtures are generated, never committed
     ├── Fixtures.swift          # builds .cube files and orientation-tagged JPEGs in a temp dir
     ├── CubeLUTTests.swift      # parser, domain handling, index ordering, intensity, round-trip
     ├── WorkingSpaceTests.swift # preview/export parity, LUT-interp ↔ output lockstep
@@ -216,7 +216,7 @@ Tests/
     └── ExportNamingTests.swift # batch-export collision handling
 ```
 
-`ContentView` and `LUTzyCommands` are the only `public` symbols — the executable needs exactly those
+`ContentView` and `LumoCommands` are the only `public` symbols — the executable needs exactly those
 two and nothing else.
 
 `docs/CODE_REVIEW.md` records the standing findings from the last full review — what was fixed, and
@@ -224,10 +224,10 @@ what is still outstanding.
 
 ## 🏗 Architecture notes
 
-- **MVVM with coordinators.** [`AppViewModel`](Sources/LUTzyKit/ViewModels/AppViewModel.swift) holds the image, LUT, and preview state, and owns four collaborators: `LUTLibrary`, `ImageCollection`, [`ExportCoordinator`](Sources/LUTzyKit/ViewModels/ExportCoordinator.swift), and [`DeriveCoordinator`](Sources/LUTzyKit/ViewModels/DeriveCoordinator.swift). The coordinators report *what* happened through `onStatus`/`onError` closures; deciding how to present it stays with the view model. Views observe, and the menu bar talks to it via `NotificationCenter`.
+- **MVVM with coordinators.** [`AppViewModel`](Sources/LumoKit/ViewModels/AppViewModel.swift) holds the image, LUT, and preview state, and owns four collaborators: `LUTLibrary`, `ImageCollection`, [`ExportCoordinator`](Sources/LumoKit/ViewModels/ExportCoordinator.swift), and [`DeriveCoordinator`](Sources/LumoKit/ViewModels/DeriveCoordinator.swift). The coordinators report *what* happened through `onStatus`/`onError` closures; deciding how to present it stays with the view model. Views observe, and the menu bar talks to it via `NotificationCenter`.
 - **Panels are a seam, not a dependency.** Every operation that needs a file dialog is split into a `perform…` core taking an explicit URL and a thin `…Dialog` wrapper that runs the panel. `NSOpenPanel`/`NSSavePanel` can't run headless, so this is what makes export and save testable at all.
 - **Core Image end to end.** RAW demosaicing (`CIRAWFilter`), LUT application (`CIColorCubeWithColorSpace`), scaling (`CILanczosScaleTransform`), and all export encoding run through one Metal-backed `CIContext`.
-- **One colour seam.** [`WorkingSpace`](Sources/LUTzyKit/Models/WorkingSpace.swift) is the single source of truth for both the LUT interpolation space and the output encoding space, so they cannot drift apart; every render and export site takes it, defaulting to sRGB. Cube data is laid out R-fastest → G → B, matching both the `.cube` spec and Core Image's expected ordering.
+- **One colour seam.** [`WorkingSpace`](Sources/LumoKit/Models/WorkingSpace.swift) is the single source of truth for both the LUT interpolation space and the output encoding space, so they cannot drift apart; every render and export site takes it, defaulting to sRGB. Cube data is laid out R-fastest → G → B, matching both the `.cube` spec and Core Image's expected ordering.
 - **Images are rendered upright.** `CIRAWFilter` honors EXIF orientation; plain `CIImage(contentsOf:)` does not, so every non-RAW decode goes through `ImageProcessor.orientedLoadOptions`. Preview, filmstrip thumbnail, reported dimensions, and export all agree.
 - **Work stays off the main actor.** Decoding, preview rasterization, folder scans, LUT parsing, export, and recipe derivation all run detached and publish results back to `@MainActor`; the intensity slider is debounced and each render cancels the one before it. Previews are capped at 1600×1200; exports are always full resolution.
 - **No third-party code.** Everything ships with the system: SwiftUI, Core Image, AppKit, PhotosUI, Swift Charts, ImageIO, Metal, simd.
@@ -236,7 +236,7 @@ what is still outstanding.
 
 ## 📦 Preparing for the App Store
 
-1. Drop a 1024×1024 source icon into [`Assets.xcassets/AppIcon.appiconset`](Sources/LUTzy/Assets.xcassets/AppIcon.appiconset).
+1. Drop a 1024×1024 source icon into [`Assets.xcassets/AppIcon.appiconset`](Sources/Lumo/Assets.xcassets/AppIcon.appiconset).
 2. Set your **Bundle Identifier** and **Team** in the target's Signing & Capabilities.
 3. Keep **App Sandbox** enabled (the included entitlements already grant user-selected file access + app-scope bookmarks).
 4. **Product ▸ Archive ▸ Distribute App ▸ App Store Connect.**
@@ -245,7 +245,7 @@ what is still outstanding.
 
 ## 📄 License
 
-LUTzy is released under the [MIT License](LICENSE) — free to use, modify, and distribute.
+Lumo is released under the [MIT License](LICENSE) — free to use, modify, and distribute.
 
 ---
 

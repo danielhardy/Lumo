@@ -69,12 +69,12 @@ mutate() {
   fi
 }
 
-VM=Sources/LUTzyKit/ViewModels/AppViewModel.swift
-DC=Sources/LUTzyKit/ViewModels/DeriveCoordinator.swift
-CL=Sources/LUTzyKit/Models/CubeLUT.swift
-LL=Sources/LUTzyKit/Models/LUTLibrary.swift
-DR=Sources/LUTzyKit/Models/DerivedLUTRegistry.swift
-RE=Sources/LUTzyKit/Models/RenderEngine.swift
+VM=Sources/LumoKit/ViewModels/AppViewModel.swift
+DC=Sources/LumoKit/ViewModels/DeriveCoordinator.swift
+CL=Sources/LumoKit/Models/CubeLUT.swift
+LL=Sources/LumoKit/Models/LUTLibrary.swift
+DR=Sources/LumoKit/Models/DerivedLUTRegistry.swift
+RE=Sources/LumoKit/Models/RenderEngine.swift
 
 echo "=== identity ==="
 mutate "CubeLUT: derived id back to a UUID" "$CL" \
@@ -166,7 +166,7 @@ mutate "CONTROL (expected to survive): resolve library-first instead of registry
 
 echo "=== the derive gate ==="
 mutate "RenderPipeline: derive gate — LUT stage skipped in the pipeline" \
-  Sources/LUTzyKit/Models/RenderPipeline.swift \
+  Sources/LumoKit/Models/RenderPipeline.swift \
   's/return applyLUT\(document\.lut, lut: lut, to: adjusted, space: space, cache: lutCache\)/return adjusted/' \
   "DeriveInvarianceTests"
 

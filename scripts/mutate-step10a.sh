@@ -94,10 +94,10 @@ mutate() {
   SURVIVED=$((SURVIVED+1)); SURVIVOR_NAMES+=("$label -> $filter")
 }
 
-VM=Sources/LUTzyKit/ViewModels/AppViewModel.swift
-RC=Sources/LUTzyKit/Models/RAWCapabilities.swift
-RE=Sources/LUTzyKit/Models/RenderEngine.swift
-RD=Sources/LUTzyKit/Models/RAWDevelopSettings.swift
+VM=Sources/LumoKit/ViewModels/AppViewModel.swift
+RC=Sources/LumoKit/Models/RAWCapabilities.swift
+RE=Sources/LumoKit/Models/RenderEngine.swift
+RD=Sources/LumoKit/Models/RAWDevelopSettings.swift
 
 echo "=== gating: which controls a file offers ==="
 mutate "RAWCapabilities: offer every control regardless of support" "$RC" \

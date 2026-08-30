@@ -7,7 +7,7 @@ Icon
 # Swift Package Manager
 .build/
 .swiftpm/
-# No Package.resolved: LUTzy has zero third-party dependencies by design.
+# No Package.resolved: Lumo has zero third-party dependencies by design.
 
 # Xcode
 *.xcodeproj/*

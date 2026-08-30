@@ -1,6 +1,6 @@
 # CLAUDE.md — project guidance for AI agents
 
-LUTzy is a native **macOS 14+** app (**Swift 6 language mode**, SwiftUI + Core Image, **zero third-party dependencies**) that applies `.cube` 3D LUTs to RAW/DNG and standard images, and can derive a `.cube` LUT from a (RAW, JPG) pair.
+Lumo is a native **macOS 14+** app (**Swift 6 language mode**, SwiftUI + Core Image, **zero third-party dependencies**) that applies `.cube` 3D LUTs to RAW/DNG and standard images, and can derive a `.cube` LUT from a (RAW, JPG) pair.
 
 ## Build / run / test
 
@@ -25,8 +25,8 @@ If CI ever needs to move back to an older image, that reference is the thing tha
 
 ## Swift 6 language mode is on, for every target
 
-`Package.swift` is a 6.0 tools version and declares `.swiftLanguageMode(.v6)` on `LUTzyKit`, `LUTzy`
-and `LUTzyKitTests`. Data-race safety is **errors, not warnings** — Phase 2 Step 8 turned it on after
+`Package.swift` is a 6.0 tools version and declares `.swiftLanguageMode(.v6)` on `LumoKit`, `Lumo`
+and `LumoKitTests`. Data-race safety is **errors, not warnings** — Phase 2 Step 8 turned it on after
 Steps 4–7 removed the last shared mutable state, and the module compiles with **zero** diagnostics
 and **zero** escape hatches: no `@unchecked Sendable`, no `nonisolated(unsafe)`, no
 `@preconcurrency`. `PackageSettingsTests` fails if any of that changes, because none of it is
@@ -50,11 +50,11 @@ Practical consequences when writing code here:
 
 The package is split so the app's code is testable (`@testable` can't import an executable target):
 
-- `Sources/LUTzyKit/` — everything of substance (Models, ViewModels, Views). Only `ContentView` and
-  `LUTzyCommands` are `public`; keep the rest internal.
-- `Sources/LUTzy/` — the `@main` entry point, `AppDelegate`, and the asset catalog. Nothing else belongs here.
-- `Tests/LUTzyKitTests/` — XCTest. **Fixtures are generated, never committed** (`Fixtures.swift` builds
-  `.cube` files and orientation-tagged JPEGs into a temp dir); LUTzy's real inputs are tens of MB.
+- `Sources/LumoKit/` — everything of substance (Models, ViewModels, Views). Only `ContentView` and
+  `LumoCommands` are `public`; keep the rest internal.
+- `Sources/Lumo/` — the `@main` entry point, `AppDelegate`, and the asset catalog. Nothing else belongs here.
+- `Tests/LumoKitTests/` — XCTest. **Fixtures are generated, never committed** (`Fixtures.swift` builds
+  `.cube` files and orientation-tagged JPEGs into a temp dir); Lumo's real inputs are tens of MB.
 
 When a test needs something currently `private`, widen it to internal with a comment saying why —
 `RecipeExtractor.buildCube` and `workingSize` are the precedent.
