@@ -1,6 +1,6 @@
 # CLAUDE.md — project guidance for AI agents
 
-Lumo is a native **macOS 14+** app (**Swift 6 language mode**, SwiftUI + Core Image, **zero third-party dependencies**) that applies `.cube` 3D LUTs to RAW/DNG and standard images, and can derive a `.cube` LUT from a (RAW, JPG) pair.
+Lumo is a native **macOS 14+** RAW photo editor (**Swift 6 language mode**, SwiftUI + Core Image, **zero third-party dependencies**): it develops RAW through `CIRAWFilter`, applies tone/colour adjustments and `.cube` LUTs through one Metal-backed render pipeline, and can derive a `.cube` LUT from a (RAW, JPG) pair.
 
 ## Build / run / test
 
