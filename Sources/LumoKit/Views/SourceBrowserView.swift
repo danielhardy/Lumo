@@ -20,31 +20,46 @@ struct SourceBrowserView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "folder")
-                .foregroundColor(.secondary)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(collection.sourceFolderURL?.lastPathComponent ?? "Source")
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text("\(collection.items.count) image\(collection.items.count == 1 ? "" : "s")")
-                    .font(.caption2)
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "folder")
                     .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(collection.sourceFolderURL?.lastPathComponent ?? "Source")
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text("\(collection.items.count) image\(collection.items.count == 1 ? "" : "s")")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                if collection.isScanning {
+                    ProgressView()
+                        .controlSize(.small)
+                        .help("Scanning source folder")
+                }
+                Button {
+                    viewModel.refreshSource()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .foregroundColor(.secondary)
+                .help("Rescan source folder")
+                .disabled(collection.sourceFolderURL == nil)
             }
-            Spacer()
-            Button {
-                viewModel.refreshSource()
-            } label: {
-                Image(systemName: "arrow.clockwise")
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            if let warning = collection.scanWarnings.last {
+                Text(warning.message)
+                    .font(.caption2)
+                    .foregroundColor(.orange)
+                    .lineLimit(2)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 6)
             }
-            .buttonStyle(.borderless)
-            .foregroundColor(.secondary)
-            .help("Rescan source folder")
-            .disabled(collection.sourceFolderURL == nil)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
     }
 
     // MARK: - List

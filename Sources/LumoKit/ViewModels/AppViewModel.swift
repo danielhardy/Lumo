@@ -236,6 +236,7 @@ final class AppViewModel: ObservableObject {
     private let engine: any RenderEngining
     private let previewCoordinator: PreviewCoordinator
     private var loadTask: Task<Void, Never>?
+    private var metadataTask: Task<Void, Never>?
     private var originalPreviewTask: Task<Void, Never>?
     private var previewDebounceTask: Task<Void, Never>?
     private var cancellables: [AnyCancellable] = []
@@ -382,6 +383,8 @@ final class AppViewModel: ObservableObject {
         previewCoordinator.cancel()
         isPreviewInteractionActive = false
         loadTask?.cancel()
+        metadataTask?.cancel()
+        metadata = ImageMetadata()
         originalPreviewTask?.cancel()
         previewDebounceTask?.cancel()
         capabilitiesTask?.cancel()
@@ -842,16 +845,20 @@ final class AppViewModel: ObservableObject {
 
     /// Read EXIF/TIFF/GPS metadata off the main actor and publish it.
     private func refreshMetadata(url: URL?, data: Data?) {
-        Task.detached {
-            let meta: ImageMetadata
-            if let url {
-                meta = ImageMetadata.read(from: url)
-            } else if let data {
-                meta = ImageMetadata.read(from: data)
-            } else {
-                meta = ImageMetadata()
-            }
-            await MainActor.run { self.metadata = meta }
+        let revision = sourceRevision
+        metadataTask?.cancel()
+        metadataTask = Task { [weak self] in
+            let meta = await Task.detached {
+                if let url {
+                    return ImageMetadata.read(from: url)
+                }
+                if let data {
+                    return ImageMetadata.read(from: data)
+                }
+                return ImageMetadata()
+            }.value
+            guard !Task.isCancelled, let self, self.sourceRevision == revision else { return }
+            self.metadata = meta
         }
     }
 
