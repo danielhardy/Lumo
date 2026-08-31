@@ -13,9 +13,12 @@ final class ToneCurveFilterCache {
         vec4 pixel = sample(image, samplerCoord(image));
         if (pixel.a <= 0.00001) { return pixel; }
 
-        float red = sample(curve, vec2(clamp(pixel.r / pixel.a, 0.0, 1.0) * 255.0, 0.5)).r;
-        float green = sample(curve, vec2(clamp(pixel.g / pixel.a, 0.0, 1.0) * 255.0, 0.5)).r;
-        float blue = sample(curve, vec2(clamp(pixel.b / pixel.a, 0.0, 1.0) * 255.0, 0.5)).r;
+        // +0.5 lands on the texel center (texel i spans [i, i+1)); without it every lookup
+        // interpolates between the wrong neighbouring pair, biasing output by up to half a texel.
+
+        float red = sample(curve, vec2(clamp(pixel.r / pixel.a, 0.0, 1.0) * 255.0 + 0.5, 0.5)).r;
+        float green = sample(curve, vec2(clamp(pixel.g / pixel.a, 0.0, 1.0) * 255.0 + 0.5, 0.5)).r;
+        float blue = sample(curve, vec2(clamp(pixel.b / pixel.a, 0.0, 1.0) * 255.0 + 0.5, 0.5)).r;
         return vec4(vec3(red, green, blue) * pixel.a, pixel.a);
     }
     """)
