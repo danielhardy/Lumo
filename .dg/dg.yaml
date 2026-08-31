@@ -57,4 +57,4 @@ agents:
     action_mode: safe_fixes
     completion: auto
     different_agent: warn
-    merge_on_done: true
+    merge_on_done: false
