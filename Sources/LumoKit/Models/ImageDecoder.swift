@@ -52,6 +52,12 @@ enum ImageDecoder {
 
     /// Load any supported image file as a CIImage, upright.
     static func load(from url: URL) throws -> CIImage {
+        var interval = LumoSignpostInterval(
+            .decode,
+            context: LumoTraceContext(sourceFingerprint: url.standardizedFileURL.path, quality: "open")
+        )
+        defer { interval.end() }
+
         if rawExtensions.contains(url.pathExtension.lowercased()) {
             guard let output = developRAWNeutral(at: url) else {
                 throw ImageError.cannotLoad(url.lastPathComponent)
@@ -67,6 +73,12 @@ enum ImageDecoder {
     /// Load in-memory image data (Photos imports, drag-and-drop payloads) as an
     /// upright CIImage.
     static func load(from data: Data, name: String) throws -> CIImage {
+        var interval = LumoSignpostInterval(
+            .decode,
+            context: LumoTraceContext(sourceFingerprint: "data:\(data.count)", quality: "open")
+        )
+        defer { interval.end() }
+
         guard let image = CIImage(data: data, options: orientedLoadOptions) else {
             throw ImageError.cannotLoad(name)
         }

@@ -125,11 +125,15 @@ final class ExportCoordinator: ObservableObject {
         onStatus?("Exporting...")
 
         Task { [engine, format] in
+            var interval = LumoObservability.begin(.export, source: source, quality: .export)
+            defer { interval.end() }
             do {
-                let data = try await engine.encode(
-                    source: source, document: document, lut: lut, scale: .full,
-                    format: format, quality: Self.exportQuality, space: .current
-                )
+                let data = try await engine.render(RenderRequest(
+                    source: source, document: document, lut: lut,
+                    quality: .export,
+                    output: .encoded(format: format, quality: Self.exportQuality),
+                    space: .current
+                )).data
                 try await Self.write(data, to: url)
                 self.isExporting = false
                 self.onStatus?("Exported: \(url.lastPathComponent)")
@@ -194,10 +198,14 @@ final class ExportCoordinator: ObservableObject {
                 let base = Self.exportBaseName(source: item.name, lut: lut)
                 let dest = uniqueExportURL(in: folder, base: base, ext: fmt.fileExtension)
                 do {
-                    let data = try await engine.encode(
-                        source: source, document: document, lut: lut, scale: .full,
-                        format: fmt, quality: Self.exportQuality, space: .current
-                    )
+                    var interval = LumoObservability.begin(.export, source: source, quality: .export)
+                    defer { interval.end() }
+                    let data = try await engine.render(RenderRequest(
+                        source: source, document: document, lut: lut,
+                        quality: .export,
+                        output: .encoded(format: fmt, quality: Self.exportQuality),
+                        space: .current
+                    )).data
                     try await Self.write(data, to: dest)
                     exported += 1
                 } catch {

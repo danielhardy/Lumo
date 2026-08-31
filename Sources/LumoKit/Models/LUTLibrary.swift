@@ -96,6 +96,11 @@ final class LUTLibrary: ObservableObject {
         isScanning = true
 
         scanTask = Task {
+            var interval = LumoSignpostInterval(
+                .scan,
+                context: LumoTraceContext(sourceFingerprint: folder.standardizedFileURL.path, quality: "background")
+            )
+            defer { interval.end() }
             let outcome = await Task.detached { Self.scanSync(folder) }.value
             guard !Task.isCancelled else { return }
 

@@ -122,12 +122,29 @@ struct DevelopInspectorView: View {
             } else {
                 Slider(
                     value: viewModel.developBinding(for: control),
-                    in: control.range
+                    in: control.range,
+                    onEditingChanged: { editing in
+                        if editing {
+                            viewModel.beginPreviewInteraction()
+                        } else {
+                            viewModel.endPreviewInteraction()
+                        }
+                    }
                 )
                 if control == .whiteBalance {
                     HStack {
                         Text("Tint").font(.caption2).foregroundStyle(.secondary)
-                        Slider(value: viewModel.developTintBinding(), in: DevelopControl.tintRange)
+                        Slider(
+                            value: viewModel.developTintBinding(),
+                            in: DevelopControl.tintRange,
+                            onEditingChanged: { editing in
+                                if editing {
+                                    viewModel.beginPreviewInteraction()
+                                } else {
+                                    viewModel.endPreviewInteraction()
+                                }
+                            }
+                        )
                     }
                 }
             }

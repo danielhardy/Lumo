@@ -148,9 +148,9 @@ final class ThumbnailTests: TempDirectoryTestCase {
         }
     }
 
-    /// Site two: a Photos import builds its thumbnails inline, from bytes, with no URL anywhere.
-    /// This is the site with no coverage before Step 7.
-    func testImportingFromDataAlsoProducesThumbnails() throws {
+    /// Site two: a Photos import builds its thumbnails asynchronously from bytes, with no URL
+    /// anywhere. This is the site with no coverage before Step 7.
+    func testImportingFromDataAlsoProducesThumbnails() async throws {
         let url = try Fixtures.writeJPEG(
             width: 80, height: 60, orientation: 6, named: "photo.jpg", in: tempDirectory
         )
@@ -162,7 +162,11 @@ final class ThumbnailTests: TempDirectoryTestCase {
         XCTAssertEqual(collection.items.count, 1)
         let item = try XCTUnwrap(collection.items.first)
         XCTAssertNil(item.url, "a Photos import has no URL — that is what makes it the other site")
-        let thumb = try XCTUnwrap(item.thumbnail, "the data import must produce a thumbnail too")
+        try await waitUntil("the imported thumbnail") {
+            collection.items.first?.thumbnail != nil
+        }
+        let thumb = try XCTUnwrap(collection.items.first?.thumbnail,
+                                  "the data import must produce a thumbnail too")
         XCTAssertGreaterThan(thumb.size.height, thumb.size.width,
                              "and it must be upright, like the folder path's")
         XCTAssertTrue(collection.isActive)

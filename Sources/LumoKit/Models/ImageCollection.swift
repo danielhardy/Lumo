@@ -24,10 +24,16 @@ final class ImageCollection: ObservableObject {
     @Published var sourceFolderURL: URL?
 
     private static let bookmarkKey = "imageSourceFolderBookmark"
-    private var thumbnailTask: Task<Void, Never>?
     private var scanTask: Task<Void, Never>?
+    private let scheduler: ImageWorkScheduler
+    private var thumbnailJobIDs: Set<ImageWorkScheduler.JobID> = []
+    private var thumbnailGeneration: UInt64 = 0
     /// Folder whose security scope we hold open, released when we move on.
     private var scopedURL: URL?
+
+    init(scheduler: ImageWorkScheduler = ImageWorkScheduler()) {
+        self.scheduler = scheduler
+    }
 
     deinit {
         scopedURL?.stopAccessingSecurityScopedResource()
@@ -107,13 +113,18 @@ final class ImageCollection: ObservableObject {
     /// network volume would otherwise stall the window, and this runs during
     /// app launch when a source folder is restored.
     func loadFromFolder(_ url: URL) {
-        thumbnailTask?.cancel()
+        cancelThumbnailWork()
         scanTask?.cancel()
         items = []
         selectedIndex = 0
         isActive = false
 
         scanTask = Task {
+            var interval = LumoSignpostInterval(
+                .scan,
+                context: LumoTraceContext(sourceFingerprint: url.standardizedFileURL.path, quality: "background")
+            )
+            defer { interval.end() }
             let scanned = await Task.detached { Self.scanFolder(url) }.value
             guard !Task.isCancelled else { return }
             self.items = scanned
@@ -165,17 +176,17 @@ final class ImageCollection: ObservableObject {
     /// its thumbnails inline and is easy to miss when the thumbnail path moves — which is why
     /// `docs/PHASE2_SPEC.md` §6 names both explicitly. Step 7 pointed both at `Thumbnails`.
     func addFromData(_ dataItems: [(name: String, data: Data)]) {
-        thumbnailTask?.cancel()
+        cancelThumbnailWork()
         items = []
         selectedIndex = 0
 
         var newItems: [Item] = []
         for item in dataItems {
-            let thumb = Thumbnails.generate(from: item.data)
-            newItems.append(Item(url: nil, displayName: item.name, thumbnail: thumb, imageData: item.data))
+            newItems.append(Item(url: nil, displayName: item.name, thumbnail: nil, imageData: item.data))
         }
         self.items = newItems
         self.isActive = !items.isEmpty
+        enqueueThumbnails()
     }
 
     // MARK: - Navigation
@@ -183,18 +194,29 @@ final class ImageCollection: ObservableObject {
     func selectNext() {
         guard isActive, selectedIndex < items.count - 1 else { return }
         selectedIndex += 1
+        reprioritizeThumbnails()
     }
 
     func selectPrevious() {
         guard isActive, selectedIndex > 0 else { return }
         selectedIndex -= 1
+        reprioritizeThumbnails()
+    }
+
+    /// Select an arbitrary item and move thumbnail priority to its local neighborhood. This is the
+    /// path used by taps in the filmstrip and source browser; keyboard navigation uses the methods
+    /// above so both paths apply the same policy.
+    func select(at index: Int) {
+        guard isActive, items.indices.contains(index) else { return }
+        selectedIndex = index
+        reprioritizeThumbnails()
     }
 
     /// Clear the in-session collection (e.g. when opening a one-off single
     /// image). The persisted source-folder bookmark is left intact so it still
     /// restores on next launch; only the live browsing state is dropped.
     func clear() {
-        thumbnailTask?.cancel()
+        cancelThumbnailWork()
         items = []
         selectedIndex = 0
         isActive = false
@@ -203,30 +225,127 @@ final class ImageCollection: ObservableObject {
 
     // MARK: - Thumbnail generation
 
-    /// Fill in each file-backed item's thumbnail, off the main actor.
-    ///
-    /// The detached task used to capture `ImageProcessor.shared` — a non-`Sendable` class crossing
-    /// an isolation boundary, the hazard `docs/PHASE2_SPEC.md` §2 flags. `Thumbnails` is stateless,
-    /// so only the `URL` crosses now.
+    /// Fill in each item's thumbnail through the bounded scheduler. Work is ranked around the
+    /// selected photo and the decode itself stays detached from the main actor.
     private func generateThumbnails() {
-        thumbnailTask = Task {
-            for i in items.indices {
-                guard !Task.isCancelled else { return }
-                guard items[i].thumbnail == nil, let url = items[i].url else { continue }
+        enqueueThumbnails()
+    }
 
-                // Remember which item this thumbnail belongs to: `items` can be
-                // replaced by a refresh while the decode is in flight, and an
-                // index alone would then point at a different file.
-                let itemID = items[i].id
+    private func enqueueThumbnails() {
+        thumbnailGeneration &+= 1
+        let generation = thumbnailGeneration
 
-                let thumb = await Task.detached {
-                    Thumbnails.generate(from: url)
-                }.value
-
-                guard !Task.isCancelled else { return }
-                guard let current = items.firstIndex(where: { $0.id == itemID }) else { continue }
-                items[current].thumbnail = thumb
+        for (index, item) in items.enumerated() where item.thumbnail == nil {
+            let id = thumbnailJobID(for: item)
+            guard !scheduler.contains(id) else {
+                scheduler.updatePriority(for: id, to: priority(for: index))
+                continue
             }
+            enqueueThumbnail(for: item, at: index, generation: generation)
+        }
+    }
+
+    private func reprioritizeThumbnails() {
+        let keep = Set(items.enumerated().compactMap { index, item -> ImageWorkScheduler.JobID? in
+            guard item.thumbnail == nil, distance(from: index) <= 2 else { return nil }
+            return thumbnailJobID(for: item)
+        })
+
+        let obsolete = thumbnailJobIDs.subtracting(keep)
+        scheduler.cancel(ids: obsolete)
+        thumbnailJobIDs.subtract(obsolete)
+
+        for (index, item) in items.enumerated() where item.thumbnail == nil {
+            let id = thumbnailJobID(for: item)
+            guard keep.contains(id) else { continue }
+            if scheduler.contains(id) {
+                scheduler.updatePriority(for: id, to: priority(for: index))
+            } else {
+                // The operation was dropped by the bounded queue. Re-admit only useful work after
+                // navigation; the scheduler may still drop it if the neighborhood is full.
+                enqueueThumbnail(for: item, at: index, generation: thumbnailGeneration)
+            }
+        }
+        fillThumbnailQueue()
+    }
+
+    private func enqueueThumbnail(
+        for item: Item, at index: Int, generation: UInt64
+    ) {
+        let id = thumbnailJobID(for: item)
+        let url = item.url
+        let data = item.imageData
+        let itemID = item.id
+        scheduler.enqueue(id: id, lane: .thumbnail, priority: priority(for: index)) { [weak self] in
+            let thumbnail: NSImage?
+            if let url {
+                thumbnail = await Task.detached { Thumbnails.generate(from: url) }.value
+            } else if let data {
+                thumbnail = await Task.detached { Thumbnails.generate(from: data) }.value
+            } else {
+                thumbnail = nil
+            }
+            guard !Task.isCancelled else { return }
+            self?.applyThumbnail(thumbnail, itemID: itemID, generation: generation)
+        }
+        if scheduler.contains(id) {
+            thumbnailJobIDs.insert(id)
+        }
+    }
+
+    private func applyThumbnail(_ thumbnail: NSImage?, itemID: UUID, generation: UInt64) {
+        guard generation == thumbnailGeneration,
+              let index = items.firstIndex(where: { $0.id == itemID }) else { return }
+        thumbnailJobIDs.remove(thumbnailJobID(for: items[index]))
+        items[index].thumbnail = thumbnail
+        fillThumbnailQueue()
+    }
+
+    /// Admit the next useful work after a worker finishes. The scan can discover thousands of files,
+    /// but only the bounded scheduler queue is ever populated at once. Candidates are ordered by
+    /// the same neighborhood policy used for navigation so a replenishment cannot push adjacent
+    /// photos behind folder tail work.
+    private func fillThumbnailQueue() {
+        let candidates = items.indices
+            .filter { items[$0].thumbnail == nil }
+            .sorted {
+                let lhs = priority(for: $0)
+                let rhs = priority(for: $1)
+                if lhs != rhs { return lhs.rawValue < rhs.rawValue }
+                return distance(from: $0) < distance(from: $1)
+            }
+
+        for index in candidates {
+            guard scheduler.canQueueThumbnail else { return }
+            let item = items[index]
+            let id = thumbnailJobID(for: item)
+            guard !scheduler.contains(id) else { continue }
+            enqueueThumbnail(for: item, at: index, generation: thumbnailGeneration)
+        }
+    }
+
+    private func cancelThumbnailWork() {
+        thumbnailGeneration &+= 1
+        scheduler.cancel(ids: thumbnailJobIDs)
+        thumbnailJobIDs.removeAll()
+    }
+
+    private func thumbnailJobID(for item: Item) -> ImageWorkScheduler.JobID {
+        if let url = item.url {
+            return ImageWorkScheduler.JobID("thumbnail:url:\(url.standardizedFileURL.path)")
+        }
+        return ImageWorkScheduler.JobID("thumbnail:item:\(item.id.uuidString)")
+    }
+
+    private func distance(from index: Int) -> Int {
+        abs(index - selectedIndex)
+    }
+
+    private func priority(for index: Int) -> ImageWorkScheduler.Priority {
+        switch distance(from: index) {
+        case 0...2: return .adjacentFilmstrip
+        case 3...12: return .visibleGrid
+        default: return .background
         }
     }
 }

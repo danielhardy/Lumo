@@ -22,6 +22,9 @@ import CoreImage
 /// whole type, so `LUTFilterCacheTests` verifies it rather than trusting it.
 final class LUTFilterCache {
 
+    private(set) var hitCount = 0
+    private(set) var missCount = 0
+
     /// How many filters to keep. Small on purpose: at 4.4 MB for a 65³ cube, an unbounded cache over a
     /// browsed library of a hundred looks would pin hundreds of MB for filters the user has moved past.
     /// Eight covers A/B-ing a handful of looks, which is the access pattern that actually repeats.
@@ -48,12 +51,19 @@ final class LUTFilterCache {
     /// already treats as a failure. A `nil` is not cached — a transient failure should not poison the
     /// entry for the rest of the session.
     func filter(for lut: CubeLUT, space: WorkingSpace = .current) -> CIFilter? {
+        var interval = LumoObservability.begin(.cache, quality: .preview)
+        defer { interval.end() }
+
         let key = Key(lut: lut.lutID, space: space)
 
         if let cached = filters[key] {
+            hitCount += 1
+            LumoObservability.event(.cacheHit, quality: .preview, detail: "layer=lutFilter")
             touch(key)
             return cached
         }
+        missCount += 1
+        LumoObservability.event(.cacheMiss, quality: .preview, detail: "layer=lutFilter")
         guard let made = lut.makeFilter(space: space) else { return nil }
 
         filters[key] = made
@@ -71,6 +81,13 @@ final class LUTFilterCache {
 
     /// How many filters are currently held. Exists for the tests that pin the eviction policy.
     var count: Int { filters.count }
+
+    var statistics: CacheStatistics {
+        CacheStatistics(
+            hits: hitCount, misses: missCount, evictions: 0,
+            count: filters.count, costBytes: 0
+        )
+    }
 
     private func touch(_ key: Key) {
         if let index = usage.firstIndex(of: key) {
