@@ -2,20 +2,26 @@
 id: LUMO-022
 title: Implement rating, pick/reject, filters, and keyboard culling
 type: task
-status: ready
+status: claimed
 priority: high
 labels:
   - mvp
   - epic:library
   - phase:3
 created: 2026-08-30T18:30:24.444Z
-updated: 2026-08-31T14:24:19.367Z
+updated: 2026-08-31T18:22:01.868Z
 depends_on:
   - LUMO-021
   - LUMO-008
 estimate: 5
 order: y
 board: product
+claim:
+  actor: codex
+  session: 01MTHKF5AJ048OEGAO
+  claimed_at: 2026-08-31T18:22:01.867Z
+  expires_at: 2026-08-31T19:22:01.867Z
+  model: gpt-5.6-luna
 ---
 
 ## Objective
