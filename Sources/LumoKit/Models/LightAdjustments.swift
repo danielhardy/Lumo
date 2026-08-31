@@ -128,9 +128,8 @@ struct LightToneCurve: Codable, Equatable, Sendable {
 /// Photographer-facing global Light controls.
 ///
 /// These values are intentionally independent of Core Image parameter units. Exposure is in EV;
-/// the remaining sliders use the familiar -100...100 photographic scale. The renderer maps the
-/// subset supported by the inherited adjustment nodes to those nodes; endpoint and curve controls
-/// are rendered by dedicated GPU-backed stages.
+/// the remaining sliders use the familiar -100...100 photographic scale. The renderer maps these
+/// controls to dedicated GPU-backed stages.
 struct LightAdjustments: Codable, Equatable, Sendable {
     static let neutral = LightAdjustments()
 
@@ -184,25 +183,6 @@ struct LightAdjustments: Codable, Equatable, Sendable {
     var isIdentity: Bool {
         exposure == 0 && contrast == 0 && highlights == 0 && shadows == 0 &&
             whites == 0 && blacks == 0 && toneCurve.isIdentity
-    }
-
-    /// Compatibility representation for callers that need the pre-refinement node values.
-    ///
-    /// `RenderPipeline` now uses a native EV node plus one tonal `CIToneCurve` for contrast,
-    /// highlights, and shadows. This property remains available for migration/diagnostic code, but
-    /// is deliberately not the render implementation: the individual inherited nodes are too broad
-    /// for the photographer-facing Light behavior.
-    var existingNodeRepresentation: [AdjustmentNode] {
-        var nodes: [AdjustmentNode] = []
-        if exposure != 0 { nodes.append(.exposure(ev: exposure)) }
-        if contrast != 0 {
-            nodes.append(.colorControls(brightness: 0, contrast: 1 + contrast / 100, saturation: 1))
-        }
-        if highlights != 0 || shadows != 0 {
-            let highlightAmount = min(max(1 + highlights / 100, 0.3), 2)
-            nodes.append(.highlightShadow(highlights: highlightAmount, shadows: shadows / 100))
-        }
-        return nodes
     }
 
     private static func clamp(_ value: Double, to range: ClosedRange<Double>, default fallback: Double) -> Double {
