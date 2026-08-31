@@ -2,7 +2,7 @@
 id: LUMO-011
 title: Epic 2 — Render orchestration, caching, and observability
 type: feature
-status: backlog
+status: done
 priority: urgent
 labels:
   - mvp
@@ -10,15 +10,17 @@ labels:
   - epic:rendering
   - phase:2
 created: 2026-08-30T18:30:20.810Z
-updated: 2026-08-30T18:31:54.630Z
+updated: 2026-08-31T14:19:09.177Z
 depends_on:
   - LUMO-012
   - LUMO-013
   - LUMO-014
   - LUMO-015
   - LUMO-016
-order: 7x4bipx3
+order: a0
 board: product
+commits:
+  - ee28124
 ---
 
 ## Objective
@@ -47,6 +49,12 @@ The dependency graph is authoritative. This epic is a tracking issue and depends
 
 Do not expand into the concept's explicitly excluded V2 features. Avoid a giant rewrite or broad file-moving exercise.
 
+### Comment — codex @ 2026-08-31T14:19:03.262Z
+
+Implemented Epic 2 in commits 1c57516 and ee28124. Integrated explicit RenderRequest/RenderResult quality tiers, cancellation and coalescing through PreviewCoordinator, bounded render/developed-source/thumbnail caches with complete keys and memory-pressure handling, priority-aware thumbnail scheduling with backpressure and adjacent-photo reprioritization, and OSLog signposts/metrics with an Instruments capture guide. Verification: swift test passed (332 executed, 20 expected skips, 0 failures); swift build -c release passed; git diff --check passed; dg validate passed with only the known model/context warnings.
+
 ## Agent log
 
 <!-- Generated summaries only. Detailed activity lives in events.jsonl. -->
+
+- 2026-08-31T14:19:09.175Z: Epic 2 render orchestration shipped with unified quality-tier requests, coalesced cancellation, bounded caches, priority-aware thumbnail scheduling, and end-to-end signposts/metrics. Full tests and release build pass.

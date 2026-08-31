@@ -50,6 +50,16 @@ falls back to the `DG_ACTOR` environment variable, then the issue's active claim
 - Verification agents continue in the same working tree using the project Git mode; on pass they may complete to `done` after appending a structured report.
 - Push or open a PR only when a human asks or project policy clearly allows it (`git.mode` is manual and `auto_commit` is off by default).
 
+## Implementation handoff termination
+
+After the implementation is complete, verified, and committed:
+
+1. Add the required completion comment.
+2. Transition the issue to `review` using the documented DispatchGraph command.
+3. Stop immediately after the handoff succeeds.
+
+Do not inspect or modify DispatchGraph lifecycle bookkeeping after handoff. In particular, do not inspect events or verifier activity, reconcile or repair board state, commit lifecycle changes, run additional status checks, or attempt to advance the issue beyond `review`. DispatchGraph owns all subsequent lifecycle transitions.
+
 ## Context
 
 Each issue may declare `context.files`, `context.docs`, `context.issues`, and `context.commands`.
