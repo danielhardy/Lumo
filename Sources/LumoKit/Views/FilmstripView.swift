@@ -9,7 +9,8 @@ struct FilmstripView: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 8) {
-                    ForEach(Array(collection.items.enumerated()), id: \.element.id) { index, item in
+                    ForEach(collection.filteredIndices, id: \.self) { index in
+                        let item = collection.items[index]
                         FilmstripThumbnail(
                             item: item,
                             isSelected: index == collection.selectedIndex

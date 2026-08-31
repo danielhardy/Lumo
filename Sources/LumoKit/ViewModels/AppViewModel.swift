@@ -545,6 +545,32 @@ final class AppViewModel: ObservableObject {
         collection.select(at: index, modifiers: modifiers)
     }
 
+    /// Apply a culling flag to the focused library asset. Pick/reject use the rapid-cull workflow
+    /// and move to the next visible asset; rating changes stay on the current photo.
+    @discardableResult
+    func setFocusedFlag(_ flag: PhotoFlag, advance: Bool = false) -> Bool {
+        let name = collection.selectedItem?.displayName
+        let changed = collection.setFlag(flag, advance: advance)
+        if changed, let name {
+            statusMessage = "\(name): \(flag == .pick ? "Picked" : flag == .reject ? "Rejected" : "Flag cleared")"
+        }
+        return changed
+    }
+
+    @discardableResult
+    func setFocusedRating(_ rating: Int) -> Bool {
+        let changed = collection.setRating(rating)
+        if changed, let item = collection.selectedItem {
+            statusMessage = "\(item.displayName): \(rating == 0 ? "Rating cleared" : "Rated \(rating) stars")"
+        }
+        return changed
+    }
+
+    @discardableResult
+    func undoCullingChange() -> Bool {
+        collection.undoLastCullingChange()
+    }
+
     /// Enter the editor for the grid's active photo. Thumbnail availability is not a prerequisite;
     /// `openImage` starts the existing asynchronous RAW load immediately.
     func openActiveCollectionImage() {

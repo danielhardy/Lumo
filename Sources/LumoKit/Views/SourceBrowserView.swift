@@ -29,7 +29,11 @@ struct SourceBrowserView: View {
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text("\(collection.items.count) image\(collection.items.count == 1 ? "" : "s")")
+                        Text(
+                            collection.filter.isFiltered
+                                ? "\(collection.filteredItemCount) of \(collection.items.count) images"
+                                : "\(collection.items.count) image\(collection.items.count == 1 ? "" : "s")"
+                        )
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -136,7 +140,8 @@ struct SourceBrowserView: View {
     private var groups: [Group] {
         var order: [String] = []
         var buckets: [String: [(Int, ImageCollection.Item)]] = [:]
-        for (i, item) in collection.items.enumerated() {
+        for i in collection.filteredIndices {
+            let item = collection.items[i]
             if buckets[item.subfolder] == nil { order.append(item.subfolder) }
             buckets[item.subfolder, default: []].append((i, item))
         }

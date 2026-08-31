@@ -71,11 +71,30 @@ final class ImageCollection: ObservableObject {
     @Published var isActive: Bool = false
     @Published var isScanning: Bool = false
     @Published private(set) var scanWarnings: [ScanWarning] = []
+    @Published private(set) var filter = LibraryFilter.all
     /// The persistent source folder, if one is set (nil for Photos imports or
     /// one-off single-image opens).
     @Published var sourceFolderURL: URL?
 
     private static let bookmarkKey = "imageSourceFolderBookmark"
+    private static let cullingStateKey = "imageLibraryCullingState"
+    private struct PersistedCullingState: Codable, Equatable {
+        let rating: Int
+        let flag: PhotoFlag
+
+        var libraryState: PhotoAssetLibraryState {
+            PhotoAssetLibraryState(rating: rating, flag: flag)
+        }
+    }
+
+    private let defaults: UserDefaults
+    private var persistedCullingStates: [String: PersistedCullingState]
+    private struct CullingChange {
+        let itemID: PhotoAssetID
+        let oldState: PhotoAssetLibraryState
+        let activeIDBefore: PhotoAssetID?
+    }
+    private var cullingUndoStack: [CullingChange] = []
     private var scanTask: Task<Void, Never>?
     private var scanGeneration: UInt64 = 0
     private var metadataTask: Task<Void, Never>?
@@ -91,8 +110,18 @@ final class ImageCollection: ObservableObject {
     /// Folder whose security scope we hold open, released when we move on.
     private var scopedURL: URL?
 
-    init(scheduler: ImageWorkScheduler = ImageWorkScheduler()) {
+    init(
+        scheduler: ImageWorkScheduler = ImageWorkScheduler(),
+        defaults: UserDefaults = .standard
+    ) {
         self.scheduler = scheduler
+        self.defaults = defaults
+        if let data = defaults.data(forKey: Self.cullingStateKey),
+           let states = try? JSONDecoder().decode([String: PersistedCullingState].self, from: data) {
+            self.persistedCullingStates = states
+        } else {
+            self.persistedCullingStates = [:]
+        }
     }
 
     deinit {
@@ -104,6 +133,82 @@ final class ImageCollection: ObservableObject {
     var selectedItem: Item? {
         guard isActive, items.indices.contains(selectedIndex) else { return nil }
         return items[selectedIndex]
+    }
+
+    var filteredItems: [Item] {
+        items.filter { filter.matches(flag: $0.asset.flag, rating: $0.asset.rating) }
+    }
+
+    var filteredIndices: [Int] {
+        items.indices.filter { index in
+            filter.matches(flag: items[index].asset.flag, rating: items[index].asset.rating)
+        }
+    }
+
+    var filteredItemCount: Int { filteredIndices.count }
+
+    func setFilter(_ filter: LibraryFilter) {
+        guard self.filter != filter else { return }
+        self.filter = filter
+        reconcileFilteredSelection()
+    }
+
+    func clearFilter() {
+        setFilter(.all)
+    }
+
+    /// Set the focused asset's flag. Pick/reject keyboard workflows advance to the next visible
+    /// asset; callers can opt out for a toolbar or programmatic edit.
+    @discardableResult
+    func setFlag(_ flag: PhotoFlag, for id: PhotoAssetID? = nil, advance shouldAdvance: Bool = false) -> Bool {
+        guard let itemID = id ?? selectedItem?.id,
+              let index = items.firstIndex(where: { $0.id == itemID }) else { return false }
+        let oldState = items[index].asset.libraryState
+        guard oldState.flag != flag else {
+            if shouldAdvance { advance(from: index) }
+            return false
+        }
+        recordCullingChange(itemID: itemID, oldState: oldState)
+        items[index].asset.flag = flag
+        persistCullingState(for: items[index].asset)
+        if shouldAdvance { advance(from: index) }
+        if !filteredIndices.contains(selectedIndex) { reconcileFilteredSelection() }
+        return true
+    }
+
+    /// Set the focused asset's star rating without advancing the browsing focus.
+    @discardableResult
+    func setRating(_ rating: Int, for id: PhotoAssetID? = nil) -> Bool {
+        guard let itemID = id ?? selectedItem?.id,
+              let index = items.firstIndex(where: { $0.id == itemID }) else { return false }
+        let clamped = min(max(rating, 0), 5)
+        let oldState = items[index].asset.libraryState
+        guard oldState.rating != clamped else { return false }
+        recordCullingChange(itemID: itemID, oldState: oldState)
+        items[index].asset.rating = clamped
+        persistCullingState(for: items[index].asset)
+        if !filteredIndices.contains(selectedIndex) { reconcileFilteredSelection() }
+        return true
+    }
+
+    var canUndoCulling: Bool { !cullingUndoStack.isEmpty }
+
+    @discardableResult
+    func undoLastCullingChange() -> Bool {
+        guard let change = cullingUndoStack.popLast(),
+              let index = items.firstIndex(where: { $0.id == change.itemID }) else { return false }
+        items[index].asset.libraryState = change.oldState
+        persistCullingState(for: items[index].asset)
+        if let activeID = change.activeIDBefore,
+           filteredIndices.contains(where: { items[$0].id == activeID }) {
+            var next = selection
+            next.focus(activeID, in: items.map(\.id))
+            selection = next
+            syncSelectedIndex()
+        } else {
+            reconcileFilteredSelection()
+        }
+        return true
     }
 
     // MARK: - Source folder
@@ -216,7 +321,9 @@ final class ImageCollection: ObservableObject {
                     for discovery in discoveries {
                         let path = discovery.url.standardizedFileURL.path
                         let item = knownItems[path] ?? Item(
-                            asset: PhotoAsset(url: discovery.url, filename: discovery.displayName),
+                            asset: restoredCullingState(
+                                for: PhotoAsset(url: discovery.url, filename: discovery.displayName)
+                            ),
                             thumbnail: nil,
                             metadata: nil,
                             subfolder: discovery.subfolder
@@ -452,7 +559,7 @@ final class ImageCollection: ObservableObject {
         var newItems: [Item] = []
         for item in dataItems {
             newItems.append(Item(
-                asset: PhotoAsset(data: item.data, filename: item.name),
+                asset: restoredCullingState(for: PhotoAsset(data: item.data, filename: item.name)),
                 metadata: nil
             ))
         }
@@ -515,29 +622,31 @@ final class ImageCollection: ObservableObject {
 
     func selectAll() {
         var next = selection
-        next.selectAll(in: items.map(\.id))
+        next.selectAll(in: filteredItems.map(\.id))
         selection = next
         syncSelectedIndex()
         reprioritizeThumbnails()
     }
 
     func select(at index: Int, modifiers: LibrarySelectionModel.Modifiers = []) {
-        guard isActive, items.indices.contains(index) else { return }
+        guard isActive, items.indices.contains(index), filter.matches(
+            flag: items[index].asset.flag, rating: items[index].asset.rating
+        ) else { return }
         var next = selection
-        next.click(items[index].id, in: items.map(\.id), modifiers: modifiers)
+        next.click(items[index].id, in: filteredItems.map(\.id), modifiers: modifiers)
         selection = next
         syncSelectedIndex()
         reprioritizeThumbnails()
     }
 
     func selectNext() {
-        guard isActive, selectedIndex < items.count - 1 else { return }
-        select(at: selectedIndex + 1)
+        guard let nextIndex = filteredIndices.first(where: { $0 > selectedIndex }) else { return }
+        select(at: nextIndex)
     }
 
     func selectPrevious() {
-        guard isActive, selectedIndex > 0 else { return }
-        select(at: selectedIndex - 1)
+        guard let previousIndex = filteredIndices.last(where: { $0 < selectedIndex }) else { return }
+        select(at: previousIndex)
     }
 
     /// Select an arbitrary item and move thumbnail priority to its local neighborhood. This is the
@@ -716,6 +825,52 @@ final class ImageCollection: ObservableObject {
         }
         selection = next
         syncSelectedIndex()
+    }
+
+    private func reconcileFilteredSelection() {
+        let visible = filteredIndices
+        guard let firstVisible = visible.first else {
+            // Preserve the selection and active asset for when the filter is cleared. An empty
+            // result has no visible navigation target, but it must not erase culling state.
+            return
+        }
+        guard !visible.contains(selectedIndex) else { return }
+        var next = selection
+        next.focus(items[firstVisible].id, in: items.map(\.id))
+        selection = next
+        syncSelectedIndex()
+        reprioritizeThumbnails()
+    }
+
+    private func advance(from index: Int) {
+        guard let nextIndex = filteredIndices.first(where: { $0 > index }) else { return }
+        select(at: nextIndex)
+    }
+
+    private func recordCullingChange(itemID: PhotoAssetID, oldState: PhotoAssetLibraryState) {
+        cullingUndoStack.append(CullingChange(
+            itemID: itemID,
+            oldState: oldState,
+            activeIDBefore: selection.activeID
+        ))
+        // Keep a useful bounded history for long culling sessions.
+        if cullingUndoStack.count > 100 { cullingUndoStack.removeFirst() }
+    }
+
+    private func persistCullingState(for asset: PhotoAsset) {
+        persistedCullingStates[asset.id.raw] = PersistedCullingState(
+            rating: asset.rating,
+            flag: asset.flag
+        )
+        guard let data = try? JSONEncoder().encode(persistedCullingStates) else { return }
+        defaults.set(data, forKey: Self.cullingStateKey)
+    }
+
+    private func restoredCullingState(for asset: PhotoAsset) -> PhotoAsset {
+        guard let persisted = persistedCullingStates[asset.id.raw] else { return asset }
+        var restored = asset
+        restored.libraryState = persisted.libraryState
+        return restored
     }
 
     private func syncSelectedIndex() {

@@ -94,6 +94,11 @@ final class KeyMonitor {
                 vm.collection.selectAll()
                 return nil
             }
+            if isDown,
+               event.charactersIgnoringModifiers?.lowercased() == "z",
+               vm.undoCullingChange() {
+                return nil
+            }
             return event
         }
 
@@ -142,6 +147,21 @@ final class KeyMonitor {
         // Character keys (key-down only)
         guard isDown, let chars = event.charactersIgnoringModifiers?.lowercased() else {
             return event
+        }
+        if let command = LibraryCullingCommand.parse(
+            characters: chars, hasModifiers: !mods.isEmpty
+        ) {
+            switch command {
+            case .pick:
+                vm.setFocusedFlag(.pick, advance: true)
+            case .reject:
+                vm.setFocusedFlag(.reject, advance: true)
+            case .clearRating:
+                vm.setFocusedRating(0)
+            case .rating(let rating):
+                vm.setFocusedRating(rating)
+            }
+            return nil
         }
         switch chars {
         case "v":

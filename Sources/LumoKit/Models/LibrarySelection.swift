@@ -79,6 +79,19 @@ struct LibrarySelectionModel: Equatable, Sendable {
         }
     }
 
+    /// Make an item the keyboard focus while retaining any multi-selection that is still useful.
+    /// This is used when a filter hides the previous active item; hidden selected IDs remain in the
+    /// model and are not confused with culling state.
+    mutating func focus(_ id: PhotoAssetID, in orderedIDs: [PhotoAssetID]) {
+        guard orderedIDs.contains(id) else { return }
+        if !selectedIDs.contains(id) {
+            selectedIDs.insert(id)
+            selectionOrder.append(id)
+        }
+        activeID = id
+        anchorID = id
+    }
+
     mutating func clear() {
         selectedIDs.removeAll()
         selectionOrder.removeAll()

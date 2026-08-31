@@ -21,6 +21,8 @@ struct StatusBar: View {
                 KeyHint(key: "↑↓", label: "cycle LUTs")
                 if viewModel.collection.isActive {
                     KeyHint(key: "←→", label: "cycle images")
+                    KeyHint(key: "P/X", label: "pick/reject")
+                    KeyHint(key: "0–5", label: "rate")
                 }
                 KeyHint(key: "V", label: viewModel.isSideBySide ? "single view" : "side-by-side")
                 KeyHint(key: "Space", label: "compare")
