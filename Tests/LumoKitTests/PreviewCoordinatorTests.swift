@@ -38,7 +38,7 @@ final class PreviewCoordinatorTests: XCTestCase {
         await fake.releaseNext()
         try await waitUntil("the settled publication") { publications.count == 1 }
         XCTAssertEqual(publications.first?.phase, .settled)
-        XCTAssertEqual(publications.first?.result.quality, .preview)
+        XCTAssertEqual(publications.first?.request.quality, .preview)
         XCTAssertEqual(publications.first?.request.document.rawDevelop.exposure, 0.5)
     }
 

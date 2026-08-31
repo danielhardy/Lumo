@@ -1,6 +1,5 @@
 import Foundation
 import CoreGraphics
-import ImageIO
 
 /// Coordinates the display render, which has a different lifecycle from the render actor.
 ///
@@ -19,7 +18,6 @@ final class PreviewCoordinator {
 
     struct Publication {
         let request: RenderRequest
-        let result: RenderResult
         let image: CGImage?
         let revision: UInt64
         let phase: Phase
@@ -172,31 +170,16 @@ final class PreviewCoordinator {
         phase: Phase,
         engine: any RenderEngining
     ) async {
-        do {
-            let result = try await engine.render(request)
-            guard !Task.isCancelled else { return }
-
-            // RenderResult deliberately carries Sendable bytes. ImageIO decode is still work, so it
-            // is detached from the main actor before NSImage/UI state is touched by the handler.
-            var decodeInterval = LumoSignpostInterval(
-                .decode, context: LumoTraceContext(source: request.source, quality: request.quality)
-            )
-            let image = await Task.detached {
-                PreviewImageDecoder.decode(result.data)
-            }.value
-            decodeInterval.end()
-
-            guard !Task.isCancelled, isCurrent(token) else { return }
-            onPublication?(Publication(
-                request: request, result: result, image: image,
-                revision: token.revision, phase: phase
-            ))
-        } catch is CancellationError {
-            // Superseded interactive work is expected and intentionally silent.
-        } catch {
-            guard !Task.isCancelled, isCurrent(token) else { return }
+        let image = await engine.makeCGImage(request)
+        guard !Task.isCancelled, isCurrent(token) else { return }
+        guard let image else {
             onFailure?(request)
+            return
         }
+        onPublication?(Publication(
+            request: request, image: image,
+            revision: token.revision, phase: phase
+        ))
     }
 
     private func isCurrent(_ token: Token) -> Bool {
@@ -213,14 +196,5 @@ final class PreviewCoordinator {
             output: .raster,
             space: request.space
         )
-    }
-}
-
-/// Decode display bytes away from the main actor. The result is consumed immediately by a
-/// main-actor publication handler and is never retained as app state across actor boundaries.
-enum PreviewImageDecoder {
-    nonisolated static func decode(_ data: Data) -> sending CGImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 }

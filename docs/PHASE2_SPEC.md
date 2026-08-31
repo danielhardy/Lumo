@@ -246,9 +246,13 @@ onto the `CubeLUT`.
 die inside it. Only `Sendable` values cross in (`RenderRequest`, `EditDocument`, `ImageSource`,
 `WorkingSpace`, `RenderQuality`, `URL`/`Data`); a `RenderResult` with bytes and metadata crosses out.
 
-`CGImage` is **not** `Sendable` (verified, Swift 6.3), so it is decoded from raster result bytes only
-after the renderer boundary, on the main actor that owns the UI image. This keeps the render API free
-of AppKit/SwiftUI and preserves the zero-`@unchecked` promise.
+`CGImage` is **not** `Sendable` (verified, Swift 6.3). `RenderResult` still carries only `Sendable`
+bytes, decoded on the caller's side of the renderer boundary, for export and any other client that
+only implements `render`. The interactive/live-preview path is the one exception: `RenderEngining`
+also exposes `makeCGImage(_ request:) -> sending CGImage?`, which the actor overrides to build the
+`CGImage` from the still actor-local `CIContext` and hand it out as the one explicitly `sending`
+value, skipping a PNG encode+decode round trip on every debounced edit tick. Either way this keeps
+the render API free of AppKit/SwiftUI and preserves the zero-`@unchecked` promise.
 
 ✅ **Step 7 did this.** `ImageProcessor` is gone. GPU duties moved to the actor; the format vocabulary
 (`rawExtensions`/`supportedExtensions`/`supportedTypes`), `orientedLoadOptions`, `developRAWNeutral`

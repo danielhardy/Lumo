@@ -767,14 +767,10 @@ final class AppViewModel: ObservableObject {
         let documentRevision = self.documentRevision
 
         originalPreviewTask = Task { [engine] in
-            let result = try? await engine.render(RenderRequest(
+            let cgImage = await engine.makeCGImage(RenderRequest(
                 source: imageSource, document: baseline, lut: nil,
                 targetSize: box, quality: .preview, output: .raster, space: .current
             ))
-            guard !Task.isCancelled, let result else { return }
-            let cgImage = await Task.detached {
-                PreviewImageDecoder.decode(result.data)
-            }.value
             guard !Task.isCancelled,
                   sourceRevision == self.sourceRevision,
                   documentRevision == self.documentRevision,

@@ -17,6 +17,13 @@ protocol RenderEngining: Sendable {
     /// Render one UI-independent request through the deterministic pipeline.
     func render(_ request: RenderRequest) async throws -> RenderResult
 
+    /// Produce a display image for a request without changing the Sendable render-result boundary.
+    ///
+    /// The default keeps conformers that only implement `render` source-compatible. The real
+    /// engine overrides this with an actor-local `CIContext.createCGImage` path so interactive
+    /// preview frames do not pay for an encoded PNG that is immediately decoded again.
+    func makeCGImage(_ request: RenderRequest) async -> sending CGImage?
+
     /// Tally `document` over `source` into a 256-bin per-channel histogram.
     ///
     /// On the protocol rather than left to the caller because tallying needs a rasterizer, and the
@@ -55,6 +62,15 @@ protocol RenderEngining: Sendable {
 }
 
 extension RenderEngining {
+    func makeCGImage(_ request: RenderRequest) async -> sending CGImage? {
+        guard request.output == .raster,
+              let result = try? await render(request),
+              let imageSource = CGImageSourceCreateWithData(result.data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil)
+        else { return nil }
+        return image
+    }
+
     func makeCGImage(
         source: ImageSource,
         document: EditDocument,
@@ -68,11 +84,7 @@ extension RenderEngining {
             quality: scale == .full ? .fullResolution : .preview,
             output: .raster, space: space
         )
-        guard let result = try? await render(request),
-              let imageSource = CGImageSourceCreateWithData(result.data as CFData, nil),
-              let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil)
-        else { return nil }
-        return image
+        return await makeCGImage(request)
     }
 
     func encode(
@@ -162,6 +174,32 @@ actor RenderEngine: RenderEngining {
     }
 
     // MARK: - Rendering
+
+    /// Fast display-only rasterization. `CGImage` is created while the Core Image graph and context
+    /// are still actor-local, then transferred to the UI as the one explicitly `sending` value.
+    /// Keeping this accessor separate means `RenderResult` remains a small, UI-independent,
+    /// Sendable value for exports and other renderer clients.
+    func makeCGImage(_ request: RenderRequest) async -> sending CGImage? {
+        guard request.output == .raster, !Task.isCancelled else { return nil }
+
+        var interval = LumoObservability.begin(
+            .render, source: request.source, quality: request.quality
+        )
+        defer { interval.end() }
+
+        let image = buildImage(
+            request.source, request.document, request.lut, request.renderScale, request.space
+        )
+        guard let image,
+              image.extent.isRasterizable,
+              !Task.isCancelled
+        else { return nil }
+
+        let rect = image.extent.integral
+        return context.createCGImage(
+            image, from: rect, format: .RGBA8, colorSpace: request.space.cgColorSpace
+        )
+    }
 
     func render(_ request: RenderRequest) async throws -> RenderResult {
         var interval = LumoObservability.begin(
