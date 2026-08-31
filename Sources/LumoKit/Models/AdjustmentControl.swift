@@ -88,6 +88,16 @@ enum AdjustmentControl: String, Sendable, CaseIterable, Hashable {
     case tint
     case vibrance
 
+    /// Temperature and tint are the white-balance pair. RAW images expose that pair through
+    /// `CIRAWFilter`; standard images use the post-render `CITemperatureAndTint` node instead.
+    var isWhiteBalance: Bool {
+        switch self {
+        case .temperature, .tint: return true
+        case .exposure, .brightness, .contrast, .saturation, .highlights, .shadows, .vibrance:
+            return false
+        }
+    }
+
     var slot: AdjustmentSlot {
         switch self {
         case .exposure: return .exposure

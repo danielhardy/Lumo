@@ -7,6 +7,13 @@ import SwiftUI
 /// contract be tested without a view model, an engine or a GPU — see `AdjustmentControlTests`.
 extension AppViewModel {
 
+    /// The adjustment inspector's white-balance fallback is for standard images only. A RAW's
+    /// temperature and tint are shown in Develop and are sent to `CIRAWFilter`, so the same image
+    /// cannot accidentally offer two competing white-balance stages.
+    var visibleAdjustmentControls: [AdjustmentControl] {
+        AdjustmentControl.allCases.filter { !sourceIsRAW || !$0.isWhiteBalance }
+    }
+
     /// What a row should display, in **slider space**.
     ///
     /// **Reading never writes**, the same property `developBinding(for:)` has: an absent node reads

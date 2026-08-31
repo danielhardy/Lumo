@@ -989,9 +989,12 @@ final class AppViewModel: ObservableObject {
         rawCapabilities = nil
 
         guard let imageSource else { return }
+        let revision = sourceRevision
         capabilitiesTask = Task { [engine] in
             let capabilities = await engine.rawCapabilities(for: imageSource)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled,
+                  revision == self.sourceRevision,
+                  self.imageSource == imageSource else { return }
             self.rawCapabilities = capabilities
         }
     }

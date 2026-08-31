@@ -229,11 +229,11 @@ struct RAWCapabilities: Sendable, Equatable {
         }
     }
 
-    /// The controls to draw, in panel order.
+    /// The supported controls, in panel order.
     ///
-    /// An unsupported control is **omitted, not disabled**: a greyed-out slider invites the user to
-    /// wonder what they did wrong, where absence reads correctly as "this camera's decoder does not
-    /// do that".
+    /// This remains useful to callers that need the enabled subset. The inspector deliberately draws
+    /// `DevelopControl.allCases` and disables the unsupported rows, so a camera limitation is visible
+    /// and explicit rather than looking like a missing application control.
     var availableControls: [DevelopControl] {
         DevelopControl.allCases.filter(supports)
     }

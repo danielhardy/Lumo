@@ -441,7 +441,8 @@ actor RenderEngine: RenderEngining {
     ) -> CIImage? {
         guard let developed = developedSource(source, document.rawDevelop, scale) else { return nil }
         return RenderPipeline.buildImage(
-            developed: developed, document: document, lut: lut, space: space, lutCache: lutCache
+            developed: developed, document: document, lut: lut, space: space, lutCache: lutCache,
+            includePostRenderWhiteBalance: source.kind == .standard
         )
     }
 

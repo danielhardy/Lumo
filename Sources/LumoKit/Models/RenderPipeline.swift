@@ -58,7 +58,8 @@ enum RenderPipeline {
             return nil
         }
         return buildImage(
-            developed: developed, document: document, lut: lut, space: space, lutCache: lutCache
+            developed: developed, document: document, lut: lut, space: space, lutCache: lutCache,
+            includePostRenderWhiteBalance: source.kind == .standard
         )
     }
 
@@ -76,10 +77,14 @@ enum RenderPipeline {
         document: EditDocument,
         lut: CubeLUT?,
         space: WorkingSpace = .current,
-        lutCache: LUTFilterCache? = nil
+        lutCache: LUTFilterCache? = nil,
+        includePostRenderWhiteBalance: Bool = true
     ) -> CIImage {
         let lightAdjusted = applyLight(document.light, to: developed)
-        let adjusted = applyAdjustments(document.adjustments, to: lightAdjusted)
+        let adjustmentNodes = includePostRenderWhiteBalance
+            ? document.adjustments
+            : document.adjustments.filter { $0.slot != .temperatureTint }
+        let adjusted = applyAdjustments(adjustmentNodes, to: lightAdjusted)
         return applyLUT(document.lut, lut: lut, to: adjusted, space: space, cache: lutCache)
     }
 

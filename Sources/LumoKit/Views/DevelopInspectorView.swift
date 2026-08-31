@@ -4,8 +4,9 @@ import SwiftUI
 ///
 /// The control list is not written out here — it comes from `RAWCapabilities.availableControls`, so
 /// which knobs appear is a value the tests can assert rather than a shape buried in a `ViewBuilder`.
-/// An unsupported adjustment is **absent**, not greyed out: absence reads as "this camera's decoder
-/// does not do that", where a disabled slider reads as "you did something wrong".
+/// An unsupported adjustment remains visible but disabled: the user can distinguish a camera
+/// limitation from a control that is missing from the product, without being offered a control that
+/// the decoder would silently ignore.
 ///
 /// **Three states, and the middle one is why this switches on `developPanelState`.** This used to be
 /// `if let capabilities = viewModel.rawCapabilities { … } else { notRAW }`, which read the probe's
@@ -24,8 +25,8 @@ struct DevelopInspectorView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         header
-                        ForEach(capabilities.availableControls, id: \.self) { control in
-                            controlRow(control)
+                        ForEach(DevelopControl.allCases, id: \.self) { control in
+                            controlRow(control, enabled: capabilities.supports(control))
                         }
                     }
                     .padding(16)
@@ -93,7 +94,7 @@ struct DevelopInspectorView: View {
     }
 
     @ViewBuilder
-    private func controlRow(_ control: DevelopControl) -> some View {
+    private func controlRow(_ control: DevelopControl, enabled: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(control.title).font(.caption).foregroundStyle(.secondary)
@@ -104,13 +105,19 @@ struct DevelopInspectorView: View {
                         .foregroundStyle(.secondary)
                 }
                 Button {
-                    viewModel.resetDevelop(control)
+                    if control == .whiteBalance {
+                        viewModel.resetWhiteBalance()
+                    } else {
+                        viewModel.resetDevelop(control)
+                    }
                 } label: {
                     Image(systemName: "arrow.uturn.backward")
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.mini)
-                .help("Reset to the decoder's default")
+                .help(control == .whiteBalance
+                    ? "Use the file's As Shot white balance"
+                    : "Reset to the decoder's default")
             }
 
             if control.isToggle {
@@ -133,6 +140,9 @@ struct DevelopInspectorView: View {
                 )
                 if control == .whiteBalance {
                     HStack {
+                        Button("As Shot") { viewModel.resetWhiteBalance() }
+                            .buttonStyle(.link)
+                            .help("Restore this file's decoder white balance")
                         Text("Tint").font(.caption2).foregroundStyle(.secondary)
                         Slider(
                             value: viewModel.developTintBinding(),
@@ -149,5 +159,8 @@ struct DevelopInspectorView: View {
                 }
             }
         }
+        .opacity(enabled ? 1 : 0.55)
+        .disabled(!enabled)
+        .help(enabled ? "" : "Not supported by this RAW decoder")
     }
 }

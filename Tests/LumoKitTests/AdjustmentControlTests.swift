@@ -5,6 +5,13 @@ import XCTest
 /// runs on CI, which has none of those.
 final class AdjustmentControlTests: XCTestCase {
 
+    func testTemperatureAndTintAreTheWhiteBalancePair() {
+        XCTAssertTrue(AdjustmentControl.temperature.isWhiteBalance)
+        XCTAssertTrue(AdjustmentControl.tint.isWhiteBalance)
+        XCTAssertFalse(AdjustmentControl.exposure.isWhiteBalance)
+        XCTAssertFalse(AdjustmentControl.vibrance.isWhiteBalance)
+    }
+
     /// Every slot's neutral node must actually be an identity node — the base a write is applied to,
     /// and the value a read falls through to. The per-control half of this claim needs `value(in:)`
     /// and so lives in Task 4's `testEveryControlsNeutralMatchesTheNodesIdentity`.

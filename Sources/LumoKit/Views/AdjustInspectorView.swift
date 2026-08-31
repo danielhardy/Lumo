@@ -5,12 +5,12 @@ import SwiftUI
 /// **One state, where `DevelopInspectorView` has three.** That asymmetry is the honest one: Develop's
 /// three states exist because *the file* answers a question — is there a decode stage, and has the
 /// capability probe landed yet — and here there is no question to ask. Adjustments are applied to an
-/// already-developed image, so they mean the same thing for a RAW and a JPEG, and no row is ever
-/// absent or gated.
+/// already-developed image. Temperature/tint are the standard-image fallback; RAWs use the decoder
+/// controls in Develop instead, so those two rows are intentionally absent from this panel for RAW.
 ///
-/// Nine rows over five `AdjustmentNode` cases, one row per parameter. The list is not written out
-/// here — it comes from `AdjustmentControl.allCases`, so which rows appear and in what order is a
-/// value the tests can assert rather than a shape buried in a `ViewBuilder`.
+/// Nine rows over five `AdjustmentNode` cases, one row per parameter for standard images. RAW images
+/// omit the post-render white-balance pair because Develop owns that pair in `CIRAWFilter`; this
+/// keeps one user-facing white-balance control from silently becoming two stacked color casts.
 struct AdjustInspectorView: View {
     @ObservedObject var viewModel: AppViewModel
 
@@ -18,7 +18,7 @@ struct AdjustInspectorView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header
-                ForEach(AdjustmentControl.allCases, id: \.self) { control in
+                ForEach(viewModel.visibleAdjustmentControls, id: \.self) { control in
                     controlRow(control)
                 }
             }

@@ -750,6 +750,80 @@ final class DevelopInspectorTests: TempDirectoryTestCase {
                       "resetting the only edited control must return the document to neutral")
     }
 
+    /// As Shot is a decoder reset, not merely a UI readout. A legacy post-render WB node must not
+    /// survive it, or the RAW would still be color-cast after its `CIRAWFilter` seed is restored.
+    func testAsShotClearsRAWOverridesAndLegacyPostRenderWhiteBalance() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("capabilities") { viewModel.rawCapabilities != nil }
+
+        viewModel.updateDocument { document in
+            document.rawDevelop.neutralTemperature = 3200
+            document.rawDevelop.neutralTint = 40
+            document.adjustments = [
+                .temperatureTint(temp: 3200, tint: 40),
+                .exposure(ev: 0.5),
+            ]
+        }
+
+        viewModel.resetDevelop(.whiteBalance)
+
+        XCTAssertNil(viewModel.document.rawDevelop.neutralTemperature)
+        XCTAssertNil(viewModel.document.rawDevelop.neutralTint)
+        XCTAssertEqual(viewModel.document.adjustments, [.exposure(ev: 0.5)])
+    }
+
+    /// End-to-end RAW coverage: clearing the override must expose the *current file's* decoder seed,
+    /// not a fixed D65 value. The repository intentionally keeps the camera fixture local, so this
+    /// is a RAW-environment gate like the existing CIRAW direction tests.
+    func testAsShotRestoresTheActualRAWDecoderSeed() async throws {
+        guard let rawURL = Fixtures.localRAWURL else {
+            throw XCTSkip("no local RAW; see Fixtures.localRAWURL")
+        }
+        let viewModel = AppViewModel(engine: RenderEngine())
+        viewModel.openImage(url: rawURL)
+        try await waitUntil("RAW image") { viewModel.sourceImage != nil }
+        try await waitUntil("RAW capabilities") { viewModel.rawCapabilities != nil }
+        let seed = try XCTUnwrap(viewModel.rawCapabilities)
+
+        viewModel.developBinding(for: .whiteBalance).wrappedValue = 3200
+        viewModel.developTintBinding().wrappedValue = -40
+        viewModel.resetWhiteBalance()
+
+        XCTAssertNil(viewModel.document.rawDevelop.neutralTemperature)
+        XCTAssertNil(viewModel.document.rawDevelop.neutralTint)
+        XCTAssertEqual(viewModel.developBinding(for: .whiteBalance).wrappedValue,
+                       seed.asShotTemperature, accuracy: 0.01)
+        XCTAssertEqual(viewModel.developTintBinding().wrappedValue,
+                       seed.asShotTint, accuracy: 0.01)
+    }
+
+    /// Edit state is keyed by the asset, not by the last decoder seed. This exercises the same
+    /// direct-open path used when a user steps through two different files without requiring a
+    /// licensed RAW fixture in CI.
+    func testWhiteBalanceOverridesDoNotTravelBetweenPhotoAssets() async throws {
+        let first = try Fixtures.writeGradientPNG(width: 32, height: 24, named: "first.png", in: tempDirectory)
+        let second = try Fixtures.writeGradientPNG(width: 32, height: 24, named: "second.png", in: tempDirectory)
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+
+        viewModel.openImage(url: first)
+        try await waitUntil("first image") { viewModel.sourceName == "first.png" }
+        viewModel.updateDocument { $0.rawDevelop.neutralTemperature = 3200 }
+
+        viewModel.openImage(url: second)
+        try await waitUntil("second image") { viewModel.sourceName == "second.png" }
+        XCTAssertNil(viewModel.document.rawDevelop.neutralTemperature,
+                     "the second asset must start from its own As Shot baseline")
+
+        viewModel.updateDocument { $0.rawDevelop.neutralTemperature = 9000 }
+        viewModel.openImage(url: first)
+        try await waitUntil("first image again") { viewModel.sourceName == "first.png" }
+        XCTAssertEqual(viewModel.document.rawDevelop.neutralTemperature, 3200,
+                       "returning to the first asset must restore its own white-balance edit")
+    }
+
     /// Reset per control, one at a time, across the whole enum: each returns to neutral on its own.
     /// The single-control test above only exercises `.exposure`, so a `resetDevelop` arm that cleared
     /// the wrong field would survive it.

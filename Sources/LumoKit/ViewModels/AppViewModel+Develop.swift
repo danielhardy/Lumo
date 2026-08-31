@@ -132,6 +132,10 @@ extension AppViewModel {
             case .whiteBalance:
                 document.rawDevelop.neutralTemperature = nil
                 document.rawDevelop.neutralTint = nil
+                // Older sessions could have obtained white balance from the Adjust panel before
+                // the RAW-aware workflow was unified. As Shot must restore the decoder baseline,
+                // not leave a post-render temperature/tint cast stacked on top of it.
+                document.adjustments.removeAll { $0.slot == .temperatureTint }
             case .sharpness: document.rawDevelop.sharpnessAmount = nil
             case .contrast: document.rawDevelop.contrastAmount = nil
             case .detail: document.rawDevelop.detailAmount = nil
@@ -144,6 +148,19 @@ extension AppViewModel {
             case .extendedDynamicRange: document.rawDevelop.extendedDynamicRangeAmount = nil
             case .highlightRecovery: document.rawDevelop.highlightRecoveryEnabled = nil
             }
+        }
+    }
+
+    /// Restore the file-specific decoder white balance. `nil` is intentional: it tells
+    /// `CIRAWFilter` to use this RAW's own as-shot metadata rather than copying the current seed
+    /// into the document. Standard images have no decoder baseline, so their fallback remains the
+    /// Adjust panel's post-render neutral state.
+    func resetWhiteBalance() {
+        if sourceIsRAW {
+            resetDevelop(.whiteBalance)
+        } else {
+            resetAdjustment(.temperature)
+            resetAdjustment(.tint)
         }
     }
 

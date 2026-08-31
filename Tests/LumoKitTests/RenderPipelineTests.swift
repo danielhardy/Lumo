@@ -528,6 +528,45 @@ final class RenderPipelineTests: TempDirectoryTestCase {
         XCTAssertLessThan(cool.r, cool.b, "above 6500 K should cool it — see PHASE2_SPEC §8.7")
     }
 
+    /// The source-aware render path reserves the post-render temperature/tint node for standard
+    /// images. This direct graph test keeps the rule testable without requiring a RAW fixture.
+    func testRAWRenderingCanIgnoreLegacyPostRenderWhiteBalance() throws {
+        let developed = try decodedSource()
+        let document = EditDocument(adjustments: [.temperatureTint(temp: 3200, tint: 80)])
+
+        let withoutWhiteBalance = RenderPipeline.buildImage(
+            developed: developed,
+            document: document,
+            lut: nil,
+            includePostRenderWhiteBalance: false
+        )
+        let neutral = RenderPipeline.buildImage(
+            developed: developed,
+            document: EditDocument(),
+            lut: nil,
+            includePostRenderWhiteBalance: false
+        )
+
+        assertPixelsEqual(
+            try Pixels.bytes(of: withoutWhiteBalance),
+            try Pixels.bytes(of: neutral),
+            "a RAW render must not apply a legacy post-render white-balance node"
+        )
+    }
+
+    /// Standard images have no RAW decoder, so the same user-facing white-balance intent is carried
+    /// by the post-render node. This is the fallback paired with the RAW-domain path above.
+    func testStandardRenderingUsesThePostRenderWhiteBalanceFallback() throws {
+        let document = EditDocument(adjustments: [.temperatureTint(temp: 3200, tint: 0)])
+        let adjusted = try build(document)
+        let neutral = try build(EditDocument())
+
+        XCTAssertNotEqual(
+            try Pixels.bytes(of: adjusted), try Pixels.bytes(of: neutral),
+            "standard white balance must use the post-render fallback"
+        )
+    }
+
     func testDuplicateNodesStack() throws {
         let once = try Pixels.bytes(of: try build(EditDocument(adjustments: [.exposure(ev: 0.5)])))
         let twice = try Pixels.bytes(of: try build(
