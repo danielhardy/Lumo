@@ -67,6 +67,7 @@ final class ImageCollection: ObservableObject {
 
     @Published var items: [Item] = []
     @Published var selectedIndex: Int = 0
+    @Published private(set) var selection = LibrarySelectionModel()
     @Published var isActive: Bool = false
     @Published var isScanning: Bool = false
     @Published private(set) var scanWarnings: [ScanWarning] = []
@@ -82,6 +83,11 @@ final class ImageCollection: ObservableObject {
     private let scheduler: ImageWorkScheduler
     private var thumbnailJobIDs: Set<ImageWorkScheduler.JobID> = []
     private var thumbnailGeneration: UInt64 = 0
+    /// Grid cells opt into this mode when they appear. The fallback mode keeps the inherited
+    /// filmstrip/source-browser behavior, while the grid admits only its visible/prefetched cells.
+    private var isThumbnailDemandDriven = false
+    private var thumbnailDemandIDs: Set<PhotoAssetID> = []
+    private var thumbnailDemandPriorities: [PhotoAssetID: ImageWorkScheduler.Priority] = [:]
     /// Folder whose security scope we hold open, released when we move on.
     private var scopedURL: URL?
 
@@ -183,6 +189,9 @@ final class ImageCollection: ObservableObject {
         stopMetadataLoading()
         items = []
         selectedIndex = 0
+        selection.clear()
+        thumbnailDemandIDs.removeAll()
+        thumbnailDemandPriorities.removeAll()
         isActive = false
         isScanning = true
         scanWarnings = []
@@ -222,6 +231,7 @@ final class ImageCollection: ObservableObject {
                     // Sorting the accumulated prefix on every batch keeps the final ordering
                     // deterministic while still making the first useful rows visible immediately.
                     self.items.sort(by: Self.itemPrecedes)
+                    self.reconcileSelection()
                     self.isActive = !self.items.isEmpty
                     self.generateThumbnails()
                     // Let SwiftUI and cancellation run between batches even on a fast local disk.
@@ -403,6 +413,7 @@ final class ImageCollection: ObservableObject {
             scheduler.cancel(id: thumbnailJobID(for: item))
             thumbnailJobIDs.remove(thumbnailJobID(for: item))
             items.remove(at: index)
+            reconcileSelection()
             selectedIndex = min(selectedIndex, max(0, items.count - 1))
             isActive = !items.isEmpty
         }
@@ -430,6 +441,10 @@ final class ImageCollection: ObservableObject {
         stopMetadataLoading()
         items = []
         selectedIndex = 0
+        selection.clear()
+        isThumbnailDemandDriven = false
+        thumbnailDemandIDs.removeAll()
+        thumbnailDemandPriorities.removeAll()
         isScanning = false
         scanWarnings = []
         startMetadataLoading()
@@ -442,6 +457,7 @@ final class ImageCollection: ObservableObject {
             ))
         }
         self.items = newItems
+        reconcileSelection()
         self.isActive = !items.isEmpty
         for item in newItems { enqueueMetadata(for: item, generation: generation) }
         metadataContinuation?.finish()
@@ -451,25 +467,84 @@ final class ImageCollection: ObservableObject {
 
     // MARK: - Navigation
 
+    /// Begin viewport-driven thumbnail admission for the library grid. Existing completed
+    /// thumbnails are retained, while queued work is cancelled so a scan of a large folder cannot
+    /// continue filling memory with cells the user has not seen.
+    func beginThumbnailDemand() {
+        guard !isThumbnailDemandDriven else { return }
+        isThumbnailDemandDriven = true
+        cancelThumbnailWork()
+        fillThumbnailQueue()
+    }
+
+    /// Request the thumbnail for a cell that SwiftUI has materialized. LazyVGrid's own small
+    /// prefetch window means this naturally covers visible and near-visible cells only.
+    func requestThumbnail(
+        for id: PhotoAssetID,
+        priority: ImageWorkScheduler.Priority = .visibleGrid
+    ) {
+        guard isThumbnailDemandDriven,
+              let index = items.firstIndex(where: { $0.id == id }),
+              items[index].thumbnail == nil else { return }
+        thumbnailDemandIDs.insert(id)
+        thumbnailDemandPriorities[id] = priority
+        let jobID = thumbnailJobID(for: items[index])
+        if !scheduler.contains(jobID) {
+            enqueueThumbnail(
+                for: items[index], at: index, generation: thumbnailGeneration, priority: priority
+            )
+        } else {
+            scheduler.updatePriority(for: jobID, to: priority)
+        }
+    }
+
+    /// Release a cell that has left the grid's materialized window. A finished thumbnail is kept
+    /// as a cheap cache in the item; only in-flight work is cancelled.
+    func releaseThumbnail(for id: PhotoAssetID) {
+        guard isThumbnailDemandDriven else { return }
+        thumbnailDemandIDs.remove(id)
+        thumbnailDemandPriorities.removeValue(forKey: id)
+        guard let index = items.firstIndex(where: { $0.id == id }), items[index].thumbnail == nil else {
+            return
+        }
+        let jobID = thumbnailJobID(for: items[index])
+        scheduler.cancel(id: jobID)
+        thumbnailJobIDs.remove(jobID)
+        items[index].asset.thumbnailState = .notRequested
+    }
+
+    func selectAll() {
+        var next = selection
+        next.selectAll(in: items.map(\.id))
+        selection = next
+        syncSelectedIndex()
+        reprioritizeThumbnails()
+    }
+
+    func select(at index: Int, modifiers: LibrarySelectionModel.Modifiers = []) {
+        guard isActive, items.indices.contains(index) else { return }
+        var next = selection
+        next.click(items[index].id, in: items.map(\.id), modifiers: modifiers)
+        selection = next
+        syncSelectedIndex()
+        reprioritizeThumbnails()
+    }
+
     func selectNext() {
         guard isActive, selectedIndex < items.count - 1 else { return }
-        selectedIndex += 1
-        reprioritizeThumbnails()
+        select(at: selectedIndex + 1)
     }
 
     func selectPrevious() {
         guard isActive, selectedIndex > 0 else { return }
-        selectedIndex -= 1
-        reprioritizeThumbnails()
+        select(at: selectedIndex - 1)
     }
 
     /// Select an arbitrary item and move thumbnail priority to its local neighborhood. This is the
     /// path used by taps in the filmstrip and source browser; keyboard navigation uses the methods
     /// above so both paths apply the same policy.
     func select(at index: Int) {
-        guard isActive, items.indices.contains(index) else { return }
-        selectedIndex = index
-        reprioritizeThumbnails()
+        select(at: index, modifiers: [])
     }
 
     /// Clear the in-session collection (e.g. when opening a one-off single
@@ -483,6 +558,10 @@ final class ImageCollection: ObservableObject {
         stopMetadataLoading()
         items = []
         selectedIndex = 0
+        selection.clear()
+        isThumbnailDemandDriven = false
+        thumbnailDemandIDs.removeAll()
+        thumbnailDemandPriorities.removeAll()
         isActive = false
         isScanning = false
         scanWarnings = []
@@ -500,6 +579,11 @@ final class ImageCollection: ObservableObject {
     private func enqueueThumbnails() {
         let generation = thumbnailGeneration
 
+        if isThumbnailDemandDriven {
+            fillThumbnailQueue()
+            return
+        }
+
         for (index, item) in items.enumerated() where item.thumbnail == nil {
             let id = thumbnailJobID(for: item)
             guard !scheduler.contains(id) else {
@@ -511,10 +595,18 @@ final class ImageCollection: ObservableObject {
     }
 
     private func reprioritizeThumbnails() {
-        let keep = Set(items.enumerated().compactMap { index, item -> ImageWorkScheduler.JobID? in
-            guard item.thumbnail == nil, distance(from: index) <= 2 else { return nil }
-            return thumbnailJobID(for: item)
-        })
+        let keep: Set<ImageWorkScheduler.JobID>
+        if isThumbnailDemandDriven {
+            keep = Set(items.compactMap { item in
+                thumbnailDemandIDs.contains(item.id) && item.thumbnail == nil
+                    ? thumbnailJobID(for: item) : nil
+            })
+        } else {
+            keep = Set(items.enumerated().compactMap { index, item -> ImageWorkScheduler.JobID? in
+                guard item.thumbnail == nil, distance(from: index) <= 2 else { return nil }
+                return thumbnailJobID(for: item)
+            })
+        }
 
         let obsolete = thumbnailJobIDs.subtracting(keep)
         scheduler.cancel(ids: obsolete)
@@ -524,24 +616,33 @@ final class ImageCollection: ObservableObject {
             let id = thumbnailJobID(for: item)
             guard keep.contains(id) else { continue }
             if scheduler.contains(id) {
-                scheduler.updatePriority(for: id, to: priority(for: index))
+                scheduler.updatePriority(
+                    for: id, to: priority(for: index, requested: thumbnailDemandPriorities[item.id])
+                )
             } else {
                 // The operation was dropped by the bounded queue. Re-admit only useful work after
                 // navigation; the scheduler may still drop it if the neighborhood is full.
-                enqueueThumbnail(for: item, at: index, generation: thumbnailGeneration)
+                enqueueThumbnail(
+                    for: item, at: index, generation: thumbnailGeneration,
+                    priority: thumbnailDemandPriorities[item.id]
+                )
             }
         }
         fillThumbnailQueue()
     }
 
     private func enqueueThumbnail(
-        for item: Item, at index: Int, generation: UInt64
+        for item: Item, at index: Int, generation: UInt64,
+        priority requestedPriority: ImageWorkScheduler.Priority? = nil
     ) {
         let id = thumbnailJobID(for: item)
         let url = item.url
         let data = item.imageData
         let itemID = item.id
-        scheduler.enqueue(id: id, lane: .thumbnail, priority: priority(for: index)) { [weak self] in
+        scheduler.enqueue(
+            id: id, lane: .thumbnail,
+            priority: priority(for: index, requested: requestedPriority)
+        ) { [weak self] in
             let thumbnail: NSImage?
             if let url {
                 thumbnail = await Task.detached { Thumbnails.generate(from: url) }.value
@@ -574,7 +675,10 @@ final class ImageCollection: ObservableObject {
     /// photos behind folder tail work.
     private func fillThumbnailQueue() {
         let candidates = items.indices
-            .filter { items[$0].thumbnail == nil }
+            .filter {
+                items[$0].thumbnail == nil
+                    && (!isThumbnailDemandDriven || thumbnailDemandIDs.contains(items[$0].id))
+            }
             .sorted {
                 let lhs = priority(for: $0)
                 let rhs = priority(for: $1)
@@ -587,7 +691,10 @@ final class ImageCollection: ObservableObject {
             let item = items[index]
             let id = thumbnailJobID(for: item)
             guard !scheduler.contains(id) else { continue }
-            enqueueThumbnail(for: item, at: index, generation: thumbnailGeneration)
+            enqueueThumbnail(
+                for: item, at: index, generation: thumbnailGeneration,
+                priority: thumbnailDemandPriorities[item.id]
+            )
         }
     }
 
@@ -595,6 +702,27 @@ final class ImageCollection: ObservableObject {
         thumbnailGeneration &+= 1
         scheduler.cancel(ids: thumbnailJobIDs)
         thumbnailJobIDs.removeAll()
+    }
+
+    private func reconcileSelection() {
+        var next = selection
+        let ids = items.map(\.id)
+        if next.isEmpty, let first = ids.first {
+            next.click(first, in: ids)
+        } else {
+            next.reconcile(with: ids)
+        }
+        selection = next
+        syncSelectedIndex()
+    }
+
+    private func syncSelectedIndex() {
+        guard let activeID = selection.activeID,
+              let index = items.firstIndex(where: { $0.id == activeID }) else {
+            if items.isEmpty { selectedIndex = 0 }
+            return
+        }
+        selectedIndex = index
     }
 
     private func thumbnailJobID(for item: Item) -> ImageWorkScheduler.JobID {
@@ -608,7 +736,11 @@ final class ImageCollection: ObservableObject {
         abs(index - selectedIndex)
     }
 
-    private func priority(for index: Int) -> ImageWorkScheduler.Priority {
+    private func priority(
+        for index: Int,
+        requested requestedPriority: ImageWorkScheduler.Priority? = nil
+    ) -> ImageWorkScheduler.Priority {
+        if let requestedPriority { return requestedPriority }
         switch distance(from: index) {
         case 0...2: return .adjacentFilmstrip
         case 3...12: return .visibleGrid

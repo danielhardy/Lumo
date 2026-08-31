@@ -196,6 +196,8 @@ final class AppViewModel: ObservableObject {
     }
     /// Source-folder file browser panel visibility.
     @Published var isSourceBrowserPresented: Bool = false
+    /// Whether the source collection is being browsed as the virtualized library grid.
+    @Published var isLibraryGridPresented: Bool = false
     /// EXIF/TIFF/GPS metadata of the loaded image, read at load time.
     @Published var metadata: ImageMetadata = ImageMetadata()
     /// Histogram of the currently displayed image (graded result, or original
@@ -283,6 +285,8 @@ final class AppViewModel: ObservableObject {
         // window paints immediately and fills in as the scans land.
         if collection.restoreSourceFolder() {
             isSourceBrowserPresented = true
+            isLibraryGridPresented = true
+            collection.beginThumbnailDemand()
             openFirstImageWhenScanned()
         }
     }
@@ -500,11 +504,19 @@ final class AppViewModel: ObservableObject {
     func openSourceFolder(url: URL) {
         collection.setSourceFolder(url)
         isSourceBrowserPresented = true
+        isLibraryGridPresented = true
+        collection.beginThumbnailDemand()
         openFirstImageWhenScanned()
     }
 
     func toggleSourceBrowser() {
         isSourceBrowserPresented.toggle()
+    }
+
+    func toggleLibraryGrid() {
+        guard collection.isActive else { return }
+        isLibraryGridPresented.toggle()
+        if isLibraryGridPresented { collection.beginThumbnailDemand() }
     }
 
     /// Re-scan the current source folder for added/removed files.
@@ -517,6 +529,27 @@ final class AppViewModel: ObservableObject {
         collection.select(at: index)
         let item = collection.items[index]
 
+        if let url = item.url {
+            openImage(url: url)
+        } else if let data = item.imageData {
+            openImage(data: data, name: item.displayName)
+        }
+    }
+
+    /// Select a grid cell without leaving the grid. This is what makes a multi-selection useful:
+    /// Command-click and Shift-click change the batch while the active photo remains explicit.
+    func selectLibraryItem(
+        at index: Int,
+        modifiers: LibrarySelectionModel.Modifiers = []
+    ) {
+        collection.select(at: index, modifiers: modifiers)
+    }
+
+    /// Enter the editor for the grid's active photo. Thumbnail availability is not a prerequisite;
+    /// `openImage` starts the existing asynchronous RAW load immediately.
+    func openActiveCollectionImage() {
+        guard let item = collection.selectedItem else { return }
+        isLibraryGridPresented = false
         if let url = item.url {
             openImage(url: url)
         } else if let data = item.imageData {

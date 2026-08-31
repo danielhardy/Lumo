@@ -103,6 +103,12 @@ struct SourceBrowserView: View {
                 )
             }
             .buttonStyle(.plain)
+            .onAppear {
+                collection.requestThumbnail(for: entry.item.id)
+            }
+            .onDisappear {
+                collection.releaseThumbnail(for: entry.item.id)
+            }
             .id(entry.item.id)
             .listRowBackground(
                 entry.index == collection.selectedIndex

@@ -82,11 +82,20 @@ final class KeyMonitor {
         // the first responder.
         if NSApp.keyWindow?.firstResponder is NSText { return event }
 
-        // Don't consume Command-modified events — those belong to the menu bar.
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if mods.contains(.command) { return event }
-
         let isDown = event.type == .keyDown
+
+        // Command-A is the one grid command handled here; other Command-modified events belong to
+        // the menu bar.
+        if mods.contains(.command) {
+            if isDown,
+               vm.isLibraryGridPresented,
+               event.charactersIgnoringModifiers?.lowercased() == "a" {
+                vm.collection.selectAll()
+                return nil
+            }
+            return event
+        }
 
         // Hardware key codes (US layout independent for arrows/space).
         // ↑/↓ cycle LUTs; ←/→ step through the source files.
@@ -102,12 +111,30 @@ final class KeyMonitor {
             return nil
         case 123: // Left arrow — previous image
             guard vm.collection.isActive else { return event }
-            if isDown { vm.selectPreviousImage() }
+            if isDown {
+                if vm.isLibraryGridPresented {
+                    vm.collection.selectPrevious()
+                } else {
+                    vm.selectPreviousImage()
+                }
+            }
             return nil
         case 124: // Right arrow — next image
             guard vm.collection.isActive else { return event }
-            if isDown { vm.selectNextImage() }
+            if isDown {
+                if vm.isLibraryGridPresented {
+                    vm.collection.selectNext()
+                } else {
+                    vm.selectNextImage()
+                }
+            }
             return nil
+        case 36: // Return — open the active grid item in Edit
+            if isDown, vm.isLibraryGridPresented {
+                vm.openActiveCollectionImage()
+                return nil
+            }
+            return event
         default:
             break
         }
@@ -122,11 +149,19 @@ final class KeyMonitor {
             return nil
         case "[":
             guard vm.collection.isActive else { return event }
-            vm.selectPreviousImage()
+            if vm.isLibraryGridPresented {
+                vm.collection.selectPrevious()
+            } else {
+                vm.selectPreviousImage()
+            }
             return nil
         case "]":
             guard vm.collection.isActive else { return event }
-            vm.selectNextImage()
+            if vm.isLibraryGridPresented {
+                vm.collection.selectNext()
+            } else {
+                vm.selectNextImage()
+            }
             return nil
         default:
             return event

@@ -15,6 +15,14 @@ struct FilmstripView: View {
                             isSelected: index == collection.selectedIndex
                         )
                         .id(item.id)
+                        .onAppear {
+                            collection.requestThumbnail(
+                                for: item.id, priority: .adjacentFilmstrip
+                            )
+                        }
+                        .onDisappear {
+                            collection.releaseThumbnail(for: item.id)
+                        }
                         .onTapGesture {
                             onSelect(index)
                         }

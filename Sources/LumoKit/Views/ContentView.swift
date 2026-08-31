@@ -80,27 +80,39 @@ public struct ContentView: View {
     }
 
     private var detailContent: some View {
-        HStack(spacing: 0) {
-            if viewModel.isSourceBrowserPresented && !viewModel.collection.items.isEmpty {
-                SourceBrowserView(viewModel: viewModel)
-                    .frame(width: 240)
-                    .transition(.move(edge: .leading).combined(with: .opacity))
-                Divider()
-            }
-
-            VStack(spacing: 0) {
-                PreviewView(viewModel: viewModel)
-
-                if viewModel.collection.isActive {
-                    Divider()
-                    FilmstripView(collection: viewModel.collection) { index in
-                        viewModel.selectCollectionImage(at: index)
-                    }
-                    .frame(height: 100)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+        Group {
+            if viewModel.isLibraryGridPresented && viewModel.collection.isActive {
+                VStack(spacing: 0) {
+                    LibraryGridView(
+                        collection: viewModel.collection,
+                        onOpen: viewModel.openActiveCollectionImage
+                    )
+                    StatusBar(viewModel: viewModel)
                 }
+            } else {
+                HStack(spacing: 0) {
+                    if viewModel.isSourceBrowserPresented && !viewModel.collection.items.isEmpty {
+                        SourceBrowserView(viewModel: viewModel)
+                            .frame(width: 240)
+                            .transition(.move(edge: .leading).combined(with: .opacity))
+                        Divider()
+                    }
 
-                StatusBar(viewModel: viewModel)
+                    VStack(spacing: 0) {
+                        PreviewView(viewModel: viewModel)
+
+                        if viewModel.collection.isActive {
+                            Divider()
+                            FilmstripView(collection: viewModel.collection) { index in
+                                viewModel.selectCollectionImage(at: index)
+                            }
+                            .frame(height: 100)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
+
+                        StatusBar(viewModel: viewModel)
+                    }
+                }
             }
         }
         .animation(.easeInOut(duration: 0.25), value: viewModel.collection.isActive)
@@ -132,6 +144,14 @@ public struct ContentView: View {
         .help("Toggle side-by-side comparison (V)")
 
         // Source folder browser
+        Button {
+            viewModel.toggleLibraryGrid()
+        } label: {
+            Label("Library", systemImage: "square.grid.2x2")
+        }
+        .help("Show the virtualized photo library grid")
+        .disabled(viewModel.collection.items.isEmpty)
+
         Button {
             viewModel.toggleSourceBrowser()
         } label: {
