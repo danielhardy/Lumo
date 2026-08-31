@@ -286,7 +286,7 @@ struct PhotoAsset: Identifiable, Codable, Hashable, Sendable, Equatable {
     let source: PhotoAssetSource
     let filename: String
     let fileType: String
-    let metadata: PhotoAssetMetadata
+    private(set) var metadata: PhotoAssetMetadata
     var libraryState: PhotoAssetLibraryState
 
     var id: PhotoAssetID { source.id }
@@ -311,6 +311,11 @@ struct PhotoAsset: Identifiable, Codable, Hashable, Sendable, Equatable {
     var thumbnailState: PhotoThumbnailState {
         get { libraryState.thumbnail }
         set { libraryState.thumbnail = newValue }
+    }
+
+    /// Complete the value snapshot after deferred ImageIO discovery has finished.
+    mutating func updateMetadata(from imageMetadata: ImageMetadata) {
+        metadata = PhotoAssetMetadata(imageMetadata: imageMetadata)
     }
 
     init(
