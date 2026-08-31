@@ -22,31 +22,42 @@ struct EditDocument: Codable, Sendable, Equatable {
     /// Only meaningful for a RAW source; ignored for standard images, which have no develop stage.
     var rawDevelop: RAWDevelopSettings = .neutral
 
+    /// Photographer-facing global tone controls. Missing from an older document means neutral.
+    var light: LightAdjustments = .neutral
+
     /// Ordered tone/colour stages. Order matters and duplicates are allowed — see `AdjustmentNode`.
     var adjustments: [AdjustmentNode] = []
 
     /// Which LUT, at what strength.
     var lut: LUTSettings = .none
 
-    /// The version this build writes.
+    /// Adding `light` is an additive v1 migration: older documents have no key and retain their
+    /// original ordered adjustment nodes. A schema bump is reserved for a format that requires
+    /// rewriting those nodes, which could change a user's existing look.
     static let currentVersion = 1
 
     init(
         version: Int = EditDocument.currentVersion,
         rawDevelop: RAWDevelopSettings = .neutral,
+        light: LightAdjustments = .neutral,
         adjustments: [AdjustmentNode] = [],
         lut: LUTSettings = .none
     ) {
         self.version = version
         self.rawDevelop = rawDevelop
+        self.light = light
         self.adjustments = adjustments
         self.lut = lut
     }
 
     /// True when this document would leave the source untouched.
     var isIdentity: Bool {
-        rawDevelop.isNeutral && adjustments.allSatisfy(\.isIdentity) && lut.isIdentity
+        rawDevelop.isNeutral && light.isIdentity && adjustments.allSatisfy(\.isIdentity) && lut.isIdentity
     }
+
+    /// Stable SHA-256 identity for caches, undo diagnostics, and persistence comparisons.
+    /// `RenderCacheHash` uses sorted JSON keys, so this does not depend on dictionary iteration order.
+    var editHash: String { RenderCacheHash.digest(self) }
 
     /// What "the original" means for A/B comparison: **develop applied, nothing else**.
     ///
@@ -69,7 +80,7 @@ struct EditDocument: Codable, Sendable, Equatable {
     // MARK: - Codable
 
     enum CodingKeys: String, CodingKey {
-        case version, rawDevelop, adjustments, lut
+        case version, rawDevelop, light, adjustments, lut
     }
 
     /// Decoded field by field rather than by synthesis, for two reasons.
@@ -93,6 +104,7 @@ struct EditDocument: Codable, Sendable, Equatable {
         }
         self.version = version
         self.rawDevelop = try container.decodeIfPresent(RAWDevelopSettings.self, forKey: .rawDevelop) ?? .neutral
+        self.light = try container.decodeIfPresent(LightAdjustments.self, forKey: .light) ?? .neutral
         self.adjustments = try container.decodeIfPresent([AdjustmentNode].self, forKey: .adjustments) ?? []
         self.lut = try container.decodeIfPresent(LUTSettings.self, forKey: .lut) ?? .none
     }

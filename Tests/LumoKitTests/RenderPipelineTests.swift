@@ -51,6 +51,14 @@ final class RenderPipelineTests: TempDirectoryTestCase {
                           "an empty document must render the source unchanged")
     }
 
+    func testNeutralLightIsTheIdentity() throws {
+        let built = try build(EditDocument(light: .neutral))
+        let expected = try decodedSource()
+
+        assertPixelsEqual(try Pixels.bytes(of: built), try Pixels.bytes(of: expected),
+                          "neutral Light must leave the existing render untouched")
+    }
+
     /// **`rawDevelop` is inert for a standard image**, however loudly it is set.
     ///
     /// `developedSource` switches on `source.kind` and hands `rawDevelop` to `CIRAWFilter` on the

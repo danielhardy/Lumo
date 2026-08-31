@@ -18,7 +18,9 @@ enum RenderPipeline {
 
     /// Increment whenever the pixels produced by the graph can change without a cache-key input
     /// changing. This makes cache invalidation explicit when the pipeline evolves.
-    static let cacheVersion = 1
+    /// v2 adds the Light stage to the graph. Existing documents decode with neutral Light, so their
+    /// pixels remain unchanged; the version still advances because the graph now has a new input.
+    static let cacheVersion = 2
 
     /// Build the graph for `document` over `source`.
     ///
@@ -72,7 +74,8 @@ enum RenderPipeline {
         space: WorkingSpace = .current,
         lutCache: LUTFilterCache? = nil
     ) -> CIImage {
-        let adjusted = applyAdjustments(document.adjustments, to: developed)
+        let lightAdjusted = applyLight(document.light, to: developed)
+        let adjusted = applyAdjustments(document.adjustments, to: lightAdjusted)
         return applyLUT(document.lut, lut: lut, to: adjusted, space: space, cache: lutCache)
     }
 
@@ -151,6 +154,15 @@ enum RenderPipeline {
     }
 
     // MARK: - Adjustments
+
+    /// Apply the photographer-facing Light model before the inherited adjustment array.
+    ///
+    /// Only the controls with an existing node implementation are mapped here. Whites, Blacks, and
+    /// the tone curve remain model state until their dedicated GPU stages land; approximating them
+    /// with brightness or contrast would make their later migration change the look twice.
+    static func applyLight(_ light: LightAdjustments, to image: CIImage) -> CIImage {
+        applyAdjustments(light.existingNodeRepresentation, to: image)
+    }
 
     /// Fold the ordered nodes over the image.
     ///
