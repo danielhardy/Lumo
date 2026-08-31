@@ -1,6 +1,7 @@
 import Foundation
 import CoreImage
 import CoreGraphics
+import ImageIO
 
 /// What the app needs from a renderer, so a test can hand it something that is not the GPU.
 ///
@@ -13,35 +14,8 @@ import CoreGraphics
 /// for free; a fake has to earn it.
 protocol RenderEngining: Sendable {
 
-    /// Rasterize `document` over `source` for display.
-    ///
-    /// Returns `sending` rather than a plain `CGImage?` because **`CGImage` is not `Sendable`**
-    /// (verified against the SDK — there is no `@unchecked` conformance to lean on). Region-based
-    /// isolation lets the freshly-created image leave the actor safely: the engine provably holds no
-    /// other reference to it. The alternative — returning raw bytes and rebuilding a `CGImage` on the
-    /// far side — would cost a copy of every preview frame to say the same thing.
-    func makeCGImage(
-        source: ImageSource,
-        document: EditDocument,
-        lut: CubeLUT?,
-        scale: RenderScale,
-        space: WorkingSpace
-    ) async -> sending CGImage?
-
-    /// Encode `document` over `source` to a file format's bytes.
-    ///
-    /// Returns `Data` for the caller to write, rather than taking a URL. File I/O is not the GPU's
-    /// business, and keeping it out means the actor never touches the sandbox, the security-scoped
-    /// bookmark, or a partially-written file.
-    func encode(
-        source: ImageSource,
-        document: EditDocument,
-        lut: CubeLUT?,
-        scale: RenderScale,
-        format: ExportFormat,
-        quality: CGFloat,
-        space: WorkingSpace
-    ) async throws -> Data
+    /// Render one UI-independent request through the deterministic pipeline.
+    func render(_ request: RenderRequest) async throws -> RenderResult
 
     /// Tally `document` over `source` into a 256-bin per-channel histogram.
     ///
@@ -80,17 +54,57 @@ protocol RenderEngining: Sendable {
     func rawCapabilities(for source: ImageSource) async -> RAWCapabilities?
 }
 
+extension RenderEngining {
+    func makeCGImage(
+        source: ImageSource,
+        document: EditDocument,
+        lut: CubeLUT?,
+        scale: RenderScale,
+        space: WorkingSpace = .current
+    ) async -> sending CGImage? {
+        let request = RenderRequest(
+            source: source, document: document, lut: lut,
+            targetSize: scale.targetSize,
+            quality: scale == .full ? .fullResolution : .preview,
+            output: .raster, space: space
+        )
+        guard let result = try? await render(request),
+              let imageSource = CGImageSourceCreateWithData(result.data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil)
+        else { return nil }
+        return image
+    }
+
+    func encode(
+        source: ImageSource,
+        document: EditDocument,
+        lut: CubeLUT?,
+        scale: RenderScale = .full,
+        format: ExportFormat,
+        quality: CGFloat = 0.95,
+        space: WorkingSpace = .current
+    ) async throws -> Data {
+        let request = RenderRequest(
+            source: source, document: document, lut: lut,
+            targetSize: scale.targetSize,
+            quality: scale == .full ? .export : .preview,
+            output: .encoded(format: format, quality: quality), space: space
+        )
+        return try await render(request).data
+    }
+}
+
 /// The one `CIContext`.
 ///
 /// **The GPU is the isolation boundary** (`docs/PHASE2_SPEC.md` §4.5). `CIImage`, `CIFilter` and
-/// `CIContext` are born and die inside this actor; only `Sendable` values cross in — `EditDocument`,
-/// `ImageSource`, `CubeLUT`, `WorkingSpace`, `RenderScale` — and a `sending CGImage?` or a `Data`
-/// crosses out. That is what lets Step 8 turn strict concurrency on without a single `@unchecked`.
+/// `CIContext` are born and die inside this actor; only `Sendable` values cross in — `RenderRequest`,
+/// `ImageSource`, `CubeLUT`, and `WorkingSpace` — and a `RenderResult` crosses out. That is what
+/// lets Step 8 turn strict concurrency on without a single `@unchecked`.
 ///
 /// It deliberately does **not** decide *what* to render. `RenderPipeline.buildImage` is a pure
 /// function that builds the graph; this evaluates it. Preview and export call the same builder and
-/// differ only in `scale`, which is what makes their agreement structural rather than maintained
-/// (§1).
+/// differ only in explicit quality/output policy, which is what makes their agreement structural
+/// rather than maintained (§1).
 ///
 /// Added in Step 4 **alongside** the old `ImageProcessor` path, which Steps 5–7 then cut over leaf by
 /// leaf — preview, export, histogram — until nothing was left of it to delete. As of Step 7 this is
@@ -128,59 +142,50 @@ actor RenderEngine: RenderEngining {
 
     // MARK: - Rendering
 
-    func makeCGImage(
-        source: ImageSource,
-        document: EditDocument,
-        lut: CubeLUT?,
-        scale: RenderScale,
-        space: WorkingSpace = .current
-    ) -> sending CGImage? {
-        guard let image = buildImage(source, document, lut, scale, space) else { return nil }
+    func render(_ request: RenderRequest) async throws -> RenderResult {
+        let scale = request.renderScale
+        guard let image = buildImage(
+            request.source, request.document, request.lut, scale, request.space
+        ) else {
+            throw ImageError.processingFailed
+        }
         let rect = image.extent.integral
-        guard rect.isRasterizable else { return nil }
+        guard rect.isRasterizable else { throw ImageError.processingFailed }
+        let colorSpace = request.space.cgColorSpace
 
-        // The colour space is passed explicitly — this is the output-encoding half of the seam, and
-        // omitting it is exactly the latent preview/export mismatch Step 1 closed.
-        return context.createCGImage(image, from: rect, format: .RGBA8, colorSpace: space.cgColorSpace)
-    }
-
-    func encode(
-        source: ImageSource,
-        document: EditDocument,
-        lut: CubeLUT?,
-        scale: RenderScale = .full,
-        format: ExportFormat,
-        quality: CGFloat = 0.95,
-        space: WorkingSpace = .current
-    ) throws -> Data {
-        guard let image = buildImage(source, document, lut, scale, space) else {
-            throw ImageError.processingFailed
-        }
-        guard image.extent.isRasterizable else {
-            throw ImageError.processingFailed
-        }
-        let colorSpace = space.cgColorSpace
-
-        switch format {
-        case .tiff:
-            guard let data = context.tiffRepresentation(
-                of: image, format: .RGBA16, colorSpace: colorSpace
-            ) else { throw ImageError.exportFailed }
-            return data
-
-        case .jpeg:
-            guard let data = context.jpegRepresentation(
-                of: image, colorSpace: colorSpace,
-                options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality]
-            ) else { throw ImageError.exportFailed }
-            return data
-
-        case .png:
-            guard let data = context.pngRepresentation(
+        let data: Data
+        switch request.output {
+        case .raster:
+            guard let raster = context.pngRepresentation(
                 of: image, format: .RGBA8, colorSpace: colorSpace
-            ) else { throw ImageError.exportFailed }
-            return data
+            ) else { throw ImageError.processingFailed }
+            data = raster
+
+        case .encoded(let format, let quality):
+            switch format {
+            case .tiff:
+                guard let encoded = context.tiffRepresentation(
+                    of: image, format: .RGBA16, colorSpace: colorSpace
+                ) else { throw ImageError.exportFailed }
+                data = encoded
+            case .jpeg:
+                guard let encoded = context.jpegRepresentation(
+                    of: image, colorSpace: colorSpace,
+                    options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality]
+                ) else { throw ImageError.exportFailed }
+                data = encoded
+            case .png:
+                guard let encoded = context.pngRepresentation(
+                    of: image, format: .RGBA8, colorSpace: colorSpace
+                ) else { throw ImageError.exportFailed }
+                data = encoded
+            }
         }
+
+        return RenderResult(
+            data: data, extent: rect.size, colorSpace: request.space,
+            quality: request.quality, output: request.output
+        )
     }
 
     // MARK: - Histogram
