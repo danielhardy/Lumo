@@ -162,7 +162,14 @@ public struct ContentView: View {
                     get: { viewModel.lutIntensity },
                     set: { viewModel.setLUTIntensity($0) }
                 ),
-                in: 0...1
+                in: 0...1,
+                onEditingChanged: { editing in
+                    if editing {
+                        viewModel.beginPreviewInteraction()
+                    } else {
+                        viewModel.endPreviewInteraction()
+                    }
+                }
             )
             .frame(width: 100)
             Text("\(Int((viewModel.lutIntensity * 100).rounded()))%")

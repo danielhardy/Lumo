@@ -11,6 +11,12 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
     let size: Int
     private let tableData: Data  // flattened RGBARGBA... float32 for Core Image
 
+    /// Includes table contents as well as the stable LUT ID, so replacing a file in place cannot
+    /// reuse a final preview merely because the path stayed the same.
+    var cacheFingerprint: String {
+        RenderCacheHash.digest(tableData) + ":" + id
+    }
+
     // MARK: - Hashable
 
     static func == (lhs: CubeLUT, rhs: CubeLUT) -> Bool { lhs.id == rhs.id }

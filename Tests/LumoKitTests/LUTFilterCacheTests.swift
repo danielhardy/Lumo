@@ -22,6 +22,8 @@ final class LUTFilterCacheTests: XCTestCase {
         XCTAssertNotNil(first)
         XCTAssertTrue(first === second, "a cache hit should hand back the same instance")
         XCTAssertEqual(cache.count, 1, "and should not have built a second one")
+        XCTAssertEqual(cache.statistics.hits, 1)
+        XCTAssertEqual(cache.statistics.misses, 1)
     }
 
     /// The cube is interpolated *in* the colour space, so the same LUT in two spaces is two different
