@@ -2,7 +2,7 @@
 id: LUMO-029
 title: Epic 5 — White balance, mixer, and color grading
 type: feature
-status: backlog
+status: claimed
 priority: high
 labels:
   - mvp
@@ -10,15 +10,23 @@ labels:
   - epic:color
   - phase:5
 created: 2026-08-30T18:30:26.827Z
-updated: 2026-08-30T18:31:55.187Z
+updated: 2026-08-31T21:08:45.105Z
 depends_on:
   - LUMO-030
   - LUMO-031
   - LUMO-032
   - LUMO-033
   - LUMO-034
-order: kvoha2vl
+order: a0
 board: product
+commits:
+  - 3ceeedc
+claim:
+  actor: codex
+  session: 01MTHQDJU9PAUTBBM7
+  claimed_at: 2026-08-31T21:08:45.105Z
+  expires_at: 2026-08-31T22:08:45.105Z
+  model: gpt-5.6-luna
 ---
 
 ## Objective
@@ -27,9 +35,9 @@ Deliver RAW-aware white balance plus global Color, eight-channel HSL mixer, and 
 
 ## MVP outcome
 
-- [ ] As Shot, temperature/tint, vibrance/saturation, mixer, and grading persist and render at every quality.
-- [ ] Skin, foliage, saturated primaries, and gradients behave predictably.
-- [ ] No interactive stage uses Swift CPU pixel loops.
+- [x] As Shot, temperature/tint, vibrance/saturation, mixer, and grading persist and render at every quality.
+- [x] Skin, foliage, saturated primaries, and gradients behave predictably.
+- [x] No interactive stage uses Swift CPU pixel loops.
 
 ## Child tickets
 
