@@ -114,6 +114,7 @@ actor FakeRenderEngine: RenderEngining {
     }
 
     func render(_ request: RenderRequest) async throws -> RenderResult {
+        try Task.checkCancellation()
         renderRequests.append(request)
         let record = Request(request: request)
         switch request.output {
@@ -122,6 +123,7 @@ actor FakeRenderEngine: RenderEngining {
             guard let image = previewResult ?? Self.solidImage(),
                   let data = Self.pngData(for: image)
             else { throw ImageError.processingFailed }
+            try Task.checkCancellation()
             return RenderResult(
                 data: data, extent: CGSize(width: image.width, height: image.height),
                 colorSpace: request.space, quality: request.quality, output: request.output

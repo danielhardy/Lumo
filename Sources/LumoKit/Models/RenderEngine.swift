@@ -143,6 +143,10 @@ actor RenderEngine: RenderEngining {
     // MARK: - Rendering
 
     func render(_ request: RenderRequest) async throws -> RenderResult {
+        // An interactive request can sit behind another Core Image operation on this actor. Check
+        // before doing any work so cancellation drops queued superseded values instead of making
+        // the coordinator wait for an obsolete graph to rasterize.
+        try Task.checkCancellation()
         let scale = request.renderScale
         guard let image = buildImage(
             request.source, request.document, request.lut, scale, request.space
@@ -181,6 +185,8 @@ actor RenderEngine: RenderEngining {
                 data = encoded
             }
         }
+
+        try Task.checkCancellation()
 
         return RenderResult(
             data: data, extent: rect.size, colorSpace: request.space,

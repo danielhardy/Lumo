@@ -55,7 +55,17 @@ struct AdjustInspectorView: View {
                 .help("Reset to neutral")
             }
 
-            Slider(value: viewModel.adjustmentBinding(for: control), in: control.range)
+            Slider(
+                value: viewModel.adjustmentBinding(for: control),
+                in: control.range,
+                onEditingChanged: { editing in
+                    if editing {
+                        viewModel.beginPreviewInteraction()
+                    } else {
+                        viewModel.endPreviewInteraction()
+                    }
+                }
+            )
         }
     }
 
