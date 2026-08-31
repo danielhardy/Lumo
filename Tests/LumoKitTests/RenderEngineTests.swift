@@ -61,6 +61,13 @@ final class RenderEngineTests: TempDirectoryTestCase {
                 mixer: ColorMixerAdjustments(
                     red: ColorMixerChannel(hue: 18, saturation: -12, luminance: 8),
                     blue: ColorMixerChannel(hue: -22, saturation: 20, luminance: -10)
+                ),
+                grading: ColorGradingAdjustments(
+                    shadows: ColorGradingWheel(hue: 220, saturation: 24),
+                    midtones: ColorGradingWheel(hue: 35, saturation: 18),
+                    highlights: ColorGradingWheel(hue: 10, saturation: 20),
+                    blending: 65,
+                    balance: -12
                 )
             ),
             adjustments: [.exposure(ev: 0.3), .vibrance(amount: 0.4)],

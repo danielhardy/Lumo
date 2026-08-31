@@ -5,7 +5,7 @@ import Foundation
 /// Values use the same -100...100 scale shown by the Color inspector, rather than Core Image's
 /// filter parameters. Keeping that conversion at the render boundary makes persisted edits stable
 /// if the implementation changes and gives preview and export one normalization rule. Mixer and
-/// grading state can be added to this value without changing the document's top-level colour stage.
+/// grading state live here so the document has one versioned colour stage.
 struct ColorAdjustments: Codable, Equatable, Sendable {
     static let neutral = ColorAdjustments()
 
@@ -19,18 +19,23 @@ struct ColorAdjustments: Codable, Equatable, Sendable {
         didSet { saturation = Self.clamp(saturation, to: Self.saturationRange, default: 0) }
     }
     var mixer: ColorMixerAdjustments
+    var grading: ColorGradingAdjustments
 
     init(
         vibrance: Double = 0,
         saturation: Double = 0,
-        mixer: ColorMixerAdjustments = .neutral
+        mixer: ColorMixerAdjustments = .neutral,
+        grading: ColorGradingAdjustments = .neutral
     ) {
         self.vibrance = Self.clamp(vibrance, to: Self.vibranceRange, default: 0)
         self.saturation = Self.clamp(saturation, to: Self.saturationRange, default: 0)
         self.mixer = mixer
+        self.grading = grading
     }
 
-    var isIdentity: Bool { vibrance == 0 && saturation == 0 && mixer.isIdentity }
+    var isIdentity: Bool {
+        vibrance == 0 && saturation == 0 && mixer.isIdentity && grading.isIdentity
+    }
 
     /// `CIVibrance.inputAmount` is normalized to -1...1.
     var normalizedVibrance: Double { vibrance / 100 }
@@ -48,14 +53,15 @@ struct ColorAdjustments: Codable, Equatable, Sendable {
         return min(max(value, range.lowerBound), range.upperBound)
     }
 
-    private enum CodingKeys: String, CodingKey { case vibrance, saturation, mixer }
+    private enum CodingKeys: String, CodingKey { case vibrance, saturation, mixer, grading }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
             vibrance: try container.decodeIfPresent(Double.self, forKey: .vibrance) ?? 0,
             saturation: try container.decodeIfPresent(Double.self, forKey: .saturation) ?? 0,
-            mixer: try container.decodeIfPresent(ColorMixerAdjustments.self, forKey: .mixer) ?? .neutral
+            mixer: try container.decodeIfPresent(ColorMixerAdjustments.self, forKey: .mixer) ?? .neutral,
+            grading: try container.decodeIfPresent(ColorGradingAdjustments.self, forKey: .grading) ?? .neutral
         )
     }
 }

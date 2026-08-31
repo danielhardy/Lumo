@@ -24,7 +24,8 @@ enum RenderPipeline {
     /// inverted tones locally, so affected documents render different pixels even though the
     /// document schema is unchanged. v5 adds the Whites and Blacks endpoint stages. v6 adds the
     /// editable master RGB curve. v7 adds the global Color stage. v8 adds the GPU HSL mixer stage.
-    static let cacheVersion = 8
+    /// v9 adds three-way color grading.
+    static let cacheVersion = 9
 
     /// Build the graph for `document` over `source`.
     ///
@@ -254,7 +255,8 @@ enum RenderPipeline {
     /// Core Image preserves input alpha and colour-space metadata; output encoding is still
     /// performed by the caller with the request's `WorkingSpace`, so preview and export use the
     /// same gamut boundary. Values are finite and clamped by `ColorAdjustments` before reaching
-    /// this stage.
+    /// this stage. The fixed order is global vibrance, global saturation, HSL mixer, and three-way
+    /// grading; ordered effects and the LUT remain downstream in `buildImage`.
     static func applyColor(_ color: ColorAdjustments, to image: CIImage) -> CIImage {
         guard !color.isIdentity else { return image }
         var result = image
@@ -277,6 +279,10 @@ enum RenderPipeline {
 
         if !color.mixer.isIdentity {
             result = applyColorMixer(color.mixer, to: result)
+        }
+
+        if !color.grading.isIdentity {
+            result = applyColorGrading(color.grading, to: result)
         }
 
         return result
@@ -435,6 +441,117 @@ enum RenderPipeline {
             ) * pixel.a,
             pixel.a
         );
+    }
+    """
+
+    // MARK: - Three-way color grading
+
+    /// Apply shadows, midtones, and highlights in one GPU color kernel.
+    ///
+    /// The tonal masks are smooth partitions of luminance. At zero blending their boundaries
+    /// meet; increasing blending moves the boundaries toward one another, creating a predictable
+    /// overlap that is normalized before the wheel colors are combined. Balance shifts the sampled
+    /// luminance before those masks are evaluated, so it moves a pixel between regions without
+    /// changing the overlap width. The kernel colorizes the source luminance toward each wheel's
+    /// hue and mixes by saturation, which also means neutral grayscale pixels can be graded.
+    static func applyColorGrading(_ grading: ColorGradingAdjustments, to image: CIImage) -> CIImage {
+        guard !grading.isIdentity,
+              let kernel = colorGradingKernel
+        else { return image }
+
+        let parameters: [Any] = [
+            gradingKernelVector(grading.shadows),
+            gradingKernelVector(grading.midtones),
+            gradingKernelVector(grading.highlights),
+            CIVector(
+                x: grading.blending / 100,
+                y: grading.balance / 100,
+                z: 0,
+                w: 0
+            ),
+        ]
+        return kernel.apply(extent: image.extent, arguments: [image] + parameters) ?? image
+    }
+
+    private static func gradingKernelVector(_ wheel: ColorGradingWheel) -> CIVector {
+        CIVector(x: wheel.hue / 360, y: wheel.saturation / 100, z: 0, w: 0)
+    }
+
+    private static let colorGradingKernel: CIColorKernel? =
+        CIColorKernel(source: colorGradingKernelSource)
+
+    private static let colorGradingKernelSource = """
+    float wrappedGradingHue(float value) {
+        return value - floor(value);
+    }
+
+    float gradingHueToRGB(float p, float q, float t) {
+        float wrapped = wrappedGradingHue(t);
+        if (wrapped < 1.0 / 6.0) { return p + (q - p) * 6.0 * wrapped; }
+        if (wrapped < 1.0 / 2.0) { return q; }
+        if (wrapped < 2.0 / 3.0) { return p + (q - p) * (2.0 / 3.0 - wrapped) * 6.0; }
+        return p;
+    }
+
+    vec3 gradingColor(float hue, float luminance) {
+        // Full-saturation HSL at the source luminance is the wheel's target color. The caller
+        // controls how far toward it to move with the wheel saturation.
+        float q = luminance < 0.5
+            ? luminance * 2.0
+            : luminance + 1.0 - luminance;
+        float p = 2.0 * luminance - q;
+        return vec3(
+            gradingHueToRGB(p, q, hue + 1.0 / 3.0),
+            gradingHueToRGB(p, q, hue),
+            gradingHueToRGB(p, q, hue - 1.0 / 3.0)
+        );
+    }
+
+    float gradingSmoothStep(float edge0, float edge1, float value) {
+        float denominator = max(edge1 - edge0, 0.00001);
+        float t = clamp((value - edge0) / denominator, 0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
+    }
+
+    kernel vec4 colorGrading(
+        __sample pixel,
+        vec4 shadows,
+        vec4 midtones,
+        vec4 highlights,
+        vec4 controls
+    ) {
+        if (pixel.a <= 0.00001) { return pixel; }
+        vec3 rgb = clamp(pixel.rgb / pixel.a, 0.0, 1.0);
+        float luminance = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+        float shiftedLuminance = clamp(luminance + controls.y * 0.25, 0.0, 1.0);
+        float blending = clamp(controls.x, 0.0, 1.0);
+
+        // At blending 0 these transitions meet. At blending 1 they overlap by 0.16 of the
+        // normalized luminance range. The normalized weights always sum to one.
+        float shadowEdge = 0.42 + 0.16 * blending;
+        float highlightEdge = 0.58 - 0.16 * blending;
+        float shadowWeight = 1.0 - gradingSmoothStep(0.0, shadowEdge, shiftedLuminance);
+        float highlightWeight = gradingSmoothStep(highlightEdge, 1.0, shiftedLuminance);
+        float midtoneWeight = gradingSmoothStep(0.0, shadowEdge, shiftedLuminance)
+            * (1.0 - gradingSmoothStep(highlightEdge, 1.0, shiftedLuminance));
+        float weightTotal = max(shadowWeight + midtoneWeight + highlightWeight, 0.00001);
+        shadowWeight /= weightTotal;
+        midtoneWeight /= weightTotal;
+        highlightWeight /= weightTotal;
+
+        float shadowAmount = shadowWeight * clamp(shadows.y, 0.0, 1.0);
+        float midtoneAmount = midtoneWeight * clamp(midtones.y, 0.0, 1.0);
+        float highlightAmount = highlightWeight * clamp(highlights.y, 0.0, 1.0);
+        float amountTotal = shadowAmount + midtoneAmount + highlightAmount;
+        if (amountTotal <= 0.00001) { return pixel; }
+
+        vec3 tint = (
+            shadowAmount * gradingColor(shadows.x, luminance)
+            + midtoneAmount * gradingColor(midtones.x, luminance)
+            + highlightAmount * gradingColor(highlights.x, luminance)
+        ) / amountTotal;
+        vec3 graded = mix(rgb, tint, clamp(amountTotal, 0.0, 1.0));
+        return vec4(clamp(graded, 0.0, 1.0) * pixel.a, pixel.a);
     }
     """
 
