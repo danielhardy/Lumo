@@ -96,6 +96,38 @@ final class RenderPipelineTests: TempDirectoryTestCase {
                           "neutral Light must leave the existing render untouched")
     }
 
+    func testMasterToneCurveChangesAllRGBChannelsAndRemainsMonotonic() throws {
+        let source = try linearRamp()
+        let curve = LightToneCurve(points: [
+            LightCurvePoint(input: 0.25, output: 0.1),
+            LightCurvePoint(input: 0.5, output: 0.7),
+            LightCurvePoint(input: 0.75, output: 0.8),
+        ])
+        let samples = try linearSamples(of: RenderPipeline.applyLight(
+            LightAdjustments(toneCurve: curve), to: source
+        ))
+
+        XCTAssertLessThan(samples[64], 0.2, "the lower control point should darken the ramp")
+        XCTAssertGreaterThan(samples[128], 0.6, "the middle control point should lift the ramp")
+        XCTAssertGreaterThan(samples[192], 0.7, "the upper control point should reach the ramp")
+        for index in 1..<samples.count {
+            XCTAssertGreaterThanOrEqual(samples[index], samples[index - 1] - 0.002,
+                                        "a monotonic master curve must not reverse at sample "
+                                        + String(index))
+        }
+    }
+
+    func testToneCurveRenderIsUnchangedAtItsIdentity() throws {
+        let source = try linearRamp(width: 96)
+        let expected = try Pixels.bytes(of: source)
+        let rendered = RenderPipeline.applyLight(
+            LightAdjustments(toneCurve: .identity), to: source
+        )
+
+        assertPixelsEqual(try Pixels.bytes(of: rendered), expected,
+                          "the diagonal master curve must be an exact no-op")
+    }
+
     // MARK: - Photographic Light properties
 
     func testOneStopExposureDoublesLinearMidtone() throws {

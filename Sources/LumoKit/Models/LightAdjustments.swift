@@ -2,9 +2,9 @@ import Foundation
 
 /// A normalized point in the master RGB tone curve.
 ///
-/// The curve editor is deliberately not part of the current Core Image node set yet; this value is
-/// the persistence contract that the curve renderer can build on. Inputs and outputs are normalized
-/// to 0...1 so the same edit is independent of preview and export resolution.
+/// The curve editor can replace points without knowing about Core Image; this value is the
+/// persistence contract consumed by the renderer. Inputs and outputs are normalized to 0...1 so the
+/// same edit is independent of preview and export resolution.
 struct LightCurvePoint: Codable, Equatable, Sendable {
     let input: Double
     let output: Double
@@ -42,7 +42,7 @@ struct LightToneCurve: Codable, Equatable, Sendable {
         LightCurvePoint(input: 1, output: 1),
     ])
 
-    var version: Int
+    private(set) var version: Int
     var points: [LightCurvePoint] {
         didSet { points = Self.normalized(points) }
     }
@@ -53,6 +53,34 @@ struct LightToneCurve: Codable, Equatable, Sendable {
     }
 
     var isIdentity: Bool { self == Self.identity }
+
+    /// True when the control points describe a non-decreasing transfer function.
+    ///
+    /// The value model preserves non-monotonic curves so a future editor can represent the full
+    /// control-point space. This property lets callers validate or constrain that choice explicitly.
+    var isMonotonic: Bool {
+        zip(points, points.dropFirst()).allSatisfy { $0.output <= $1.output }
+    }
+
+    /// Interpolate the curve at a normalized input.
+    ///
+    /// Piecewise-linear interpolation is deliberate: unlike an unconstrained cubic spline it
+    /// cannot overshoot between monotonic control points. Inputs outside the normalized domain are
+    /// clamped, and a non-finite input is treated as zero so callers always receive a finite result.
+    func value(at input: Double) -> Double {
+        let x = input.isFinite ? min(max(input, 0), 1) : 0
+        guard let upperIndex = points.firstIndex(where: { $0.input >= x }) else {
+            return points.last?.output ?? 1
+        }
+        guard upperIndex > 0 else { return points[upperIndex].output }
+
+        let lower = points[upperIndex - 1]
+        let upper = points[upperIndex]
+        let span = upper.input - lower.input
+        guard span > 0 else { return upper.output }
+        let fraction = (x - lower.input) / span
+        return lower.output + (upper.output - lower.output) * fraction
+    }
 
     private static func normalized(_ input: [LightCurvePoint]) -> [LightCurvePoint] {
         // Dictionary assignment gives duplicate inputs an explicit last-write-wins rule before
@@ -101,8 +129,8 @@ struct LightToneCurve: Codable, Equatable, Sendable {
 ///
 /// These values are intentionally independent of Core Image parameter units. Exposure is in EV;
 /// the remaining sliders use the familiar -100...100 photographic scale. The renderer maps the
-/// subset supported by the inherited adjustment nodes to those nodes, leaving the endpoint and
-/// curve controls as stable model state for their dedicated pipeline stages.
+/// subset supported by the inherited adjustment nodes to those nodes; endpoint and curve controls
+/// are rendered by dedicated GPU-backed stages.
 struct LightAdjustments: Codable, Equatable, Sendable {
     static let neutral = LightAdjustments()
 

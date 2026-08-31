@@ -70,6 +70,46 @@ final class LightAdjustmentsTests: XCTestCase {
         XCTAssertFalse(curve.isIdentity)
     }
 
+    func testToneCurveInterpolatesDeterministicallyAndClampsInput() {
+        let curve = LightToneCurve(points: [
+            LightCurvePoint(input: 0.25, output: 0.1),
+            LightCurvePoint(input: 0.75, output: 0.9),
+        ])
+
+        XCTAssertEqual(curve.value(at: 0), 0, accuracy: 0.000_001)
+        XCTAssertEqual(curve.value(at: 0.25), 0.1, accuracy: 0.000_001)
+        XCTAssertEqual(curve.value(at: 0.5), 0.5, accuracy: 0.000_001)
+        XCTAssertEqual(curve.value(at: 0.75), 0.9, accuracy: 0.000_001)
+        XCTAssertEqual(curve.value(at: 1), 1, accuracy: 0.000_001)
+        XCTAssertEqual(curve.value(at: -1), 0, accuracy: 0.000_001)
+        XCTAssertEqual(curve.value(at: 2), 1, accuracy: 0.000_001)
+        XCTAssertEqual(curve.value(at: .nan), 0, accuracy: 0.000_001)
+        XCTAssertTrue(curve.isMonotonic)
+    }
+
+    func testToneCurveReportsNonMonotonicControlPointsWithoutRewritingThem() {
+        let curve = LightToneCurve(points: [
+            LightCurvePoint(input: 0.25, output: 0.8),
+            LightCurvePoint(input: 0.75, output: 0.2),
+        ])
+
+        XCTAssertFalse(curve.isMonotonic)
+        XCTAssertEqual(curve.points[1].output, 0.8)
+        XCTAssertEqual(curve.points[2].output, 0.2)
+    }
+
+    func testToneCurveRejectsANewerSchemaVersion() throws {
+        let data = Data("{\"version\":\(LightToneCurve.currentVersion + 1),\"points\":[]}".utf8)
+
+        XCTAssertThrowsError(try JSONDecoder().decode(LightToneCurve.self, from: data)) { error in
+            guard case DecodingError.dataCorrupted(let context) = error else {
+                return XCTFail("expected a dataCorrupted error, got \(error)")
+            }
+            XCTAssertEqual(context.codingPath.map(\.stringValue), ["version"])
+            XCTAssertTrue(context.debugDescription.contains("newer version"))
+        }
+    }
+
     func testLightCodableRoundTripIncludesCurve() throws {
         let light = LightAdjustments(
             exposure: 1.25,
@@ -114,11 +154,16 @@ final class LightAdjustmentsTests: XCTestCase {
     func testEditHashIsStableAndIncludesLightState() throws {
         let base = EditDocument()
         let changed = EditDocument(light: LightAdjustments(exposure: 0.5))
+        let curved = EditDocument(light: LightAdjustments(toneCurve: LightToneCurve(points: [
+            LightCurvePoint(input: 0.5, output: 0.7),
+        ])))
 
         XCTAssertEqual(base.editHash, base.editHash)
         XCTAssertEqual(changed.editHash, try JSONDecoder().decode(
             EditDocument.self, from: JSONEncoder().encode(changed)
         ).editHash)
         XCTAssertNotEqual(base.editHash, changed.editHash)
+        XCTAssertNotEqual(base.editHash, curved.editHash,
+                          "the master curve must participate in the persisted edit hash")
     }
 }

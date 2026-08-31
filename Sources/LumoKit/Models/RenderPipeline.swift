@@ -22,8 +22,9 @@ enum RenderPipeline {
     /// plus tonal-curve implementation. v4 clamps the tone curve's interior points to stay
     /// monotonic; some Contrast/Highlights/Shadows combinations previously produced a curve that
     /// inverted tones locally, so affected documents render different pixels even though the
-    /// document schema is unchanged. v5 adds the Whites and Blacks endpoint stages.
-    static let cacheVersion = 5
+    /// document schema is unchanged. v5 adds the Whites and Blacks endpoint stages. v6 adds the
+    /// editable master RGB curve.
+    static let cacheVersion = 6
 
     /// Build the graph for `document` over `source`.
     ///
@@ -166,10 +167,15 @@ enum RenderPipeline {
     /// inverse shape. `CIToneCurve` is a Core Image node, so this stays in the same GPU-backed graph
     /// as the rest of the pipeline and does not require a CPU per-pixel pass.
     ///
+    /// The editable master RGB curve is sampled into a small 3D color cube. Sampling a piecewise
+    /// linear transfer function into a cube keeps interpolation on the GPU while guaranteeing that
+    /// a monotonic curve remains monotonic between samples. All three channels use the same sampled
+    /// transfer function; channel-specific curves can be added to the model without changing this
+    /// stage's shape.
+    ///
     /// Whites and Blacks are separate endpoint stages after the shared tonal curve. Keeping them
     /// separate gives each control an independent high- or low-end rolloff rather than making them
-    /// aliases for Contrast. The master curve remains model state until its dedicated Light stage
-    /// lands.
+    /// aliases for Contrast.
     static func applyLight(_ light: LightAdjustments, to image: CIImage) -> CIImage {
         var result = image
 
@@ -213,6 +219,10 @@ enum RenderPipeline {
             result = curve.outputImage ?? result
         }
 
+        if !light.toneCurve.isIdentity {
+            result = applyToneCurve(light.toneCurve, to: result)
+        }
+
         // Endpoint controls intentionally run in a stable order after the shared tonal curve:
         // high-end Whites first, low-end Blacks second. Each is a distinct GPU stage, so changing
         // one endpoint does not silently change the other control's curve.
@@ -223,6 +233,46 @@ enum RenderPipeline {
             result = applyBlackPoint(light.blacks, to: result)
         }
         return result
+    }
+
+    /// The cube is independent of image resolution. 64 samples keep interpolation error small for
+    /// an editable curve while keeping the table at about 4 MB (64³ RGBA Float32 values). The table
+    /// is a control map, not a CPU per-pixel image operation; Core Image evaluates the remap through
+    /// its Metal-backed color-cube kernel. The plain `CIColorCube` variant is used because the
+    /// curve's normalized values are already in the renderer's working pixel domain; unlike the
+    /// color-managed LUT path, it must not introduce a second transfer-function conversion around
+    /// the user's curve.
+    private static let toneCurveCubeDimension = 64
+
+    private static func applyToneCurve(
+        _ curve: LightToneCurve,
+        to image: CIImage
+    ) -> CIImage {
+        let dimension = toneCurveCubeDimension
+        let denominator = Double(dimension - 1)
+        var values = [Float]()
+        values.reserveCapacity(dimension * dimension * dimension * 4)
+
+        for b in 0..<dimension {
+            let blue = curve.value(at: Double(b) / denominator)
+            for g in 0..<dimension {
+                let green = curve.value(at: Double(g) / denominator)
+                for r in 0..<dimension {
+                    let red = curve.value(at: Double(r) / denominator)
+                    values.append(Float(red))
+                    values.append(Float(green))
+                    values.append(Float(blue))
+                    values.append(1)
+                }
+            }
+        }
+
+        let data = values.withUnsafeBufferPointer { Data(buffer: $0) }
+        guard let filter = CIFilter(name: "CIColorCube") else { return image }
+        filter.setValue(dimension, forKey: "inputCubeDimension")
+        filter.setValue(data as NSData, forKey: "inputCubeData")
+        filter.setValue(image, forKey: kCIInputImageKey)
+        return filter.outputImage ?? image
     }
 
     /// Move the white point with a smooth high-end rolloff. The first three control points stay on
