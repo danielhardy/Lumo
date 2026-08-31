@@ -1,6 +1,8 @@
 import Foundation
 import CoreImage
 import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 @testable import LumoKit
 
 extension RAWCapabilities {
@@ -52,6 +54,9 @@ extension RAWCapabilities {
 /// mutable state.
 actor FakeRenderEngine: RenderEngining {
 
+    /// Every request sent through the UI-independent renderer API, in order.
+    private(set) var renderRequests: [RenderRequest] = []
+
     /// Every `makeCGImage` call, in order.
     private(set) var previewRequests: [Request] = []
     /// Every `encode` call, in order.
@@ -68,6 +73,36 @@ actor FakeRenderEngine: RenderEngining {
         /// The `ImageSource` the call named. Recorded so a test can tell *which* image was asked
         /// for — a batch export issues one request per file and they differ only here.
         var source: ImageSource?
+
+        init(
+            document: EditDocument,
+            lutID: LUTID?,
+            scale: RenderScale,
+            space: WorkingSpace,
+            format: ExportFormat?,
+            source: ImageSource?
+        ) {
+            self.document = document
+            self.lutID = lutID
+            self.scale = scale
+            self.space = space
+            self.format = format
+            self.source = source
+        }
+
+        init(request: RenderRequest) {
+            document = request.document
+            lutID = request.lut?.lutID
+            scale = request.renderScale
+            space = request.space
+            switch request.output {
+            case .raster:
+                format = nil
+            case .encoded(let format, _):
+                self.format = format
+            }
+            source = request.source
+        }
     }
 
     /// Swap in a failure to exercise the caller's error path.
@@ -78,37 +113,28 @@ actor FakeRenderEngine: RenderEngining {
         self.previewResult = previewResult
     }
 
-    func makeCGImage(
-        source: ImageSource,
-        document: EditDocument,
-        lut: CubeLUT?,
-        scale: RenderScale,
-        space: WorkingSpace
-    ) -> sending CGImage? {
-        previewRequests.append(Request(
-            document: document, lutID: lut?.lutID, scale: scale, space: space, format: nil,
-            source: source
-        ))
-        // Rebuilt per call rather than handing out the stored one: the result is `sending`, so it has
-        // to be an image nothing else holds a reference to.
-        return Self.solidImage()
-    }
+    func render(_ request: RenderRequest) async throws -> RenderResult {
+        renderRequests.append(request)
+        let record = Request(request: request)
+        switch request.output {
+        case .raster:
+            previewRequests.append(record)
+            guard let image = previewResult ?? Self.solidImage(),
+                  let data = Self.pngData(for: image)
+            else { throw ImageError.processingFailed }
+            return RenderResult(
+                data: data, extent: CGSize(width: image.width, height: image.height),
+                colorSpace: request.space, quality: request.quality, output: request.output
+            )
 
-    func encode(
-        source: ImageSource,
-        document: EditDocument,
-        lut: CubeLUT?,
-        scale: RenderScale,
-        format: ExportFormat,
-        quality: CGFloat,
-        space: WorkingSpace
-    ) throws -> Data {
-        encodeRequests.append(Request(
-            document: document, lutID: lut?.lutID, scale: scale, space: space, format: format,
-            source: source
-        ))
-        if shouldFailEncode { throw ImageError.exportFailed }
-        return Data("fake-\(format.rawValue)".utf8)
+        case .encoded(let format, _):
+            encodeRequests.append(record)
+            if shouldFailEncode { throw ImageError.exportFailed }
+            return RenderResult(
+                data: Data("fake-\(format.rawValue)".utf8), extent: .zero,
+                colorSpace: request.space, quality: request.quality, output: request.output
+            )
+        }
     }
 
     func histogram(
@@ -196,5 +222,15 @@ actor FakeRenderEngine: RenderEngining {
         ctx.setFillColor(red: 0.5, green: 0.25, blue: 0.75, alpha: 1)
         ctx.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
         return ctx.makeImage()
+    }
+
+    private static func pngData(for image: CGImage) -> Data? {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data, UTType.png.identifier as CFString, 1, nil
+        ) else { return nil }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return data as Data
     }
 }
