@@ -43,7 +43,7 @@ falls back to the `DG_ACTOR` environment variable, then the issue's active claim
 
 ## Git workflow
 
-- Work directly on the current branch — claims do not assign a per-issue branch or worktree (`git.branch_per_issue` is off).
+- Work on the issue's dedicated branch/worktree created by DispatchGraph (`git.branch_per_issue` is on); keep issue changes isolated from `main`.
 - Keep the working tree to **one issue** at a time — do not pile unrelated tickets into the same session.
 - Commit coherent work on the current branch when the change is ready for review.
 - Implementation agents move the issue to `review` with a short summary comment. Do **not** mark `done` or merge unless a human or CI asks you to.
