@@ -47,6 +47,14 @@ final class PreviewCostBenchmark: XCTestCase {
         )
     }
 
+    fileprivate static func pngRoundTrip(_ image: CIImage, context: CIContext) -> CGImage? {
+        guard let data = context.pngRepresentation(
+            of: image, format: .RGBA8, colorSpace: WorkingSpace.current.cgColorSpace
+        ),
+        let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+    }
+
     /// `time` for an async body. Runs the loop on a semaphore-free detached task and waits, so the
     /// per-render figure is comparable with the synchronous one.
     ///
@@ -120,6 +128,21 @@ final class PreviewCostBenchmark: XCTestCase {
             _ = context.createCGImage(image, from: image.extent.integral,
                                       format: .RGBA8, colorSpace: WorkingSpace.current.cgColorSpace)
         }
+        let direct = time("direct: createCGImage at 1600x1200", 5) {
+            guard let image = RenderPipeline.buildImage(
+                source: source, document: document, lut: lut,
+                scale: .preview(maxSize: Self.previewBox), space: .current, lutCache: cache
+            ) else { return }
+            _ = context.createCGImage(image, from: image.extent.integral,
+                                      format: .RGBA8, colorSpace: WorkingSpace.current.cgColorSpace)
+        }
+        let roundTrip = time("PNG: encode + ImageIO decode at 1600x1200", 5) {
+            guard let image = RenderPipeline.buildImage(
+                source: source, document: document, lut: lut,
+                scale: .preview(maxSize: Self.previewBox), space: .current, lutCache: cache
+            ) else { return }
+            _ = Self.pngRoundTrip(image, context: context)
+        }
 
         // And through the engine, which memoizes the developed source — the shipping path.
         let engine = RenderEngine()
@@ -133,6 +156,8 @@ final class PreviewCostBenchmark: XCTestCase {
         print(String(format: "\n  bare pipeline vs old:  %.2fx", new / old))
         print(String(format: "  engine vs old:         %.2fx    (open cost saved: %.0f ms)\n",
                      viaEngine / old, oneOffDecode))
+        print(String(format: "  PNG round-trip overhead vs direct raster: %.1f ms (%.2fx)\n",
+                     roundTrip - direct, roundTrip / direct))
     }
 
     /// The same question for a standard image. `CIImage(contentsOf:)` is lazy, so the *construction*
@@ -178,6 +203,21 @@ final class PreviewCostBenchmark: XCTestCase {
             _ = context.createCGImage(image, from: image.extent.integral,
                                       format: .RGBA8, colorSpace: WorkingSpace.current.cgColorSpace)
         }
+        let direct = time("direct: createCGImage at 1600x1200", 5) {
+            guard let image = RenderPipeline.buildImage(
+                source: source, document: document, lut: lut,
+                scale: .preview(maxSize: Self.previewBox), space: .current, lutCache: cache
+            ) else { return }
+            _ = context.createCGImage(image, from: image.extent.integral,
+                                      format: .RGBA8, colorSpace: WorkingSpace.current.cgColorSpace)
+        }
+        let roundTrip = time("PNG: encode + ImageIO decode at 1600x1200", 5) {
+            guard let image = RenderPipeline.buildImage(
+                source: source, document: document, lut: lut,
+                scale: .preview(maxSize: Self.previewBox), space: .current, lutCache: cache
+            ) else { return }
+            _ = Self.pngRoundTrip(image, context: context)
+        }
         let engine = RenderEngine()
         let viaEngine = timeAsync("new: through RenderEngine (memoized source)", 5) {
             _ = await engine.makeCGImage(
@@ -187,6 +227,8 @@ final class PreviewCostBenchmark: XCTestCase {
         }
         print(String(format: "\n  bare pipeline vs old:  %.2fx", new / old))
         print(String(format: "  engine vs old:         %.2fx\n", viaEngine / old))
+        print(String(format: "  PNG round-trip overhead vs direct raster: %.1f ms (%.2fx)\n",
+                     roundTrip - direct, roundTrip / direct))
     }
 
     // MARK: - Export (Step 6)
