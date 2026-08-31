@@ -250,18 +250,21 @@ enum RenderPipeline {
     ) -> CIImage {
         let dimension = toneCurveCubeDimension
         let denominator = Double(dimension - 1)
+        // Each channel shares one transfer function, so sample it once per lattice coordinate
+        // instead of once per (r, g, b) triple.
+        let samples = (0..<dimension).map { Float(curve.value(at: Double($0) / denominator)) }
+
         var values = [Float]()
         values.reserveCapacity(dimension * dimension * dimension * 4)
 
         for b in 0..<dimension {
-            let blue = curve.value(at: Double(b) / denominator)
+            let blue = samples[b]
             for g in 0..<dimension {
-                let green = curve.value(at: Double(g) / denominator)
+                let green = samples[g]
                 for r in 0..<dimension {
-                    let red = curve.value(at: Double(r) / denominator)
-                    values.append(Float(red))
-                    values.append(Float(green))
-                    values.append(Float(blue))
+                    values.append(samples[r])
+                    values.append(green)
+                    values.append(blue)
                     values.append(1)
                 }
             }
