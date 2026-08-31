@@ -2,6 +2,8 @@ import Foundation
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
+import CryptoKit
+import Darwin
 
 /// How to *reproduce* the source image, rather than the image itself.
 ///
@@ -42,11 +44,17 @@ struct ImageSource: Sendable, Equatable {
     /// The source's full pixel dimensions, upright. Lets `RenderScale` compute a downscale factor
     /// without decoding the image again.
     let nativeExtent: CGSize
+    private let dataFingerprint: String?
 
     init(backing: Backing, kind: Kind, nativeExtent: CGSize) {
         self.backing = backing
         self.kind = kind
         self.nativeExtent = nativeExtent
+        if case .data(let data) = backing {
+            self.dataFingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        } else {
+            self.dataFingerprint = nil
+        }
     }
 
     /// A file-backed source, classified by extension — the same rule `ImageDecoder.load` uses,
@@ -79,5 +87,42 @@ struct ImageSource: Sendable, Equatable {
               let type = UTType(uti as String)
         else { return .standard }
         return type.conforms(to: .rawImage) ? .raw : .standard
+    }
+
+    /// A cache identity that changes when a URL-backed file is replaced in place.
+    ///
+    /// Resource values are cheap to query and include both content metadata and the file identity;
+    /// unlike a path-only key, they do not keep showing old pixels after a source edit. Data-backed
+    /// imports are hashed once during initialization because their bytes already live in memory.
+    var cacheFingerprint: String {
+        let extent = "\(Double(nativeExtent.width).bitPattern):\(Double(nativeExtent.height).bitPattern)"
+        switch backing {
+        case .data:
+            let fingerprint = dataFingerprint ?? "missing"
+            return "data:\(fingerprint):\(kind):\(extent)"
+        case .url(let url):
+            let values = try? url.resourceValues(forKeys: [
+                .fileSizeKey, .contentModificationDateKey, .fileResourceIdentifierKey
+            ])
+            let size = values?.fileSize.map(String.init) ?? "missing"
+            let modified = values?.contentModificationDate?.timeIntervalSince1970.description ?? "missing"
+            let resourceID = values?.fileResourceIdentifier.map { String(describing: $0) } ?? "missing"
+            var fileInfo = stat()
+            let statResult = url.withUnsafeFileSystemRepresentation { path in
+                guard let path else { return -1 }
+                return Int(lstat(path, &fileInfo))
+            }
+            let posixFingerprint: String
+            if statResult == 0 {
+                posixFingerprint = [
+                    String(fileInfo.st_dev), String(fileInfo.st_ino), String(fileInfo.st_size),
+                    String(fileInfo.st_mtimespec.tv_sec), String(fileInfo.st_mtimespec.tv_nsec),
+                    String(fileInfo.st_ctimespec.tv_sec), String(fileInfo.st_ctimespec.tv_nsec),
+                ].joined(separator: ":")
+            } else {
+                posixFingerprint = "missing"
+            }
+            return "url:\(url.standardizedFileURL.path):\(size):\(modified):\(resourceID):\(posixFingerprint):\(kind):\(extent)"
+        }
     }
 }

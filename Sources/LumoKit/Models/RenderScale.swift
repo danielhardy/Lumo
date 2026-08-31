@@ -17,6 +17,11 @@ enum RenderScale: Sendable, Equatable {
     /// Native resolution.
     case full
 
+    var isFull: Bool {
+        if case .full = self { return true }
+        return false
+    }
+
     /// The maximum output box represented by this legacy scale, when one exists.
     var targetSize: CGSize? {
         switch self {

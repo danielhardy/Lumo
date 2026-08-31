@@ -123,8 +123,11 @@ actor RenderEngine: RenderEngining {
     /// reference state: a `CIFilter` gets its `inputImage` written on every use, so it is only safe
     /// behind this actor's serialization (§4.5).
     private let lutCache = LUTFilterCache()
+    private let previewCache: BoundedLRUCache<PreviewCacheKey, RenderResult>
+    private let developedSourceCache: BoundedLRUCache<DevelopedSourceCacheKey, CIImage>
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
 
-    init() {
+    init(configuration: RenderCacheConfiguration = .default) {
         // Matches `ImageProcessor`: Metal when there is a device, the CPU fallback when there isn't
         // (CI runners included).
         if let device = MTLCreateSystemDefaultDevice() {
@@ -132,18 +135,40 @@ actor RenderEngine: RenderEngining {
         } else {
             self.context = CIContext()
         }
+        self.previewCache = BoundedLRUCache(
+            maxEntries: configuration.previewMaxEntries,
+            maxCostBytes: configuration.previewMaxCostBytes
+        )
+        self.developedSourceCache = BoundedLRUCache(
+            maxEntries: configuration.developedSourceMaxEntries,
+            maxCostBytes: configuration.developedSourceMaxCostBytes
+        )
+        Task { [weak self] in await self?.installMemoryPressureMonitor() }
     }
 
     /// Inject a context — for tests that need to pin the backend rather than take whatever the
     /// machine offers.
-    init(context: CIContext) {
+    init(context: CIContext, configuration: RenderCacheConfiguration = .default) {
         self.context = context
+        self.previewCache = BoundedLRUCache(
+            maxEntries: configuration.previewMaxEntries,
+            maxCostBytes: configuration.previewMaxCostBytes
+        )
+        self.developedSourceCache = BoundedLRUCache(
+            maxEntries: configuration.developedSourceMaxEntries,
+            maxCostBytes: configuration.developedSourceMaxCostBytes
+        )
+        Task { [weak self] in await self?.installMemoryPressureMonitor() }
     }
 
     // MARK: - Rendering
 
     func render(_ request: RenderRequest) async throws -> RenderResult {
         let scale = request.renderScale
+        let previewKey = previewCacheKey(for: request, scale: scale)
+        if let previewKey, let cached = previewCache.value(for: previewKey) {
+            return cached
+        }
         guard let image = buildImage(
             request.source, request.document, request.lut, scale, request.space
         ) else {
@@ -182,10 +207,14 @@ actor RenderEngine: RenderEngining {
             }
         }
 
-        return RenderResult(
+        let result = RenderResult(
             data: data, extent: rect.size, colorSpace: request.space,
             quality: request.quality, output: request.output
         )
+        if let previewKey {
+            previewCache.insert(result, for: previewKey, cost: data.count)
+        }
+        return result
     }
 
     // MARK: - Histogram
@@ -301,6 +330,29 @@ actor RenderEngine: RenderEngining {
         lutCache.removeAll()
     }
 
+    /// Snapshot cache counters for instrumentation and performance diagnostics.
+    func cacheStatistics() -> RenderCacheStatistics {
+        RenderCacheStatistics(
+            preview: previewCache.statistics,
+            developedSource: developedSourceCache.statistics
+        )
+    }
+
+    /// Release all reusable intermediates. This is also the memory-pressure handler.
+    func evictForMemoryPressure() {
+        previewCache.removeAll(countAsEvictions: true)
+        developedSourceCache.removeAll(countAsEvictions: true)
+        lutCache.removeAll()
+        Thumbnails.evictForMemoryPressure()
+    }
+
+    /// Explicit invalidation for a source-folder refresh or a caller that knows a source changed.
+    func invalidateRenderCaches() {
+        previewCache.removeAll()
+        developedSourceCache.removeAll()
+        Thumbnails.invalidateCache()
+    }
+
     /// How many cube filters are held. Internal for the tests that prove the cache is actually being
     /// used across renders rather than rebuilt each time — there is no other way to observe it from
     /// outside, and a silently-bypassed cache is invisible in the output.
@@ -323,18 +375,9 @@ actor RenderEngine: RenderEngining {
         )
     }
 
-    // MARK: - The developed-source memo
+    // MARK: - The developed-source cache
 
-    private struct DevelopedKey: Equatable {
-        let source: ImageSource
-        let rawDevelop: RAWDevelopSettings
-        let scale: RenderScale
-    }
-
-    private var developedKey: DevelopedKey?
-    private var developedImage: CIImage?
-
-    /// The source stage, memoized for **preview** renders.
+    /// The source stage, cached for **preview** renders.
     ///
     /// This exists for one measured reason. Core Image caches decoded intermediates against the
     /// `CIImage` instance, so handing it a freshly-built source every render means re-decoding the
@@ -352,8 +395,8 @@ actor RenderEngine: RenderEngining {
     /// gain, and holding a full-resolution developed image between exports would pin Core Image's
     /// full-resolution intermediates for as long as the engine lives.
     ///
-    /// A single entry, because the user is looking at one image at a time: changing image, develop
-    /// settings, or preview size replaces it. Nothing is retained once the next image is opened.
+    /// Several entries are retained so stepping back through a folder can hit, but both a count and
+    /// an estimated decoded-byte limit keep a long navigation session bounded.
     private func developedSource(
         _ source: ImageSource,
         _ rawDevelop: RAWDevelopSettings,
@@ -362,22 +405,59 @@ actor RenderEngine: RenderEngining {
         guard case .preview = scale else {
             return RenderPipeline.developedSource(source, rawDevelop: rawDevelop, scale: scale)
         }
-        let key = DevelopedKey(source: source, rawDevelop: rawDevelop, scale: scale)
-        if key == developedKey, let developedImage { return developedImage }
+        let key = DevelopedSourceCacheKey(
+            source: RenderSourceFingerprint(source),
+            developHash: RenderCacheHash.digest(rawDevelop),
+            scale: RenderScaleKey(scale),
+            pipelineVersion: RenderPipeline.cacheVersion
+        )
+        if let image = developedSourceCache.value(for: key) { return image }
 
         guard let image = RenderPipeline.developedSource(
             source, rawDevelop: rawDevelop, scale: scale
         ) else { return nil }
 
-        developedKey = key
-        developedImage = image
+        let extent = image.extent.integral
+        let width = max(0, Int(min(extent.width, CGFloat(Int.max))))
+        let height = max(0, Int(min(extent.height, CGFloat(Int.max))))
+        let pixelCount = width.multipliedReportingOverflow(by: height)
+        let byteCount = pixelCount.overflow
+            ? Int.max
+            : pixelCount.partialValue.multipliedReportingOverflow(by: 4).partialValue
+        developedSourceCache.insert(image, for: key, cost: byteCount)
         return image
     }
 
     /// Drop the developed-source memo. Not needed for correctness — the key covers every input — but
     /// it lets a caller release the intermediates when no image is on screen.
     func invalidateSourceCache() {
-        developedKey = nil
-        developedImage = nil
+        developedSourceCache.removeAll()
+    }
+
+    private func previewCacheKey(for request: RenderRequest, scale: RenderScale) -> PreviewCacheKey? {
+        guard !scale.isFull, request.output == .raster else { return nil }
+        guard request.quality == .thumbnail || request.quality == .interactive || request.quality == .preview else {
+            return nil
+        }
+        return PreviewCacheKey(
+            source: RenderSourceFingerprint(request.source),
+            documentHash: RenderCacheHash.digest(request.document),
+            lutFingerprint: request.lut?.cacheFingerprint ?? "none",
+            targetScale: RenderScaleKey(scale),
+            quality: request.quality,
+            space: request.space,
+            pipelineVersion: RenderPipeline.cacheVersion
+        )
+    }
+
+    private func installMemoryPressureMonitor() {
+        let source = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical], queue: DispatchQueue.global(qos: .utility)
+        )
+        source.setEventHandler(handler: { [weak self] in
+            Task { await self?.evictForMemoryPressure() }
+        })
+        source.resume()
+        memoryPressureSource = source
     }
 }
