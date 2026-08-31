@@ -19,8 +19,8 @@ have since been fixed and are marked ✅ below — do not re-solve them.
 LUTzy applies one LUT to one image and bakes the result. Phase 2 makes the edit a **value** instead of
 a baked image, which buys four things at once:
 
-1. **Preview/export parity becomes structural.** Today `renderPreview` and `export` are two code paths
-   that merely agree. After: one `buildImage` call differing only by a scale value.
+1. **Preview/export parity becomes structural.** Preview and export are requests to one renderer;
+   their quality and output policies are explicit, while both use the same `EditDocument` pipeline.
 2. **RAW develop controls** — exposure, temperature, contrast, noise reduction — via `CIRAWFilter`'s
    native properties, which must be set *before* `outputImage` and so cannot be a post-hoc node.
 3. **Undo, presets, and per-image edits for free** from a `Codable` document.
@@ -91,10 +91,11 @@ EditDocument (value: Codable, Sendable, Equatable)   ← the look; serializable,
 RenderPipeline.buildImage(...)        ← pure fn: EditDocument → ONE lazy CIImage
         │  evaluated by
         ▼
-actor RenderEngine (owns the ONE CIContext)   ← rasterize at .preview or .full
+actor RenderEngine (owns the ONE CIContext)   ← render a RenderRequest at one of five qualities
         │
-        ├── CGImage → @MainActor wraps NSImage   (preview)
-        └── Data    → write(to:)                 (export)
+        └── RenderResult (Sendable bytes + extent + color space)
+              ├── raster bytes → @MainActor wraps NSImage
+              └── encoded bytes → write(to:)     (export)
 ```
 
 `RecipeExtractor` sits **outside** this stack. It never imports `EditDocument`, never calls
@@ -138,9 +139,40 @@ enum RenderScale: Sendable, Equatable { case preview(maxSize: CGSize), full }
 enum WorkingSpace: String, Codable, Sendable { case sRGB, displayP3; static let current = WorkingSpace.sRGB }
 ```
 
-`RenderPipeline.buildImage(source:document:lut:scale:space:) -> CIImage?` folds those into a single
-lazy graph — source → RAW develop → ordered nodes → LUT-with-intensity — rasterizing **nothing**
-in between. `actor RenderEngine` owns the only `CIContext` and evaluates it at one of two scales.
+The renderer boundary is:
+
+```swift
+struct RenderRequest: Sendable {
+    let source: ImageSource
+    let document: EditDocument
+    let targetSize: CGSize?
+    let quality: RenderQuality // thumbnail, interactive, preview, fullResolution, export
+    let output: RenderOutput   // raster or encoded(format:quality:)
+    let space: WorkingSpace
+}
+
+struct RenderResult: Sendable {
+    let data: Data
+    let extent: CGSize
+    let colorSpace: WorkingSpace
+}
+```
+
+Raster results are lossless PNG bytes because `CGImage` is not Sendable. `extent` is the integral
+pixel extent actually encoded; downsampled tiers fit `targetSize` without upscaling, while
+`fullResolution` and `export` use the decoder's native extent. The result's `colorSpace` is the same
+space used for LUT interpolation and output encoding. The `output` policy, rather than a UI type or
+an implicit preview/export branch, selects raster versus file-format bytes.
+
+The pipeline ordering contract is fixed for this version: oriented source decode, RAW camera
+development, ordered `EditDocument.adjustments`, LUT application with intensity, then output
+rasterization/encoding. A quality tier may change source scale and an output policy may change the
+representation, but neither may reorder or omit edit stages.
+
+`RenderPipeline.buildImage(source:document:lut:scale:space:) -> CIImage?` folds every request into a
+single lazy graph — source → RAW develop → ordered nodes → LUT-with-intensity — rasterizing
+**nothing** in between. `actor RenderEngine` owns the only `CIContext` and evaluates that graph for
+all five qualities.
 
 Preview downscales **early**: `CIRAWFilter.scaleFactor` before `outputImage` for RAW, a Lanczos step
 right after load for standard images. Adjustment and LUT nodes then operate on ~1600×1200 px rather
@@ -211,11 +243,12 @@ onto the `CubeLUT`.
 ### 4.5 The GPU is the only isolation boundary
 
 `actor RenderEngine` owns the single Metal `CIContext`. `CIImage`/`CIFilter`/`CIContext` are born and
-die inside it. Only `Sendable` values cross in (`EditDocument`, `ImageSource`, `WorkingSpace`,
-`RenderScale`, `LUTID`, `URL`/`Data`); a `sending CGImage?` or `Data` crosses out.
+die inside it. Only `Sendable` values cross in (`RenderRequest`, `EditDocument`, `ImageSource`,
+`WorkingSpace`, `RenderQuality`, `URL`/`Data`); a `RenderResult` with bytes and metadata crosses out.
 
-`CGImage` is **not** `Sendable` (verified, Swift 6.3) — use `-> sending CGImage?` (region-based
-isolation), which keeps both the zero-`@unchecked` promise and the zero-copy benefit over returning bytes.
+`CGImage` is **not** `Sendable` (verified, Swift 6.3), so it is decoded from raster result bytes only
+after the renderer boundary, on the main actor that owns the UI image. This keeps the render API free
+of AppKit/SwiftUI and preserves the zero-`@unchecked` promise.
 
 ✅ **Step 7 did this.** `ImageProcessor` is gone. GPU duties moved to the actor; the format vocabulary
 (`rawExtensions`/`supportedExtensions`/`supportedTypes`), `orientedLoadOptions`, `developRAWNeutral`

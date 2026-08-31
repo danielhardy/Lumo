@@ -672,21 +672,19 @@ final class AppViewModel: ObservableObject {
         let box = maxPreview
 
         previewTask = Task { [engine] in
-            let cgImage = await engine.makeCGImage(
+            let result = try? await engine.render(RenderRequest(
                 source: imageSource, document: requested, lut: lut,
-                scale: .preview(maxSize: box), space: .current
-            )
+                targetSize: box, quality: .preview, output: .raster, space: .current
+            ))
             guard !Task.isCancelled else { return }
-            guard let cgImage else {
+            guard let result, let image = NSImage(data: result.data) else {
                 // Not per-LUT validation — a bad cube is caught and reported at parse time (§7).
                 // This is the render itself failing, which means the source stopped being readable.
                 self.statusMessage = "Could not render \(self.sourceName)"
                 return
             }
-            self.previewNSImage = NSImage(
-                cgImage: cgImage,
-                size: NSSize(width: cgImage.width, height: cgImage.height)
-            )
+            image.size = NSSize(width: result.extent.width, height: result.extent.height)
+            self.previewNSImage = image
             self.updateHistogram()
         }
     }
@@ -704,15 +702,13 @@ final class AppViewModel: ObservableObject {
         let box = maxPreview
 
         originalPreviewTask = Task { [engine] in
-            let cgImage = await engine.makeCGImage(
+            let result = try? await engine.render(RenderRequest(
                 source: imageSource, document: baseline, lut: nil,
-                scale: .preview(maxSize: box), space: .current
-            )
-            guard !Task.isCancelled, let cgImage else { return }
-            self.originalPreviewNSImage = NSImage(
-                cgImage: cgImage,
-                size: NSSize(width: cgImage.width, height: cgImage.height)
-            )
+                targetSize: box, quality: .preview, output: .raster, space: .current
+            ))
+            guard !Task.isCancelled, let result, let image = NSImage(data: result.data) else { return }
+            image.size = NSSize(width: result.extent.width, height: result.extent.height)
+            self.originalPreviewNSImage = image
         }
     }
 

@@ -17,6 +17,14 @@ enum RenderScale: Sendable, Equatable {
     /// Native resolution.
     case full
 
+    /// The maximum output box represented by this legacy scale, when one exists.
+    var targetSize: CGSize? {
+        switch self {
+        case .preview(let maxSize): return maxSize
+        case .full: return nil
+        }
+    }
+
     /// The factor to render `nativeExtent` at, in 0…1.
     ///
     /// Always ≤ 1: a preview box larger than the image renders at 1.0 rather than magnifying it.
