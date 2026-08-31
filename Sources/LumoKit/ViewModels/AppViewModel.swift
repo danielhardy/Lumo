@@ -168,6 +168,10 @@ final class AppViewModel: ObservableObject {
     @Published var isShowingOriginal: Bool = false
     @Published var isSideBySide: Bool = true
 
+    /// The visible render is owned by these surfaces, not published image values on this model.
+    let previewSurface = PreviewSurface()
+    let originalPreviewSurface = PreviewSurface()
+
     /// Inspector visibility. Computing the histogram is gated on this — plus on the Info tab being
     /// the one on screen — so we don't tally pixels for a panel nobody's looking at.
     @Published var isInspectorPresented: Bool = false {
@@ -397,6 +401,8 @@ final class AppViewModel: ObservableObject {
 
         sourceRevision &+= 1
         previewCoordinator.cancel()
+        previewSurface.clear()
+        originalPreviewSurface.clear()
         isPreviewInteractionActive = false
         loadTask?.cancel()
         metadataTask?.cancel()
@@ -764,6 +770,7 @@ final class AppViewModel: ObservableObject {
     private func schedulePreview() {
         guard let imageSource else {
             previewNSImage = nil
+            previewSurface.clear()
             return
         }
 
@@ -877,9 +884,20 @@ final class AppViewModel: ObservableObject {
 
     private func publishPreview(_ publication: PreviewCoordinator.Publication) {
         guard publication.request.source == imageSource else { return }
+        if let gpuImage = publication.gpuImage {
+            previewSurface.present(gpuImage)
+        }
         guard let cgImage = publication.image else {
             if publication.phase == .settled {
-                statusMessage = "Could not render \(sourceName)"
+                if publication.gpuImage == nil {
+                    statusMessage = "Could not render \(sourceName)"
+                } else {
+                    if pendingDevelopChange {
+                        pendingDevelopChange = false
+                        scheduleOriginalPreview()
+                    }
+                    updateHistogram()
+                }
             }
             return
         }
@@ -907,6 +925,7 @@ final class AppViewModel: ObservableObject {
         guard let imageSource else {
             originalPreviewTask?.cancel()
             originalPreviewNSImage = nil
+            originalPreviewSurface.clear()
             return
         }
         let baseline = document.originalForComparison
@@ -915,10 +934,20 @@ final class AppViewModel: ObservableObject {
         let documentRevision = self.documentRevision
 
         originalPreviewTask = Task { [engine] in
-            let cgImage = await engine.makeCGImage(RenderRequest(
+            let request = RenderRequest(
                 source: imageSource, document: baseline, lut: nil,
                 targetSize: box, quality: .preview, output: .raster, space: .current
-            ))
+            )
+            let gpuImage = await engine.makeCIImage(request)
+            if let gpuImage {
+                guard !Task.isCancelled,
+                      sourceRevision == self.sourceRevision,
+                      documentRevision == self.documentRevision,
+                      self.imageSource == imageSource else { return }
+                self.originalPreviewSurface.present(gpuImage)
+                return
+            }
+            let cgImage = await engine.makeCGImage(request)
             guard !Task.isCancelled,
                   sourceRevision == self.sourceRevision,
                   documentRevision == self.documentRevision,

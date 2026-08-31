@@ -14,6 +14,9 @@ import ImageIO
 /// for free; a fake has to earn it.
 protocol RenderEngining: Sendable {
 
+    /// Evaluated Core Image output for the persistent GPU presentation surface.
+    func makeCIImage(_ request: RenderRequest) async -> sending CIImage?
+
     /// Render one UI-independent request through the deterministic pipeline.
     func render(_ request: RenderRequest) async throws -> RenderResult
 
@@ -62,6 +65,8 @@ protocol RenderEngining: Sendable {
 }
 
 extension RenderEngining {
+    func makeCIImage(_ request: RenderRequest) async -> sending CIImage? { nil }
+
     func makeCGImage(_ request: RenderRequest) async -> sending CGImage? {
         guard request.output == .raster,
               let result = try? await render(request),
@@ -125,6 +130,19 @@ extension RenderEngining {
 /// regardless of `WorkingSpace.current`. Two contexts in the module, one in the render path, and
 /// `RenderStackTests` fails if a third appears.
 actor RenderEngine: RenderEngining {
+
+    /// Shared by the persistent SwiftUI presentation surfaces. Keeping this in the render-stack
+    /// owner preserves the single-context invariant while allowing MTKView to draw its drawable.
+    @MainActor static let presentationContext: CIContext = {
+        if let device = MTLCreateSystemDefaultDevice() { return CIContext(mtlDevice: device) }
+        return CIContext()
+    }()
+
+    func makeCIImage(_ request: RenderRequest) async -> sending CIImage? {
+        guard request.output == .raster, !Task.isCancelled else { return nil }
+        return buildImage(request.source, request.document, request.lut, request.renderScale,
+                          request.space, quality: request.quality)
+    }
 
     /// The app's engine. One instance, therefore one context.
     static let shared = RenderEngine()

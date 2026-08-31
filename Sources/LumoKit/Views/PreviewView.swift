@@ -45,6 +45,7 @@ struct PreviewView: View {
                 // Original
                 panelView(
                     image: viewModel.originalPreviewNSImage,
+                    surface: viewModel.originalPreviewSurface,
                     label: "Original",
                     labelSide: .leading,
                     width: geo.size.width / 2
@@ -58,6 +59,7 @@ struct PreviewView: View {
                 // LUT applied
                 panelView(
                     image: viewModel.previewNSImage,
+                    surface: viewModel.previewSurface,
                     label: viewModel.selectedLUT?.name ?? "Adjusted",
                     labelSide: .trailing,
                     width: geo.size.width / 2
@@ -67,11 +69,15 @@ struct PreviewView: View {
         .padding(8)
     }
 
-    private func panelView(image: NSImage?, label: String, labelSide: HorizontalAlignment, width: CGFloat) -> some View {
+    private func panelView(image: NSImage?, surface: PreviewSurface, label: String, labelSide: HorizontalAlignment, width: CGFloat) -> some View {
         ZStack(alignment: labelSide == .leading ? .topLeading : .topTrailing) {
             bgColor
 
-            if let nsImage = image {
+            if surface.image != nil {
+                PreviewSurfaceView(surface: surface)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: width, maxHeight: .infinity)
+            } else if let nsImage = image {
                 Image(nsImage: nsImage)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -88,7 +94,11 @@ struct PreviewView: View {
 
     private var singleView: some View {
         ZStack {
-            if let nsImage = viewModel.previewNSImage {
+            if viewModel.previewSurface.image != nil {
+                PreviewSurfaceView(surface: viewModel.previewSurface)
+                    .aspectRatio(contentMode: .fit)
+                    .padding(8)
+            } else if let nsImage = viewModel.previewNSImage {
                 Image(nsImage: nsImage)
                     .resizable()
                     .aspectRatio(contentMode: .fit)

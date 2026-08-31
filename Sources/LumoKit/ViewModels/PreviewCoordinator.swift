@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import CoreImage
 
 /// Coordinates the display render, which has a different lifecycle from the render actor.
 ///
@@ -19,6 +20,7 @@ final class PreviewCoordinator {
     struct Publication {
         let request: RenderRequest
         let image: CGImage?
+        let gpuImage: CIImage?
         let revision: UInt64
         let phase: Phase
     }
@@ -205,14 +207,19 @@ final class PreviewCoordinator {
         phase: Phase,
         engine: any RenderEngining
     ) async {
-        let image = await engine.makeCGImage(request)
+        let gpuImage = await engine.makeCIImage(request)
+        // Test doubles and non-GPU conformers retain the old raster seam. RenderEngine uses the
+        // GPU branch, so interactive production frames never allocate a CGImage.
+        // Settled raster output remains available to existing non-view clients/tests; interactive
+        // frames are surface-only and never take this allocation path.
+        let image = gpuImage == nil || phase == .settled ? await engine.makeCGImage(request) : nil
         guard !Task.isCancelled, isCurrent(token) else { return }
         guard let image else {
             onFailure?(request)
             return
         }
         onPublication?(Publication(
-            request: request, image: image,
+            request: request, image: image, gpuImage: gpuImage,
             revision: token.revision, phase: phase
         ))
     }
