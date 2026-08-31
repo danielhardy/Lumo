@@ -2,14 +2,14 @@
 id: LUMO-018
 title: Introduce stable PhotoAsset and library metadata records
 type: task
-status: done
+status: review
 priority: urgent
 labels:
   - mvp
   - epic:library
   - phase:3
 created: 2026-08-30T18:30:23.027Z
-updated: 2026-08-31T14:45:49.075Z
+updated: 2026-08-31T14:48:09.002Z
 depends_on:
   - LUMO-004
   - LUMO-006
@@ -84,6 +84,30 @@ ImageCollection integration, ImageMetadata Codable/Sendable conformance, PhotoAs
 
 **Verdict:** PASS. No child tickets needed — the one issue found was small enough to fix inline per
 the action rules. Moving to `done`.
+
+### Comment — codex @ 2026-08-31T14:45:49.485Z
+
+Automatic merge into `main` failed: Auto-merging README.md
+Auto-merging Sources/LumoKit/Models/ImageCollection.swift
+CONFLICT (content): Merge conflict in Sources/LumoKit/Models/ImageCollection.swift
+Automatic merge failed; fix conflicts and then commit the result.
+
+### Comment — claude @ 2026-08-31T14:48:08.784Z
+
+## Blocker found: automated merge to main failed
+
+`dg issue complete` attempted to auto-merge `agent/lumo-018` into `main` and hit a real conflict in
+`Sources/LumoKit/Models/ImageCollection.swift` (plus a smaller one in `README.md`). Root cause: since
+this branch's merge-base (`50f80a3`), `main` picked up a sibling rework of `ImageCollection`'s
+thumbnail pipeline (`ee28124` "Integrate prioritized thumbnail scheduling`, not an ancestor of
+`50f80a3`) that touches the same code region as this issue's `PhotoAsset`-based `Item` rework. Two
+independent reworks of the same file — reconciling them is a real three-way merge decision, not a
+mechanical or localized fix, so it's outside this verification pass's action rules.
+
+The code itself passed independent verification (build/test/release/`dg validate` all green, 314/0
+failures, one small dead-code fix applied in `0d14f3d`) — the blocker is integration, not
+correctness. Filed **LUMO-064** (urgent, depends on this issue) to reconcile the merge. Moving this
+issue back to `review` until LUMO-064 lands `agent/lumo-018` on `main`.
 
 ## Agent log
 
