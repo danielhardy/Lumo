@@ -335,42 +335,6 @@ final class ImageCollection: ObservableObject {
             < (rhs.url?.standardizedFileURL.path ?? rhs.displayName)
     }
 
-    // Legacy synchronous helper retained for compatibility with focused internal tests.
-    private nonisolated static func scanFolder(_ url: URL) -> [DiscoveredItem] {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
-
-        // Resolve symlinks on both sides so the prefix math holds even when the
-        // root is itself a symlink (e.g. /tmp → /private/tmp).
-        let rootPath = url.resolvingSymlinksInPath().path
-        var newItems: [DiscoveredItem] = []
-        while let fileURL = enumerator.nextObject() as? URL {
-            if Task.isCancelled { return [] }
-            let ext = fileURL.pathExtension.lowercased()
-            guard ImageDecoder.supportedExtensions.contains(ext) else { continue }
-            let dir = fileURL.deletingLastPathComponent().resolvingSymlinksInPath().path
-            let subfolder = dir.hasPrefix(rootPath)
-                ? String(dir.dropFirst(rootPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                : ""
-            let name = fileURL.deletingPathExtension().lastPathComponent
-            newItems.append(DiscoveredItem(url: fileURL, displayName: name, subfolder: subfolder))
-        }
-
-        newItems.sort {
-            if $0.subfolder != $1.subfolder {
-                return $0.subfolder.localizedStandardCompare($1.subfolder) == .orderedAscending
-            }
-            let nameOrder = $0.displayName.localizedStandardCompare($1.displayName)
-            if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
-            return $0.url.standardizedFileURL.path < $1.url.standardizedFileURL.path
-        }
-        return newItems
-    }
-
     // MARK: - Deferred metadata
 
     private func startMetadataLoading() {
