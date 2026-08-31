@@ -103,6 +103,18 @@ final class LightInspectorTests: TempDirectoryTestCase {
         XCTAssertTrue(viewModel.document.light.isIdentity)
     }
 
+    func testAccessibilityAdjustableActionAddsTheFirstCurvePoint() {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        XCTAssertTrue(viewModel.document.light.toneCurve.points.dropFirst().dropLast().isEmpty)
+
+        let synthetic = LightCurvePoint(input: 0.5, output: viewModel.document.light.toneCurve.value(at: 0.5))
+        viewModel.setToneCurvePoint(synthetic, output: synthetic.output + 0.01)
+
+        let interior = viewModel.document.light.toneCurve.points.dropFirst().dropLast()
+        XCTAssertEqual(interior.count, 1)
+        XCTAssertEqual(interior.first?.output ?? -1, synthetic.output + 0.01, accuracy: 0.000_001)
+    }
+
     private func waitUntil(
         timeout: TimeInterval = 2,
         _ condition: @escaping @MainActor () -> Bool

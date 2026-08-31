@@ -95,15 +95,15 @@ final class KeyMonitor {
                 return nil
             }
             if isDown, event.charactersIgnoringModifiers?.lowercased() == "z" {
-                if mods.contains(.shift), vm.canRedo {
-                    vm.redo()
-                    return nil
-                }
-                if vm.canUndo {
+                if mods.contains(.shift) {
+                    if vm.canRedo {
+                        vm.redo()
+                        return nil
+                    }
+                } else if vm.canUndo {
                     vm.undo()
                     return nil
-                }
-                if vm.undoCullingChange() {
+                } else if vm.undoCullingChange() {
                     return nil
                 }
             }

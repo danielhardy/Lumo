@@ -38,9 +38,10 @@ extension AppViewModel {
     /// Replace one editable curve point. Endpoints are fixed by the model and are ignored here.
     func setToneCurvePoint(_ point: LightCurvePoint, input: Double? = nil, output: Double? = nil) {
         var points = document.light.toneCurve.points
-        if points.dropFirst().dropLast().isEmpty,
-           abs(point.input - 0.5) < 0.001 {
-            points.append(point)
+        if points.dropFirst().dropLast().isEmpty, abs(point.input - 0.5) < 0.001 {
+            points.append(LightCurvePoint(input: input ?? point.input, output: output ?? point.output))
+            updateDocument(debounced: true) { $0.light.toneCurve = LightToneCurve(points: points) }
+            return
         }
         guard let index = points.firstIndex(of: point), index > 0, index < points.count - 1 else { return }
         points[index] = LightCurvePoint(
