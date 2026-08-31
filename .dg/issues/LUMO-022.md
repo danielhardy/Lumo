@@ -2,26 +2,22 @@
 id: LUMO-022
 title: Implement rating, pick/reject, filters, and keyboard culling
 type: task
-status: claimed
+status: done
 priority: high
 labels:
   - mvp
   - epic:library
   - phase:3
 created: 2026-08-30T18:30:24.444Z
-updated: 2026-08-31T18:22:01.868Z
+updated: 2026-08-31T18:33:05.484Z
 depends_on:
   - LUMO-021
   - LUMO-008
 estimate: 5
-order: y
+order: a0
 board: product
-claim:
-  actor: codex
-  session: 01MTHKF5AJ048OEGAO
-  claimed_at: 2026-08-31T18:22:01.867Z
-  expires_at: 2026-08-31T19:22:01.867Z
-  model: gpt-5.6-luna
+commits:
+  - 2ab6406
 ---
 
 ## Objective
@@ -58,3 +54,5 @@ Part of **Epic 3 — Folder library and rapid culling**. The source product brie
 ## Agent log
 
 <!-- Generated summaries only. Detailed activity lives in events.jsonl. -->
+
+- 2026-08-31T18:33:05.482Z: Implemented P/X/0/1-5 keyboard culling with pick/reject/rating persistence, bounded undo, composable flag/rating filters, filtered navigation, and grid empty states. Added focused shortcut, filter, navigation, undo, and persistence tests. Verification passed: swift test (353 passed, 20 skipped), swift build -c release, git diff --check, and dg validate.
