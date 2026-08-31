@@ -18,13 +18,19 @@ struct ColorAdjustments: Codable, Equatable, Sendable {
     var saturation: Double {
         didSet { saturation = Self.clamp(saturation, to: Self.saturationRange, default: 0) }
     }
+    var mixer: ColorMixerAdjustments
 
-    init(vibrance: Double = 0, saturation: Double = 0) {
+    init(
+        vibrance: Double = 0,
+        saturation: Double = 0,
+        mixer: ColorMixerAdjustments = .neutral
+    ) {
         self.vibrance = Self.clamp(vibrance, to: Self.vibranceRange, default: 0)
         self.saturation = Self.clamp(saturation, to: Self.saturationRange, default: 0)
+        self.mixer = mixer
     }
 
-    var isIdentity: Bool { vibrance == 0 && saturation == 0 }
+    var isIdentity: Bool { vibrance == 0 && saturation == 0 && mixer.isIdentity }
 
     /// `CIVibrance.inputAmount` is normalized to -1...1.
     var normalizedVibrance: Double { vibrance / 100 }
@@ -42,13 +48,14 @@ struct ColorAdjustments: Codable, Equatable, Sendable {
         return min(max(value, range.lowerBound), range.upperBound)
     }
 
-    private enum CodingKeys: String, CodingKey { case vibrance, saturation }
+    private enum CodingKeys: String, CodingKey { case vibrance, saturation, mixer }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
             vibrance: try container.decodeIfPresent(Double.self, forKey: .vibrance) ?? 0,
-            saturation: try container.decodeIfPresent(Double.self, forKey: .saturation) ?? 0
+            saturation: try container.decodeIfPresent(Double.self, forKey: .saturation) ?? 0,
+            mixer: try container.decodeIfPresent(ColorMixerAdjustments.self, forKey: .mixer) ?? .neutral
         )
     }
 }

@@ -23,8 +23,8 @@ enum RenderPipeline {
     /// monotonic; some Contrast/Highlights/Shadows combinations previously produced a curve that
     /// inverted tones locally, so affected documents render different pixels even though the
     /// document schema is unchanged. v5 adds the Whites and Blacks endpoint stages. v6 adds the
-    /// editable master RGB curve. v7 adds the global Color stage.
-    static let cacheVersion = 7
+    /// editable master RGB curve. v7 adds the global Color stage. v8 adds the GPU HSL mixer stage.
+    static let cacheVersion = 8
 
     /// Build the graph for `document` over `source`.
     ///
@@ -275,8 +275,168 @@ enum RenderPipeline {
             result = filter.outputImage ?? result
         }
 
+        if !color.mixer.isIdentity {
+            result = applyColorMixer(color.mixer, to: result)
+        }
+
         return result
     }
+
+    // MARK: - HSL mixer
+
+    /// Apply the eight-channel mixer in one Core Image color kernel.
+    ///
+    /// Channel weights are raised cosine windows around the fixed Lightroom-style centers
+    /// (R/O/Y/G/A/B/P/M). A 45° support radius gives adjacent channels a smooth overlap, while the
+    /// circular distance makes the red window continuous across hue 0/1. The kernel computes all
+    /// weights from the original pixel hue, then applies one combined HSL adjustment; there are no
+    /// CPU per-pixel operations and no sequence of hard channel masks that could leave seams.
+    ///
+    /// Hue is limited to ±30° at the UI endpoints, while Saturation is a ±1 HSL delta and
+    /// Luminance is a ±0.5 lightness delta. HSL is used only as the local mixer coordinate system;
+    /// the surrounding image remains in the request's working color space and alpha is copied
+    /// through unchanged.
+    static func applyColorMixer(_ mixer: ColorMixerAdjustments, to image: CIImage) -> CIImage {
+        guard !mixer.isIdentity,
+              let kernel = hslMixerKernel
+        else { return image }
+
+        let parameters: [Any] = [
+            mixerKernelVector(mixer.red), mixerKernelVector(mixer.orange),
+            mixerKernelVector(mixer.yellow), mixerKernelVector(mixer.green),
+            mixerKernelVector(mixer.aqua), mixerKernelVector(mixer.blue),
+            mixerKernelVector(mixer.purple), mixerKernelVector(mixer.magenta),
+        ]
+
+        // `__sample` supplies the image argument first. The eight following vec4s are a compact
+        // value payload, which keeps the kernel signature fixed and avoids allocating a filter per
+        // channel or touching pixels on the CPU.
+        return kernel.apply(extent: image.extent, arguments: [image] + parameters) ?? image
+    }
+
+    private static func mixerKernelVector(_ channel: ColorMixerChannel) -> CIVector {
+        // 100 mixer hue units represent a useful photographic ±30° move.
+        CIVector(
+            x: channel.hue / 100 * (30.0 / 360.0),
+            y: channel.saturation / 100,
+            z: channel.luminance / 100,
+            w: 0
+        )
+    }
+
+    private static let hslMixerKernel: CIColorKernel? = CIColorKernel(source: hslMixerKernelSource)
+
+    private static let hslMixerKernelSource = """
+    float wrappedHue(float value) {
+        return value - floor(value);
+    }
+
+    float circularDistance(float hue, float center) {
+        float distance = abs(hue - center);
+        return min(distance, 1.0 - distance);
+    }
+
+    float hueWeight(float hue, float center) {
+        // Raised cosine: both the value and its first derivative reach zero at the edge.
+        float radius = 0.125;
+        float distance = circularDistance(hue, center);
+        if (distance >= radius) { return 0.0; }
+        return 0.5 + 0.5 * cos(3.141592653589793 * distance / radius);
+    }
+
+    float hueToRGB(float p, float q, float t) {
+        float wrapped = wrappedHue(t);
+        if (wrapped < 1.0 / 6.0) { return p + (q - p) * 6.0 * wrapped; }
+        if (wrapped < 1.0 / 2.0) { return q; }
+        if (wrapped < 2.0 / 3.0) { return p + (q - p) * (2.0 / 3.0 - wrapped) * 6.0; }
+        return p;
+    }
+
+    vec3 hslToRGB(float hue, float saturation, float luminance) {
+        if (saturation <= 0.00001) {
+            return vec3(luminance, luminance, luminance);
+        }
+        float q = luminance < 0.5
+            ? luminance * (1.0 + saturation)
+            : luminance + saturation - luminance * saturation;
+        float p = 2.0 * luminance - q;
+        return vec3(
+            hueToRGB(p, q, hue + 1.0 / 3.0),
+            hueToRGB(p, q, hue),
+            hueToRGB(p, q, hue - 1.0 / 3.0)
+        );
+    }
+
+    kernel vec4 hslMixer(
+        __sample pixel,
+        vec4 red,
+        vec4 orange,
+        vec4 yellow,
+        vec4 green,
+        vec4 aqua,
+        vec4 blue,
+        vec4 purple,
+        vec4 magenta
+    ) {
+        // Core Image kernel samples are premultiplied. HSL must see the unpremultiplied colour,
+        // then the result is premultiplied again so transparent pixels retain both alpha and the
+        // compositing contract of the input image.
+        if (pixel.a <= 0.00001) { return pixel; }
+        vec3 rgb = clamp(pixel.rgb / pixel.a, 0.0, 1.0);
+        float maximum = max(max(rgb.r, rgb.g), rgb.b);
+        float minimum = min(min(rgb.r, rgb.g), rgb.b);
+        float delta = maximum - minimum;
+
+        // Neutrals have no hue neighborhood. Returning the original sample also avoids assigning
+        // gray pixels an arbitrary red hue when only one channel is adjusted.
+        if (delta <= 0.00001) { return pixel; }
+
+        float luminance = 0.5 * (maximum + minimum);
+        float saturation = delta / (1.0 - abs(2.0 * luminance - 1.0));
+        float hue;
+        if (maximum == rgb.r) {
+            hue = (rgb.g - rgb.b) / delta;
+            if (hue < 0.0) { hue += 6.0; }
+            hue /= 6.0;
+        } else if (maximum == rgb.g) {
+            hue = ((rgb.b - rgb.r) / delta + 2.0) / 6.0;
+        } else {
+            hue = ((rgb.r - rgb.g) / delta + 4.0) / 6.0;
+        }
+        hue = wrappedHue(hue);
+
+        float redWeight = hueWeight(hue, 0.0);
+        float orangeWeight = hueWeight(hue, 1.0 / 12.0);
+        float yellowWeight = hueWeight(hue, 1.0 / 6.0);
+        float greenWeight = hueWeight(hue, 1.0 / 3.0);
+        float aquaWeight = hueWeight(hue, 1.0 / 2.0);
+        float blueWeight = hueWeight(hue, 2.0 / 3.0);
+        float purpleWeight = hueWeight(hue, 3.0 / 4.0);
+        float magentaWeight = hueWeight(hue, 5.0 / 6.0);
+
+        float hueDelta = redWeight * red.x + orangeWeight * orange.x
+            + yellowWeight * yellow.x + greenWeight * green.x
+            + aquaWeight * aqua.x + blueWeight * blue.x
+            + purpleWeight * purple.x + magentaWeight * magenta.x;
+        float saturationDelta = redWeight * red.y + orangeWeight * orange.y
+            + yellowWeight * yellow.y + greenWeight * green.y
+            + aquaWeight * aqua.y + blueWeight * blue.y
+            + purpleWeight * purple.y + magentaWeight * magenta.y;
+        float luminanceDelta = redWeight * red.z + orangeWeight * orange.z
+            + yellowWeight * yellow.z + greenWeight * green.z
+            + aquaWeight * aqua.z + blueWeight * blue.z
+            + purpleWeight * purple.z + magentaWeight * magenta.z;
+
+        return vec4(
+            hslToRGB(
+                wrappedHue(hue + hueDelta),
+                clamp(saturation + saturationDelta, 0.0, 1.0),
+                clamp(luminance + 0.5 * luminanceDelta, 0.0, 1.0)
+            ) * pixel.a,
+            pixel.a
+        );
+    }
+    """
 
     /// The cube is independent of image resolution. 64 samples keep interpolation error small for
     /// an editable curve while keeping the table at about 4 MB (64³ RGBA Float32 values). The table

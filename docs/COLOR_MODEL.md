@@ -19,3 +19,20 @@ the input colour metadata. The render engine writes the final raster in the requ
 `WorkingSpace`, which is the gamut boundary shared by preview and export. Out-of-gamut values from
 positive saturation/vibrance are left in the lazy graph and clipped by the requested output format,
 while all model inputs and normalized filter parameters are finite and bounded.
+
+## HSL mixer
+
+`ColorMixerAdjustments` contains eight explicit `ColorMixerChannel` values: Red, Orange, Yellow,
+Green, Aqua, Blue, Purple, and Magenta. Each channel stores Hue, Saturation, and Luminance on a
+finite, clamped `-100...+100` photographer-facing range. The value is nested in
+`ColorAdjustments`, so it participates automatically in `EditDocument` Codable persistence,
+`editHash`, equality, per-photo undo/redo snapshots, and the existing document copy boundary.
+Missing mixer or channel keys decode as neutral for additive migration.
+
+The renderer applies all eight channels in one Core Image `CIColorKernel`. Each fixed hue center
+uses a raised-cosine 45° support window; neighboring windows overlap smoothly and circular hue
+distance makes Red continuous across 0°/360°. The kernel computes HSL and combines the weighted
+Hue, Saturation, and Luminance deltas without Swift CPU pixel iteration. Hue endpoints move by
+±30°, Saturation by ±1 HSL saturation, and Luminance by ±0.5 HSL lightness. Neutral mixer state
+returns the original `CIImage` exactly, and preview/export share this same graph and working-space
+output boundary.
