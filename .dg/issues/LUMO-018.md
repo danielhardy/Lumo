@@ -2,20 +2,20 @@
 id: LUMO-018
 title: Introduce stable PhotoAsset and library metadata records
 type: task
-status: review
+status: done
 priority: urgent
 labels:
   - mvp
   - epic:library
   - phase:3
 created: 2026-08-30T18:30:23.027Z
-updated: 2026-08-31T14:48:09.002Z
+updated: 2026-08-31T15:19:16.176Z
 depends_on:
   - LUMO-004
   - LUMO-006
   - LUMO-064
 estimate: 5
-order: a0
+order: zzq
 board: product
 branch: agent/lumo-018
 commits:

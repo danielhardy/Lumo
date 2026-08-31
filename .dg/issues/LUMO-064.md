@@ -2,16 +2,15 @@
 id: LUMO-064
 title: "Resolve merge conflict: agent/lumo-018 ImageCollection.swift vs. thumbnail scheduler on main"
 type: task
-status: backlog
+status: done
 priority: urgent
 labels:
   - verification
 created: 2026-08-31T14:47:48.412Z
-updated: 2026-08-31T14:48:02.625Z
-depends_on:
-  - LUMO-018
-order: zzy
+updated: 2026-08-31T15:19:15.920Z
+order: zzh
 board: product
+branch: agent/lumo-064
 ---
 
 ## Parent
