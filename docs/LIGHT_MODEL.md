@@ -23,10 +23,12 @@ RAW develop → Light → legacy ordered adjustments → LUT
 The inherited adjustment array remains untouched. A v1 document with no `light` key decodes with
 neutral Light and therefore retains its old exposure, contrast, highlight, and shadow nodes,
 including their original order and Core Image parameter values. This is an additive migration, so
-`EditDocument.currentVersion` remains 1. `RenderPipeline.cacheVersion` is 2 because the graph now
-has an explicit Light stage and the document hash includes its state.
+`EditDocument.currentVersion` remains 1. `RenderPipeline.cacheVersion` is 3: v2 introduced the
+explicit Light stage and v3 records the refined non-neutral mapping.
 
-The current renderer maps Exposure, Contrast, Highlights, and Shadows onto the existing Core Image
-nodes. Whites, Blacks, and the master curve are persisted but wait for their dedicated GPU stages;
-they are not approximated with an unrelated operation. Neutral Light produces no nodes and is an
-exact render identity.
+The current renderer applies Exposure with `CIExposureAdjust` in EV and combines Contrast,
+Highlights, and Shadows in one five-point `CIToneCurve` GPU stage. The curve keeps its endpoints
+fixed, increases separation around the middle for Contrast, and tapers each local control toward its
+opposite tonal region. Whites, Blacks, and the master curve are persisted but wait for their
+dedicated GPU stages; they are not approximated with an unrelated operation. Neutral Light produces
+no nodes and is an exact render identity.

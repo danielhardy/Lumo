@@ -158,11 +158,12 @@ struct LightAdjustments: Codable, Equatable, Sendable {
             whites == 0 && blacks == 0 && toneCurve.isIdentity
     }
 
-    /// Existing-node representation for the controls already supported by the renderer.
+    /// Compatibility representation for callers that need the pre-refinement node values.
     ///
-    /// The order is fixed and documented: exposure, contrast, highlights, shadows. Whites, Blacks,
-    /// and the curve deliberately do not get approximated with an unrelated filter; their future
-    /// stages can be inserted in this same Light slot without changing the document contract.
+    /// `RenderPipeline` now uses a native EV node plus one tonal `CIToneCurve` for contrast,
+    /// highlights, and shadows. This property remains available for migration/diagnostic code, but
+    /// is deliberately not the render implementation: the individual inherited nodes are too broad
+    /// for the photographer-facing Light behavior.
     var existingNodeRepresentation: [AdjustmentNode] {
         var nodes: [AdjustmentNode] = []
         if exposure != 0 { nodes.append(.exposure(ev: exposure)) }

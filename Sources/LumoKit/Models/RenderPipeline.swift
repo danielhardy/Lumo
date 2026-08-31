@@ -18,9 +18,10 @@ enum RenderPipeline {
 
     /// Increment whenever the pixels produced by the graph can change without a cache-key input
     /// changing. This makes cache invalidation explicit when the pipeline evolves.
-    /// v2 adds the Light stage to the graph. Existing documents decode with neutral Light, so their
-    /// pixels remain unchanged; the version still advances because the graph now has a new input.
-    static let cacheVersion = 2
+    /// v2 added the Light stage to the graph. v3 refines its non-neutral mapping to the native EV
+    /// plus tonal-curve implementation; the version advances because existing Light edits render
+    /// different pixels even though the document schema is unchanged.
+    static let cacheVersion = 3
 
     /// Build the graph for `document` over `source`.
     ///
@@ -157,11 +158,62 @@ enum RenderPipeline {
 
     /// Apply the photographer-facing Light model before the inherited adjustment array.
     ///
-    /// Only the controls with an existing node implementation are mapped here. Whites, Blacks, and
-    /// the tone curve remain model state until their dedicated GPU stages land; approximating them
-    /// with brightness or contrast would make their later migration change the look twice.
+    /// Exposure remains a native EV operation. The other Light controls share one five-point tone
+    /// curve so their weights are tonal rather than spatial: contrast changes separation around the
+    /// middle, highlights have most of their throw in the upper quarter, and shadows have the
+    /// inverse shape. `CIToneCurve` is a Core Image node, so this stays in the same GPU-backed graph
+    /// as the rest of the pipeline and does not require a CPU per-pixel pass.
+    ///
+    /// Whites, Blacks, and the master curve remain model state until their dedicated Light stages
+    /// land; they are intentionally not approximated with this curve.
     static func applyLight(_ light: LightAdjustments, to image: CIImage) -> CIImage {
-        applyAdjustments(light.existingNodeRepresentation, to: image)
+        var result = image
+
+        if light.exposure != 0 {
+            let filter = CIFilter.exposureAdjust()
+            filter.inputImage = result
+            filter.ev = Float(light.exposure)
+            result = filter.outputImage ?? result
+        }
+
+        guard light.contrast != 0 || light.highlights != 0 || light.shadows != 0 else {
+            return result
+        }
+
+        let curve = CIFilter.toneCurve()
+        curve.inputImage = result
+
+        let contrast = CGFloat(light.contrast / 100)
+        let highlights = CGFloat(light.highlights / 100)
+        let shadows = CGFloat(light.shadows / 100)
+
+        // Fixed endpoints keep a moderate contrast move from clipping usable blacks and whites.
+        // The slider deltas are deliberately bounded well inside the endpoint interval, and the
+        // interior weights taper toward the opposite tonal region.
+        curve.point0 = toneCurvePoint(input: 0, output: 0)
+        curve.point1 = toneCurvePoint(input: 0.25, output: clampedToneValue(
+            0.25 - 0.12 * contrast + 0.15 * shadows
+        ))
+        curve.point2 = toneCurvePoint(input: 0.5, output: clampedToneValue(
+            0.5 + 0.025 * (highlights + shadows)
+        ))
+        curve.point3 = toneCurvePoint(input: 0.75, output: clampedToneValue(
+            0.75 + 0.12 * contrast + 0.15 * highlights
+        ))
+        curve.point4 = toneCurvePoint(input: 1, output: 1)
+
+        return curve.outputImage ?? result
+    }
+
+    private static func clampedToneValue(_ value: CGFloat) -> CGFloat {
+        min(max(value, 0), 1)
+    }
+
+    /// `CIToneCurve` interpolates in a gamma-2/perceptual domain. Specify the curve in linear-light
+    /// coordinates so the photographer-facing weights above retain their intended meaning for a
+    /// linear ramp as well as for normal encoded photographs.
+    private static func toneCurvePoint(input: CGFloat, output: CGFloat) -> CGPoint {
+        CGPoint(x: sqrt(input), y: sqrt(output))
     }
 
     /// Fold the ordered nodes over the image.

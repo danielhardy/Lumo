@@ -38,6 +38,43 @@ final class RenderPipelineTests: TempDirectoryTestCase {
         ))
     }
 
+    /// A linear-light ramp kept in floating point so the EV property is measured before 8-bit
+    /// encoding can hide a one-stop relationship behind gamma and rounding.
+    private func linearRamp(width: Int = 256) throws -> CIImage {
+        var pixels = [Float](repeating: 0, count: width * 4)
+        for x in 0..<width {
+            let value = Float(x) / Float(width - 1)
+            pixels[x * 4] = value
+            pixels[x * 4 + 1] = value
+            pixels[x * 4 + 2] = value
+            pixels[x * 4 + 3] = 1
+        }
+        let data = pixels.withUnsafeBytes { Data($0) }
+        return try XCTUnwrap(CIImage(
+            bitmapData: data,
+            bytesPerRow: width * 4 * MemoryLayout<Float>.size,
+            size: CGSize(width: width, height: 1),
+            format: .RGBAf,
+            colorSpace: nil
+        ))
+    }
+
+    private func linearSamples(of image: CIImage, width: Int = 256) throws -> [Float] {
+        var pixels = [Float](repeating: 0, count: width * 4)
+        pixels.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            Pixels.context.render(
+                image,
+                toBitmap: base,
+                rowBytes: width * 4 * MemoryLayout<Float>.size,
+                bounds: CGRect(x: 0, y: 0, width: width, height: 1),
+                format: .RGBAf,
+                colorSpace: nil
+            )
+        }
+        return stride(from: 0, to: pixels.count, by: 4).map { pixels[$0] }
+    }
+
     // MARK: - Identity
 
     /// The ship gate. `EditDocument()` must produce the source unchanged — not approximately, not
@@ -57,6 +94,76 @@ final class RenderPipelineTests: TempDirectoryTestCase {
 
         assertPixelsEqual(try Pixels.bytes(of: built), try Pixels.bytes(of: expected),
                           "neutral Light must leave the existing render untouched")
+    }
+
+    // MARK: - Photographic Light properties
+
+    func testOneStopExposureDoublesLinearMidtone() throws {
+        let source = try linearRamp()
+        let base = try linearSamples(of: source)
+        let exposed = try linearSamples(of: RenderPipeline.applyLight(
+            LightAdjustments(exposure: 1), to: source
+        ))
+
+        for index in [32, 64, 96, 128] {
+            XCTAssertEqual(exposed[index], min(base[index] * 2, 1), accuracy: 0.015,
+                           "+1 EV should approximately double linear sample \(index)")
+        }
+    }
+
+    func testHighlightsAndShadowsAreTonalInverses() throws {
+        let source = try linearRamp()
+        let base = try linearSamples(of: source)
+        let highlights = try linearSamples(of: RenderPipeline.applyLight(
+            LightAdjustments(highlights: 60), to: source
+        ))
+        let shadows = try linearSamples(of: RenderPipeline.applyLight(
+            LightAdjustments(shadows: 60), to: source
+        ))
+
+        let low = 32
+        let high = 224
+        XCTAssertGreaterThan(abs(highlights[high] - base[high]), abs(highlights[low] - base[low]))
+        XCTAssertGreaterThan(abs(shadows[low] - base[low]), abs(shadows[high] - base[high]))
+    }
+
+    func testModerateContrastKeepsUsableEndpoints() throws {
+        let source = try linearRamp()
+        let base = try linearSamples(of: source)
+        let contrasted = try linearSamples(of: RenderPipeline.applyLight(
+            LightAdjustments(contrast: 50), to: source
+        ))
+
+        XCTAssertEqual(contrasted[0], base[0], accuracy: 0.01)
+        XCTAssertEqual(contrasted[255], base[255], accuracy: 0.01)
+        XCTAssertLessThan(contrasted[64], base[64], "positive contrast should deepen the lower midtones")
+        XCTAssertGreaterThan(contrasted[192], base[192], "positive contrast should lift the upper midtones")
+    }
+
+    /// Keep representative rendered samples in the XCTest result for visual inspection while the
+    /// numeric properties above protect the behavior in CI. The images are generated per run and
+    /// are intentionally not checked into the repository.
+    func testPhotographicLightVisualSamples() throws {
+        let source = try TestImages.gradient(width: 160, height: 100)
+        let samples: [(String, LightAdjustments)] = [
+            ("highlights-recovered", LightAdjustments(highlights: -70)),
+            ("shadows-lifted", LightAdjustments(shadows: 70)),
+            ("underexposed-recovered", LightAdjustments(exposure: -2, highlights: 20, shadows: 65)),
+        ]
+
+        for (name, light) in samples {
+            let rendered = RenderPipeline.applyLight(light, to: source)
+            guard let data = Pixels.context.pngRepresentation(
+                of: rendered, format: .RGBA8, colorSpace: WorkingSpace.current.cgColorSpace
+            ) else {
+                XCTFail("could not render visual sample \(name)")
+                continue
+            }
+            let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.png")
+            attachment.name = name
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
     }
 
     /// **`rawDevelop` is inert for a standard image**, however loudly it is set.
