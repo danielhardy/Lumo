@@ -6,14 +6,46 @@ import AppKit
 final class ImageCollection: ObservableObject {
 
     struct Item: Identifiable {
-        let id = UUID()
-        let url: URL?               // nil for Photos-imported items
-        let displayName: String
+        var asset: PhotoAsset
         var thumbnail: NSImage?
-        let imageData: Data?         // for PhotosPicker items without a URL
         /// Relative directory from the source-folder root ("" for top level).
         /// Drives the grouped file browser; empty for Photos imports.
         var subfolder: String = ""
+
+        var id: PhotoAssetID { asset.id }
+        var url: URL? { asset.url }
+        var displayName: String { asset.filename }
+        var imageData: Data? { asset.source.data }
+
+        init(
+            asset: PhotoAsset,
+            thumbnail: NSImage? = nil,
+            subfolder: String = ""
+        ) {
+            self.asset = asset
+            self.thumbnail = thumbnail
+            self.subfolder = subfolder
+        }
+
+        /// UI compatibility initializer. The durable record is built first; the AppKit thumbnail
+        /// remains a presentation concern of `ImageCollection.Item`.
+        init(
+            url: URL?,
+            displayName: String,
+            thumbnail: NSImage? = nil,
+            imageData: Data?,
+            subfolder: String = ""
+        ) {
+            if let url {
+                self.init(asset: PhotoAsset(url: url, filename: displayName), thumbnail: thumbnail,
+                          subfolder: subfolder)
+            } else if let imageData {
+                self.init(asset: PhotoAsset(data: imageData, filename: displayName), thumbnail: thumbnail,
+                          subfolder: subfolder)
+            } else {
+                preconditionFailure("An image item needs either a URL or image data")
+            }
+        }
     }
 
     @Published var items: [Item] = []
@@ -151,12 +183,14 @@ final class ImageCollection: ObservableObject {
             if Task.isCancelled { return [] }
             let ext = fileURL.pathExtension.lowercased()
             guard ImageDecoder.supportedExtensions.contains(ext) else { continue }
-            let name = fileURL.deletingPathExtension().lastPathComponent
             let dir = fileURL.deletingLastPathComponent().resolvingSymlinksInPath().path
             let subfolder = dir.hasPrefix(rootPath)
                 ? String(dir.dropFirst(rootPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                 : ""
-            newItems.append(Item(url: fileURL, displayName: name, imageData: nil, subfolder: subfolder))
+            newItems.append(Item(
+                asset: PhotoAsset.discoveredFile(at: fileURL),
+                subfolder: subfolder
+            ))
         }
 
         newItems.sort { a, b in
@@ -182,7 +216,12 @@ final class ImageCollection: ObservableObject {
 
         var newItems: [Item] = []
         for item in dataItems {
-            newItems.append(Item(url: nil, displayName: item.name, thumbnail: nil, imageData: item.data))
+            newItems.append(Item(
+                asset: PhotoAsset(
+                    data: item.data,
+                    filename: item.name
+                )
+            ))
         }
         self.items = newItems
         self.isActive = !items.isEmpty
@@ -288,16 +327,18 @@ final class ImageCollection: ObservableObject {
             guard !Task.isCancelled else { return }
             self?.applyThumbnail(thumbnail, itemID: itemID, generation: generation)
         }
-        if scheduler.contains(id) {
+        if scheduler.contains(id), let currentIndex = items.firstIndex(where: { $0.id == itemID }) {
             thumbnailJobIDs.insert(id)
+            items[currentIndex].asset.thumbnailState = .loading
         }
     }
 
-    private func applyThumbnail(_ thumbnail: NSImage?, itemID: UUID, generation: UInt64) {
+    private func applyThumbnail(_ thumbnail: NSImage?, itemID: PhotoAssetID, generation: UInt64) {
         guard generation == thumbnailGeneration,
               let index = items.firstIndex(where: { $0.id == itemID }) else { return }
         thumbnailJobIDs.remove(thumbnailJobID(for: items[index]))
         items[index].thumbnail = thumbnail
+        items[index].asset.thumbnailState = thumbnail == nil ? .failed : .ready
         fillThumbnailQueue()
     }
 
@@ -334,7 +375,7 @@ final class ImageCollection: ObservableObject {
         if let url = item.url {
             return ImageWorkScheduler.JobID("thumbnail:url:\(url.standardizedFileURL.path)")
         }
-        return ImageWorkScheduler.JobID("thumbnail:item:\(item.id.uuidString)")
+        return ImageWorkScheduler.JobID("thumbnail:item:\(item.id.raw)")
     }
 
     private func distance(from index: Int) -> Int {

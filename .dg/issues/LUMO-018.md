@@ -13,6 +13,7 @@ updated: 2026-08-31T14:48:09.002Z
 depends_on:
   - LUMO-004
   - LUMO-006
+  - LUMO-064
 estimate: 5
 order: a0
 board: product
@@ -106,8 +107,8 @@ mechanical or localized fix, so it's outside this verification pass's action rul
 
 The code itself passed independent verification (build/test/release/`dg validate` all green, 314/0
 failures, one small dead-code fix applied in `0d14f3d`) — the blocker is integration, not
-correctness. Filed **LUMO-064** (urgent, depends on this issue) to reconcile the merge. Moving this
-issue back to `review` until LUMO-064 lands `agent/lumo-018` on `main`.
+correctness. Filed **LUMO-064** (urgent) to reconcile the merge. LUMO-018 now depends on that
+integration follow-up and remains in `review` until it lands `agent/lumo-018` on `main`.
 
 ## Agent log
 
