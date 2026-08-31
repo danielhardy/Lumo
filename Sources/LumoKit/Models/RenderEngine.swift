@@ -135,6 +135,11 @@ actor RenderEngine: RenderEngining {
     /// reference state: a `CIFilter` gets its `inputImage` written on every use, so it is only safe
     /// behind this actor's serialization (§4.5).
     private let lutCache = LUTFilterCache()
+    /// One-entry, small-resource cache for the master curve. It is actor-confined just like the
+    /// LUT cache; changing the curve replaces a 4 KiB texture and never allocates a 64³ cube.
+    private let toneCurveCache = ToneCurveFilterCache()
+    private var toneCurveSource: RenderSourceFingerprint?
+    private var toneCurveSpace: WorkingSpace?
     private let previewCache: BoundedLRUCache<PreviewCacheKey, RenderResult>
     private let developedSourceCache: BoundedLRUCache<DevelopedSourceCacheKey, CIImage>
     /// The interactive RAW decoder is deliberately a single-entry cache. `CIRAWFilter` is mutable
@@ -423,6 +428,9 @@ actor RenderEngine: RenderEngining {
         developedSourceCache.removeAll(countAsEvictions: true)
         interactiveRAWSession = nil
         lutCache.removeAll()
+        toneCurveCache.removeAll()
+        toneCurveSource = nil
+        toneCurveSpace = nil
         Thumbnails.evictForMemoryPressure()
     }
 
@@ -430,6 +438,9 @@ actor RenderEngine: RenderEngining {
     func invalidateRenderCaches() {
         previewCache.removeAll()
         developedSourceCache.removeAll()
+        toneCurveCache.removeAll()
+        toneCurveSource = nil
+        toneCurveSpace = nil
         interactiveRAWSession = nil
         Thumbnails.invalidateCache()
     }
@@ -451,12 +462,22 @@ actor RenderEngine: RenderEngining {
         _ space: WorkingSpace,
         quality: RenderQuality
     ) -> CIImage? {
+        // These are explicit Core Image resource boundaries even though the transfer function is
+        // mathematically source/space independent. A replaced source or working-space switch must
+        // not retain a resource from the prior render session.
+        let sourceFingerprint = RenderSourceFingerprint(source)
+        if toneCurveSource != sourceFingerprint || toneCurveSpace != space {
+            toneCurveCache.removeAll()
+            toneCurveSource = sourceFingerprint
+            toneCurveSpace = space
+        }
         guard let developed = developedSource(
             source, document.rawDevelop, scale,
             interactive: quality == .interactive
         ) else { return nil }
         return RenderPipeline.buildImage(
             developed: developed, document: document, lut: lut, space: space, lutCache: lutCache,
+            toneCurveCache: toneCurveCache,
             includePostRenderWhiteBalance: source.kind == .standard
         )
     }
@@ -547,6 +568,9 @@ actor RenderEngine: RenderEngining {
     func invalidateSourceCache() {
         developedSourceCache.removeAll()
         interactiveRAWSession = nil
+        toneCurveCache.removeAll()
+        toneCurveSource = nil
+        toneCurveSpace = nil
     }
 
     /// A reusable actor-local RAW filter for the short-lived interactive tier. The baseline values

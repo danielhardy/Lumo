@@ -23,10 +23,11 @@ RAW develop → Light → Color → legacy ordered adjustments → LUT
 The inherited adjustment array remains untouched. A v1 document with no `light` key decodes with
 neutral Light and therefore retains its old exposure, contrast, highlight, and shadow nodes,
 including their original order and Core Image parameter values. This is an additive migration, so
-`EditDocument.currentVersion` remains 1. `RenderPipeline.cacheVersion` is 7: v2 introduced the
+`EditDocument.currentVersion` remains 1. `RenderPipeline.cacheVersion` is 10: v2 introduced the
 explicit Light stage, v3 recorded the refined non-neutral mapping, v4 clamps the curve's interior
 points to stay monotonic, v5 adds the GPU-backed Whites and Blacks endpoint stages, and v6 adds the
-editable master RGB curve, and v7 adds the global Color stage (see [COLOR_MODEL.md](COLOR_MODEL.md)).
+editable master RGB curve, v7 adds the global Color stage, and v10 replaces the master-curve cube
+with a reusable 1D Core Image kernel resource (see [COLOR_MODEL.md](COLOR_MODEL.md)).
 
 The current renderer applies Exposure with `CIExposureAdjust` in EV and combines Contrast,
 Highlights, and Shadows in one five-point `CIToneCurve` GPU stage. The curve keeps its endpoints
@@ -37,8 +38,10 @@ Highlights) would otherwise push a lower-tone point above a higher-tone one, whi
 as a local tone inversion rather than a smooth curve. Whites then runs as a separate high-end
 `CIToneCurve`, followed by the editable master RGB curve and then Whites and Blacks as separate
 endpoint `CIToneCurve` stages. The master curve stores normalized ordered control points and uses
-piecewise-linear interpolation sampled into a 64³ `CIColorCube`; this is GPU-backed and cannot
-overshoot between monotonic points. Whites and Blacks each change its endpoint and
+piecewise-linear interpolation sampled into a 256×1 RGBA float texture consumed by a Core Image
+kernel; this is GPU-backed and cannot overshoot between monotonic points. The texture and compiled
+kernel are actor-confined and reused across renders, so a curve drag updates about 4 KiB rather than
+constructing/uploading a 4 MiB 64³ cube. Whites and Blacks each change its endpoint and
 nearest quarter-tone with a smooth rolloff while leaving the opposite half of the range effectively
 unchanged. Strong positive Whites and negative Blacks may produce out-of-range values in the lazy
 graph, which are finite and clip only when rasterized. Neutral Light produces no nodes and is an

@@ -24,8 +24,9 @@ enum RenderPipeline {
     /// inverted tones locally, so affected documents render different pixels even though the
     /// document schema is unchanged. v5 adds the Whites and Blacks endpoint stages. v6 adds the
     /// editable master RGB curve. v7 adds the global Color stage. v8 adds the GPU HSL mixer stage.
-    /// v9 adds three-way color grading.
-    static let cacheVersion = 9
+    /// v9 adds three-way color grading. v10 replaces the master curve's 64³ cube with a sampled
+    /// 1D Core Image kernel while preserving the piecewise-linear transfer function.
+    static let cacheVersion = 10
 
     /// Build the graph for `document` over `source`.
     ///
@@ -79,9 +80,10 @@ enum RenderPipeline {
         lut: CubeLUT?,
         space: WorkingSpace = .current,
         lutCache: LUTFilterCache? = nil,
+        toneCurveCache: ToneCurveFilterCache? = nil,
         includePostRenderWhiteBalance: Bool = true
     ) -> CIImage {
-        let lightAdjusted = applyLight(document.light, to: developed)
+        let lightAdjusted = applyLight(document.light, to: developed, cache: toneCurveCache)
         let colorAdjusted = applyColor(document.color, to: lightAdjusted)
         let adjustmentNodes = includePostRenderWhiteBalance
             ? document.adjustments
@@ -174,16 +176,19 @@ enum RenderPipeline {
     /// inverse shape. `CIToneCurve` is a Core Image node, so this stays in the same GPU-backed graph
     /// as the rest of the pipeline and does not require a CPU per-pixel pass.
     ///
-    /// The editable master RGB curve is sampled into a small 3D color cube. Sampling a piecewise
-    /// linear transfer function into a cube keeps interpolation on the GPU while guaranteeing that
-    /// a monotonic curve remains monotonic between samples. All three channels use the same sampled
-    /// transfer function; channel-specific curves can be added to the model without changing this
-    /// stage's shape.
+    /// The editable master RGB curve is sampled into a small 1D texture and evaluated by one Core
+    /// Image kernel. All three channels use the same transfer function; channel-specific curves can
+    /// be added to the model without changing this stage's shape. The engine owns the reusable
+    /// kernel/texture resource, while this overload remains stateless for callers and tests.
     ///
     /// Whites and Blacks are separate endpoint stages after the shared tonal curve. Keeping them
     /// separate gives each control an independent high- or low-end rolloff rather than making them
     /// aliases for Contrast.
-    static func applyLight(_ light: LightAdjustments, to image: CIImage) -> CIImage {
+    static func applyLight(
+        _ light: LightAdjustments,
+        to image: CIImage,
+        cache: ToneCurveFilterCache? = nil
+    ) -> CIImage {
         var result = image
 
         if light.exposure != 0 {
@@ -227,7 +232,7 @@ enum RenderPipeline {
         }
 
         if !light.toneCurve.isIdentity {
-            result = applyToneCurve(light.toneCurve, to: result)
+            result = applyToneCurve(light.toneCurve, to: result, cache: cache)
         }
 
         // Endpoint controls intentionally run in a stable order after the shared tonal curve:
@@ -555,47 +560,13 @@ enum RenderPipeline {
     }
     """
 
-    /// The cube is independent of image resolution. 64 samples keep interpolation error small for
-    /// an editable curve while keeping the table at about 4 MB (64³ RGBA Float32 values). The table
-    /// is a control map, not a CPU per-pixel image operation; Core Image evaluates the remap through
-    /// its Metal-backed color-cube kernel. The plain `CIColorCube` variant is used because the
-    /// curve's normalized values are already in the renderer's working pixel domain; unlike the
-    /// color-managed LUT path, it must not introduce a second transfer-function conversion around
-    /// the user's curve.
-    private static let toneCurveCubeDimension = 64
-
     private static func applyToneCurve(
         _ curve: LightToneCurve,
-        to image: CIImage
+        to image: CIImage,
+        cache: ToneCurveFilterCache?
     ) -> CIImage {
-        let dimension = toneCurveCubeDimension
-        let denominator = Double(dimension - 1)
-        // Each channel shares one transfer function, so sample it once per lattice coordinate
-        // instead of once per (r, g, b) triple.
-        let samples = (0..<dimension).map { Float(curve.value(at: Double($0) / denominator)) }
-
-        var values = [Float]()
-        values.reserveCapacity(dimension * dimension * dimension * 4)
-
-        for b in 0..<dimension {
-            let blue = samples[b]
-            for g in 0..<dimension {
-                let green = samples[g]
-                for r in 0..<dimension {
-                    values.append(samples[r])
-                    values.append(green)
-                    values.append(blue)
-                    values.append(1)
-                }
-            }
-        }
-
-        let data = values.withUnsafeBufferPointer { Data(buffer: $0) }
-        guard let filter = CIFilter(name: "CIColorCube") else { return image }
-        filter.setValue(dimension, forKey: "inputCubeDimension")
-        filter.setValue(data as NSData, forKey: "inputCubeData")
-        filter.setValue(image, forKey: kCIInputImageKey)
-        return filter.outputImage ?? image
+        if let cache { return cache.apply(curve, to: image) }
+        return ToneCurveFilterCache().apply(curve, to: image)
     }
 
     /// Move the white point with a smooth high-end rolloff. The first three control points stay on
