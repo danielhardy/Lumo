@@ -478,4 +478,55 @@ final class RenderEngineTests: TempDirectoryTestCase {
         assertPixelsEqual(try Pixels.bytes(of: viaEngine), oldRaster,
                           "the new engine and the old loader should agree on an unedited image")
     }
+
+    // MARK: - Interactive RAW session (LUMO-070)
+
+    /// `InteractiveRAWFilterSession` reuses one mutable `CIRAWFilter` across ticks and restores a
+    /// captured baseline before applying each tick's `RAWDevelopSettings`, precisely so a value one
+    /// tick pushed onto the filter cannot survive into the next tick's `nil` (decoder-default). That
+    /// restore-then-apply order is the whole correctness argument for reusing the filter at all — and
+    /// nothing exercised it, since real-RAW tests are opt-in and every other interactive test in this
+    /// file uses a standard image, which never reaches the session.
+    ///
+    /// Skipped wherever there is no RAW to hand, which includes CI. See `Fixtures.localRAWURL`.
+    func testInteractiveSessionDoesNotLeakSettingsAcrossTicks() async throws {
+        guard let rawURL = Fixtures.localRAWURL else {
+            throw XCTSkip("no local RAW to develop; see Fixtures.localRAWURL")
+        }
+        let rawSource = ImageSource(url: rawURL, nativeExtent: CGSize(width: 4000, height: 3000))
+        let box = CGSize(width: 256, height: 256)
+
+        func interactiveRequest(_ settings: RAWDevelopSettings) -> RenderRequest {
+            RenderRequest(
+                source: rawSource, document: EditDocument(rawDevelop: settings),
+                targetSize: box, quality: .interactive
+            )
+        }
+
+        let engine = RenderEngine()
+
+        // First tick: an extreme exposure push, establishing the session and writing a
+        // non-default value onto the shared filter.
+        let pushedImage = await engine.makeCGImage(interactiveRequest(RAWDevelopSettings(exposure: 4)))
+        let pushed = try XCTUnwrap(pushedImage)
+        // Second tick, same session: back to neutral. If `exposure` were not restored first, the
+        // filter would still carry the +4 EV push from the tick above.
+        let backToNeutralImage = await engine.makeCGImage(interactiveRequest(.neutral))
+        let backToNeutral = try XCTUnwrap(backToNeutralImage)
+
+        // A fresh engine has no session to leak from, so its neutral render is the ground truth
+        // for what an uncontaminated neutral tick must look like.
+        let independentEngine = RenderEngine()
+        let referenceImage = await independentEngine.makeCGImage(interactiveRequest(.neutral))
+        let reference = try XCTUnwrap(referenceImage)
+
+        assertPixelsEqual(
+            try Pixels.bytes(of: backToNeutral), try Pixels.bytes(of: reference), tolerance: 2,
+            "a neutral tick after an exposure push must not inherit the previous tick's exposure"
+        )
+        assertPixelsDiffer(
+            try Pixels.bytes(of: pushed), try Pixels.bytes(of: backToNeutral),
+            "precondition: the exposure push must actually have changed the pushed frame"
+        )
+    }
 }
