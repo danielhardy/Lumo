@@ -149,6 +149,104 @@ final class LibraryScanTests: TempDirectoryTestCase {
         XCTAssertEqual(collection.items.map(\.subfolder), ["", "", "Trip"])
     }
 
+    func testLargeScanPublishesAFirstBatchBeforeTheTraversalFinishes() async throws {
+        for index in 0..<96 {
+            try Fixtures.writeJPEG(
+                width: 8, height: 8, orientation: 1,
+                named: String(format: "photo-%03d.jpg", index), in: tempDirectory
+            )
+        }
+
+        let collection = ImageCollection()
+        collection.loadFromFolder(tempDirectory)
+
+        var sawPartialScan = false
+        let deadline = Date().addingTimeInterval(5)
+        while collection.isScanning {
+            if !collection.items.isEmpty && collection.items.count < 96 {
+                sawPartialScan = true
+                break
+            }
+            if Date() > deadline { break }
+            await Task.yield()
+        }
+        XCTAssertTrue(sawPartialScan, "a large folder should publish rows before traversal completes")
+
+        await collection.scanCompletion()
+        XCTAssertEqual(collection.items.count, 96)
+        XCTAssertEqual(collection.items.map(\.displayName),
+                       (0..<96).map { String(format: "photo-%03d", $0) })
+    }
+
+    func testSwitchingFoldersCannotPublishResultsFromTheCancelledScan() async throws {
+        let first = tempDirectory.appendingPathComponent("first")
+        let second = tempDirectory.appendingPathComponent("second")
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        for index in 0..<96 {
+            try Fixtures.writeJPEG(
+                width: 8, height: 8, orientation: 1,
+                named: "old-\(index).jpg", in: first
+            )
+        }
+        try Fixtures.writeJPEG(width: 8, height: 8, orientation: 1, named: "current.jpg", in: second)
+
+        let collection = ImageCollection()
+        collection.loadFromFolder(first)
+        collection.loadFromFolder(second)
+        await collection.scanCompletion()
+        await collection.metadataCompletion()
+
+        XCTAssertEqual(collection.items.map(\.displayName), ["current"])
+        XCTAssertTrue(collection.items.allSatisfy {
+            $0.url?.deletingLastPathComponent().standardizedFileURL == second.standardizedFileURL
+        })
+        XCTAssertFalse(collection.isScanning)
+    }
+
+    func testMetadataLoadsAfterDiscoveryWithoutBlockingTheFirstRows() async throws {
+        let url = try Fixtures.writeJPEG(
+            named: "camera.jpg",
+            in: tempDirectory,
+            exif: [kCGImagePropertyExifISOSpeedRatings: [400]],
+            tiff: [kCGImagePropertyTIFFMake: "Lumo", kCGImagePropertyTIFFModel: "Test Body"]
+        )
+
+        let collection = ImageCollection()
+        collection.loadFromFolder(tempDirectory)
+
+        // Discovery publishes the item before the deferred ImageIO metadata read completes.
+        let deadline = Date().addingTimeInterval(5)
+        while collection.items.isEmpty {
+            if Date() > deadline { XCTFail("discovery did not publish an item"); return }
+            await Task.yield()
+        }
+        XCTAssertNil(collection.items.first?.metadata)
+
+        await collection.scanCompletion()
+        await collection.metadataCompletion()
+        let metadata = try XCTUnwrap(collection.items.first?.metadata)
+        XCTAssertEqual(metadata.make, "Lumo")
+        XCTAssertEqual(metadata.model, "Test Body")
+        XCTAssertEqual(metadata.iso, "ISO 400")
+        XCTAssertEqual(metadata.pixelWidth, 64)
+        XCTAssertEqual(metadata.pixelHeight, 48)
+        XCTAssertEqual(collection.items.first?.url?.standardizedFileURL, url.standardizedFileURL)
+    }
+
+    func testUnreadableImageIsReportedWithoutDiscardingReadableFiles() async throws {
+        try Fixtures.writeJPEG(width: 8, height: 8, orientation: 1, named: "good.jpg", in: tempDirectory)
+        try Data("not an image".utf8).write(to: tempDirectory.appendingPathComponent("bad.jpg"))
+
+        let collection = ImageCollection()
+        collection.loadFromFolder(tempDirectory)
+        await collection.scanCompletion()
+        await collection.metadataCompletion()
+
+        XCTAssertEqual(collection.items.map(\.displayName), ["good"])
+        XCTAssertTrue(collection.scanWarnings.contains { $0.message.contains("bad.jpg") })
+    }
+
     /// Regression for B13: a folder holding exactly one image used to leave
     /// `isActive` false, which killed ←/→ and `selectedItem` while the browser
     /// still listed the row.

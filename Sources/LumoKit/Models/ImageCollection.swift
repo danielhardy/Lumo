@@ -11,20 +11,39 @@ final class ImageCollection: ObservableObject {
         let displayName: String
         var thumbnail: NSImage?
         let imageData: Data?         // for PhotosPicker items without a URL
+        /// Filled after discovery. A nil value means deferred metadata work has not completed.
+        var metadata: ImageMetadata? = nil
         /// Relative directory from the source-folder root ("" for top level).
         /// Drives the grouped file browser; empty for Photos imports.
         var subfolder: String = ""
     }
 
+    /// A non-fatal problem encountered while a folder is being discovered or its deferred data is
+    /// loaded. The scan keeps publishing usable files when one file disappears or is malformed.
+    struct ScanWarning: Identifiable, Equatable, Sendable {
+        let id: String
+        let message: String
+
+        init(id: String, message: String) {
+            self.id = id
+            self.message = message
+        }
+    }
+
     @Published var items: [Item] = []
     @Published var selectedIndex: Int = 0
     @Published var isActive: Bool = false
+    @Published var isScanning: Bool = false
+    @Published private(set) var scanWarnings: [ScanWarning] = []
     /// The persistent source folder, if one is set (nil for Photos imports or
     /// one-off single-image opens).
     @Published var sourceFolderURL: URL?
 
     private static let bookmarkKey = "imageSourceFolderBookmark"
     private var scanTask: Task<Void, Never>?
+    private var scanGeneration: UInt64 = 0
+    private var metadataTask: Task<Void, Never>?
+    private var metadataContinuation: AsyncStream<MetadataRequest>.Continuation?
     private let scheduler: ImageWorkScheduler
     private var thumbnailJobIDs: Set<ImageWorkScheduler.JobID> = []
     private var thumbnailGeneration: UInt64 = 0
@@ -36,6 +55,8 @@ final class ImageCollection: ObservableObject {
     }
 
     deinit {
+        metadataContinuation?.finish()
+        metadataTask?.cancel()
         scopedURL?.stopAccessingSecurityScopedResource()
     }
 
@@ -105,6 +126,12 @@ final class ImageCollection: ObservableObject {
         await scanTask?.value
     }
 
+    /// Wait for metadata already queued by the current scan/import to finish. Thumbnail work is
+    /// intentionally not included: it is demand-prioritized and may continue while the user edits.
+    func metadataCompletion() async {
+        await metadataTask?.value
+    }
+
     /// Scan a folder recursively for supported images, recording each file's
     /// relative subfolder so the browser can group them. Items are ordered by
     /// subfolder, then natural filename order.
@@ -113,29 +140,169 @@ final class ImageCollection: ObservableObject {
     /// network volume would otherwise stall the window, and this runs during
     /// app launch when a source folder is restored.
     func loadFromFolder(_ url: URL) {
+        scanGeneration &+= 1
+        let generation = scanGeneration
         cancelThumbnailWork()
         scanTask?.cancel()
+        stopMetadataLoading()
         items = []
         selectedIndex = 0
         isActive = false
+        isScanning = true
+        scanWarnings = []
+        startMetadataLoading()
 
-        scanTask = Task {
+        scanTask = Task { [weak self] in
+            guard let self else { return }
             var interval = LumoSignpostInterval(
                 .scan,
                 context: LumoTraceContext(sourceFingerprint: url.standardizedFileURL.path, quality: "background")
             )
             defer { interval.end() }
-            let scanned = await Task.detached { Self.scanFolder(url) }.value
-            guard !Task.isCancelled else { return }
-            self.items = scanned
-            self.isActive = !scanned.isEmpty
-            self.generateThumbnails()
+
+            var knownItems: [String: Item] = [:]
+            let stream = Self.discoveryStream(url)
+            for await event in stream {
+                guard !Task.isCancelled, self.scanGeneration == generation else { return }
+                switch event {
+                case .warning(let warning):
+                    self.addScanWarning(warning)
+                case .batch(let discoveries):
+                    for discovery in discoveries {
+                        let path = discovery.url.standardizedFileURL.path
+                        let item = knownItems[path] ?? Item(
+                            url: discovery.url,
+                            displayName: discovery.displayName,
+                            thumbnail: nil,
+                            imageData: nil,
+                            metadata: nil,
+                            subfolder: discovery.subfolder
+                        )
+                        knownItems[path] = item
+                        if !self.items.contains(where: { $0.id == item.id }) {
+                            self.items.append(item)
+                        }
+                        self.enqueueMetadata(for: item, generation: generation)
+                    }
+
+                    // Sorting the accumulated prefix on every batch keeps the final ordering
+                    // deterministic while still making the first useful rows visible immediately.
+                    self.items.sort(by: Self.itemPrecedes)
+                    self.isActive = !self.items.isEmpty
+                    self.generateThumbnails()
+                    // Let SwiftUI and cancellation run between batches even on a fast local disk.
+                    await Task.yield()
+                }
+            }
+
+            guard !Task.isCancelled, self.scanGeneration == generation else { return }
+            self.isScanning = false
+            self.metadataContinuation?.finish()
+            self.metadataContinuation = nil
         }
     }
 
-    /// The blocking half of `loadFromFolder`. `nonisolated` so it can run on a
-    /// background executor — it touches no instance state.
-    private nonisolated static func scanFolder(_ url: URL) -> [Item] {
+    private struct DiscoveredItem: Sendable {
+        let url: URL
+        let displayName: String
+        let subfolder: String
+    }
+
+    private enum DiscoveryEvent: Sendable {
+        case batch([DiscoveredItem])
+        case warning(String)
+    }
+
+    private struct MetadataRequest: Sendable {
+        let itemID: UUID
+        let generation: UInt64
+        let name: String
+        let source: ImageSource.Backing
+    }
+
+    private enum MetadataOutcome: Sendable {
+        case success(ImageMetadata)
+        case failure(String)
+    }
+
+    private nonisolated static let scanBatchSize = 32
+
+    /// Discover file names and relative folders off the main actor. This deliberately does not read
+    /// image properties: discovery is the cheap stage, while dimensions and capture metadata are
+    /// queued separately after each batch is published.
+    private nonisolated static func discoveryStream(_ url: URL) -> AsyncStream<DiscoveryEvent> {
+        let (stream, continuation) = AsyncStream<DiscoveryEvent>.makeStream()
+        let producer = Task.detached {
+            let fm = FileManager.default
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                _ = continuation.yield(.warning("Can't find “\(url.lastPathComponent)” — it may have been moved or renamed."))
+                continuation.finish()
+                return
+            }
+            guard fm.isReadableFile(atPath: url.path) else {
+                _ = continuation.yield(.warning("No permission to read “\(url.lastPathComponent)”."))
+                continuation.finish()
+                return
+            }
+            guard let enumerator = fm.enumerator(
+                at: url,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                _ = continuation.yield(.warning("Can't read “\(url.lastPathComponent)”."))
+                continuation.finish()
+                return
+            }
+
+            let rootPath = url.resolvingSymlinksInPath().path
+            let rootPrefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+            var batch: [DiscoveredItem] = []
+            while let fileURL = enumerator.nextObject() as? URL {
+                guard !Task.isCancelled else { break }
+                let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey])
+                guard values?.isRegularFile == true else { continue }
+                let ext = fileURL.pathExtension.lowercased()
+                guard ImageDecoder.supportedExtensions.contains(ext) else { continue }
+
+                if !fm.isReadableFile(atPath: fileURL.path) {
+                    _ = continuation.yield(.warning("Skipping unreadable image “\(fileURL.lastPathComponent)”."))
+                    continue
+                }
+
+                let name = fileURL.deletingPathExtension().lastPathComponent
+                let dir = fileURL.deletingLastPathComponent().resolvingSymlinksInPath().path
+                let subfolder = dir == rootPath || dir.hasPrefix(rootPrefix)
+                    ? String(dir.dropFirst(rootPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                    : ""
+                batch.append(DiscoveredItem(url: fileURL, displayName: name, subfolder: subfolder))
+                if batch.count == scanBatchSize {
+                    guard case .enqueued = continuation.yield(.batch(batch)) else { return }
+                    batch.removeAll(keepingCapacity: true)
+                    await Task.yield()
+                }
+            }
+            if !batch.isEmpty, !Task.isCancelled {
+                _ = continuation.yield(.batch(batch))
+            }
+            continuation.finish()
+        }
+        continuation.onTermination = { _ in producer.cancel() }
+        return stream
+    }
+
+    private nonisolated static func itemPrecedes(_ lhs: Item, _ rhs: Item) -> Bool {
+        if lhs.subfolder != rhs.subfolder {
+            return lhs.subfolder.localizedStandardCompare(rhs.subfolder) == .orderedAscending
+        }
+        let nameOrder = lhs.displayName.localizedStandardCompare(rhs.displayName)
+        if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+        return (lhs.url?.standardizedFileURL.path ?? lhs.displayName)
+            < (rhs.url?.standardizedFileURL.path ?? rhs.displayName)
+    }
+
+    // Legacy synchronous helper retained for compatibility with focused internal tests.
+    private nonisolated static func scanFolder(_ url: URL) -> [DiscoveredItem] {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
             at: url,
@@ -146,7 +313,7 @@ final class ImageCollection: ObservableObject {
         // Resolve symlinks on both sides so the prefix math holds even when the
         // root is itself a symlink (e.g. /tmp → /private/tmp).
         let rootPath = url.resolvingSymlinksInPath().path
-        var newItems: [Item] = []
+        var newItems: [DiscoveredItem] = []
         while let fileURL = enumerator.nextObject() as? URL {
             if Task.isCancelled { return [] }
             let ext = fileURL.pathExtension.lowercased()
@@ -156,16 +323,96 @@ final class ImageCollection: ObservableObject {
             let subfolder = dir.hasPrefix(rootPath)
                 ? String(dir.dropFirst(rootPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                 : ""
-            newItems.append(Item(url: fileURL, displayName: name, imageData: nil, subfolder: subfolder))
+            newItems.append(DiscoveredItem(url: fileURL, displayName: name, subfolder: subfolder))
         }
 
-        newItems.sort { a, b in
-            if a.subfolder != b.subfolder {
-                return a.subfolder.localizedStandardCompare(b.subfolder) == .orderedAscending
+        newItems.sort {
+            if $0.subfolder != $1.subfolder {
+                return $0.subfolder.localizedStandardCompare($1.subfolder) == .orderedAscending
             }
-            return a.displayName.localizedStandardCompare(b.displayName) == .orderedAscending
+            let nameOrder = $0.displayName.localizedStandardCompare($1.displayName)
+            if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+            return $0.url.standardizedFileURL.path < $1.url.standardizedFileURL.path
         }
         return newItems
+    }
+
+    // MARK: - Deferred metadata
+
+    private func startMetadataLoading() {
+        let (stream, continuation) = AsyncStream<MetadataRequest>.makeStream()
+        metadataContinuation = continuation
+        metadataTask = Task.detached { [weak self] in
+            for await request in stream {
+                guard !Task.isCancelled else { return }
+                let outcome = Self.readMetadata(request.source, name: request.name)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self?.applyMetadata(outcome, itemID: request.itemID, generation: request.generation)
+                }
+            }
+        }
+    }
+
+    private func stopMetadataLoading() {
+        metadataContinuation?.finish()
+        metadataContinuation = nil
+        metadataTask?.cancel()
+        metadataTask = nil
+    }
+
+    private func enqueueMetadata(for item: Item, generation: UInt64) {
+        guard let source = item.url.map(ImageSource.Backing.url)
+            ?? item.imageData.map(ImageSource.Backing.data) else { return }
+        _ = metadataContinuation?.yield(MetadataRequest(
+            itemID: item.id,
+            generation: generation,
+            name: item.url?.lastPathComponent ?? item.displayName,
+            source: source
+        ))
+    }
+
+    private nonisolated static func readMetadata(
+        _ source: ImageSource.Backing, name: String
+    ) -> MetadataOutcome {
+        switch source {
+        case .url(let url):
+            guard FileManager.default.isReadableFile(atPath: url.path),
+                  let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  CGImageSourceGetCount(imageSource) > 0 else {
+                return .failure("Skipping unreadable image “\(name)”.")
+            }
+            return .success(ImageMetadata.read(from: url))
+        case .data(let data):
+            guard let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
+                  CGImageSourceGetCount(imageSource) > 0 else {
+                return .failure("Skipping unreadable image “\(name)”.")
+            }
+            return .success(ImageMetadata.read(from: data))
+        }
+    }
+
+    private func applyMetadata(_ outcome: MetadataOutcome, itemID: UUID, generation: UInt64) {
+        guard generation == scanGeneration,
+              let index = items.firstIndex(where: { $0.id == itemID }) else { return }
+        switch outcome {
+        case .success(let metadata):
+            items[index].metadata = metadata
+        case .failure(let warning):
+            addScanWarning(warning)
+            let item = items[index]
+            scheduler.cancel(id: thumbnailJobID(for: item))
+            thumbnailJobIDs.remove(thumbnailJobID(for: item))
+            items.remove(at: index)
+            selectedIndex = min(selectedIndex, max(0, items.count - 1))
+            isActive = !items.isEmpty
+        }
+    }
+
+    private func addScanWarning(_ message: String) {
+        let id = message
+        guard !scanWarnings.contains(where: { $0.id == id }) else { return }
+        scanWarnings.append(ScanWarning(id: id, message: message))
     }
 
     // MARK: - Data import (from Photos picker)
@@ -176,16 +423,30 @@ final class ImageCollection: ObservableObject {
     /// its thumbnails inline and is easy to miss when the thumbnail path moves — which is why
     /// `docs/PHASE2_SPEC.md` §6 names both explicitly. Step 7 pointed both at `Thumbnails`.
     func addFromData(_ dataItems: [(name: String, data: Data)]) {
+        scanGeneration &+= 1
+        let generation = scanGeneration
         cancelThumbnailWork()
+        scanTask?.cancel()
+        scanTask = nil
+        stopMetadataLoading()
         items = []
         selectedIndex = 0
+        isScanning = false
+        scanWarnings = []
+        startMetadataLoading()
 
         var newItems: [Item] = []
         for item in dataItems {
-            newItems.append(Item(url: nil, displayName: item.name, thumbnail: nil, imageData: item.data))
+            let newItem = Item(
+                url: nil, displayName: item.name, thumbnail: nil, imageData: item.data, metadata: nil
+            )
+            newItems.append(newItem)
         }
         self.items = newItems
         self.isActive = !items.isEmpty
+        for item in newItems { enqueueMetadata(for: item, generation: generation) }
+        metadataContinuation?.finish()
+        metadataContinuation = nil
         enqueueThumbnails()
     }
 
@@ -216,10 +477,16 @@ final class ImageCollection: ObservableObject {
     /// image). The persisted source-folder bookmark is left intact so it still
     /// restores on next launch; only the live browsing state is dropped.
     func clear() {
+        scanGeneration &+= 1
         cancelThumbnailWork()
+        scanTask?.cancel()
+        scanTask = nil
+        stopMetadataLoading()
         items = []
         selectedIndex = 0
         isActive = false
+        isScanning = false
+        scanWarnings = []
         sourceFolderURL = nil
     }
 
@@ -232,7 +499,6 @@ final class ImageCollection: ObservableObject {
     }
 
     private func enqueueThumbnails() {
-        thumbnailGeneration &+= 1
         let generation = thumbnailGeneration
 
         for (index, item) in items.enumerated() where item.thumbnail == nil {
