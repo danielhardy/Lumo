@@ -215,7 +215,8 @@ final class AppViewModel: ObservableObject {
     // MARK: - Owned state
 
     let library = LUTLibrary()
-    let collection = ImageCollection()
+    let workScheduler: ImageWorkScheduler
+    let collection: ImageCollection
     /// Writing images to disk — the single export, the batch run, and naming.
     /// Shares this view model's engine, so an export renders through the same funnel the preview does.
     let export: ExportCoordinator
@@ -246,6 +247,8 @@ final class AppViewModel: ObservableObject {
         defer { interval.end() }
 
         self.engine = engine
+        self.workScheduler = ImageWorkScheduler()
+        self.collection = ImageCollection(scheduler: workScheduler)
         self.export = ExportCoordinator(engine: engine)
         self.previewCoordinator = PreviewCoordinator(engine: engine)
 
@@ -508,7 +511,7 @@ final class AppViewModel: ObservableObject {
 
     func selectCollectionImage(at index: Int) {
         guard collection.items.indices.contains(index) else { return }
-        collection.selectedIndex = index
+        collection.select(at: index)
         let item = collection.items[index]
 
         if let url = item.url {
@@ -753,9 +756,8 @@ final class AppViewModel: ObservableObject {
     /// Rasterize the comparison baseline for the side-by-side left panel. Only needs to re-run when
     /// the image or the develop settings change — not when the look does.
     private func scheduleOriginalPreview() {
-        originalPreviewTask?.cancel()
-
         guard let imageSource else {
+            originalPreviewTask?.cancel()
             originalPreviewNSImage = nil
             return
         }
