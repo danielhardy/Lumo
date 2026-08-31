@@ -292,7 +292,6 @@ struct PhotoAsset: Identifiable, Codable, Hashable, Sendable, Equatable {
     var id: PhotoAssetID { source.id }
     var url: URL? { source.url }
     var bookmarkData: Data? { source.bookmarkData }
-    var bookmark: Data? { source.bookmarkData }
     var cacheKey: String { source.cacheKey }
 
     // Convenience accessors keep the record pleasant to use from a grid/culling model while the
