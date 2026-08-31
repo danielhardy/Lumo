@@ -159,8 +159,17 @@ extension AppViewModel {
         if sourceIsRAW {
             resetDevelop(.whiteBalance)
         } else {
-            resetAdjustment(.temperature)
-            resetAdjustment(.tint)
+            endUndoGrouping()
+            updateDocument { document in
+                document.adjustments = AdjustmentControl.temperature.setting(
+                    AdjustmentControl.temperature.neutral,
+                    in: document.adjustments
+                )
+                document.adjustments = AdjustmentControl.tint.setting(
+                    AdjustmentControl.tint.neutral,
+                    in: document.adjustments
+                )
+            }
         }
     }
 
