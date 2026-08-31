@@ -9,7 +9,7 @@ import CoreGraphics
 /// tags the derive report cares about). Both read from the same
 /// `CGImageSourceCopyPropertiesAtIndex` source — this one just surfaces the
 /// common capture settings a photographer wants to see while grading.
-struct ImageMetadata: Equatable {
+struct ImageMetadata: Codable, Sendable, Equatable {
 
     // MARK: Camera & lens
     var make: String?
@@ -56,13 +56,13 @@ struct ImageMetadata: Equatable {
 
     // MARK: - Display sections
 
-    struct Row: Identifiable, Equatable {
+    struct Row: Identifiable, Codable, Sendable, Equatable {
         var id: String { label }
         let label: String
         let value: String
     }
 
-    struct Section: Identifiable, Equatable {
+    struct Section: Identifiable, Codable, Sendable, Equatable {
         var id: String { title }
         let title: String
         let rows: [Row]

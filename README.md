@@ -66,6 +66,14 @@ The product, its package targets (`Lumo`, `LumoKit`), and its identifiers are Lu
 - A **filmstrip** appears along the bottom, with async-generated thumbnails; a docked **source browser** lists the same set as files.
 - **`←` / `→`** (or **`[` / `]`**) step through the set; your current edit stays applied as you go.
 
+Each discovered photo is represented by a stable, Codable value record. File records prefer the
+macOS filesystem resource identifier (with a canonical-path fallback), while their cache key also
+includes file statistics and a bounded content sample so a replaced file cannot reuse stale derived
+state. A Photos import that supplies a local identifier uses that identifier; the current data-only
+picker path uses the SHA-256 of the delivered bytes. Consequently, identical data-only payloads are
+intentionally one logical source—callers that need to distinguish two Photos assets must provide
+their durable Photos identifiers.
+
 ### Edit non-destructively
 Every image carries an **edit document** — a small `Codable` value, never a baked bitmap. An empty
 document is the identity transform: it renders the source untouched. Preview and export render from

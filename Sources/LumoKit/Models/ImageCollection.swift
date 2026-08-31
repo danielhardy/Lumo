@@ -6,14 +6,46 @@ import AppKit
 final class ImageCollection: ObservableObject {
 
     struct Item: Identifiable {
-        let id = UUID()
-        let url: URL?               // nil for Photos-imported items
-        let displayName: String
+        var asset: PhotoAsset
         var thumbnail: NSImage?
-        let imageData: Data?         // for PhotosPicker items without a URL
         /// Relative directory from the source-folder root ("" for top level).
         /// Drives the grouped file browser; empty for Photos imports.
         var subfolder: String = ""
+
+        var id: PhotoAssetID { asset.id }
+        var url: URL? { asset.url }
+        var displayName: String { asset.filename }
+        var imageData: Data? { asset.source.data }
+
+        init(
+            asset: PhotoAsset,
+            thumbnail: NSImage? = nil,
+            subfolder: String = ""
+        ) {
+            self.asset = asset
+            self.thumbnail = thumbnail
+            self.subfolder = subfolder
+        }
+
+        /// UI compatibility initializer. The durable record is built first; the AppKit thumbnail
+        /// remains a presentation concern of `ImageCollection.Item`.
+        init(
+            url: URL?,
+            displayName: String,
+            thumbnail: NSImage? = nil,
+            imageData: Data?,
+            subfolder: String = ""
+        ) {
+            if let url {
+                self.init(asset: PhotoAsset(url: url, filename: displayName), thumbnail: thumbnail,
+                          subfolder: subfolder)
+            } else if let imageData {
+                self.init(asset: PhotoAsset(data: imageData, filename: displayName), thumbnail: thumbnail,
+                          subfolder: subfolder)
+            } else {
+                preconditionFailure("An image item needs either a URL or image data")
+            }
+        }
     }
 
     @Published var items: [Item] = []
@@ -140,12 +172,14 @@ final class ImageCollection: ObservableObject {
             if Task.isCancelled { return [] }
             let ext = fileURL.pathExtension.lowercased()
             guard ImageDecoder.supportedExtensions.contains(ext) else { continue }
-            let name = fileURL.deletingPathExtension().lastPathComponent
             let dir = fileURL.deletingLastPathComponent().resolvingSymlinksInPath().path
             let subfolder = dir.hasPrefix(rootPath)
                 ? String(dir.dropFirst(rootPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                 : ""
-            newItems.append(Item(url: fileURL, displayName: name, imageData: nil, subfolder: subfolder))
+            newItems.append(Item(
+                asset: PhotoAsset.discoveredFile(at: fileURL),
+                subfolder: subfolder
+            ))
         }
 
         newItems.sort { a, b in
@@ -172,7 +206,17 @@ final class ImageCollection: ObservableObject {
         var newItems: [Item] = []
         for item in dataItems {
             let thumb = Thumbnails.generate(from: item.data)
-            newItems.append(Item(url: nil, displayName: item.name, thumbnail: thumb, imageData: item.data))
+            let libraryState = PhotoAssetLibraryState(
+                thumbnail: thumb == nil ? .failed : .ready
+            )
+            newItems.append(Item(
+                asset: PhotoAsset(
+                    data: item.data,
+                    filename: item.name,
+                    libraryState: libraryState
+                ),
+                thumbnail: thumb
+            ))
         }
         self.items = newItems
         self.isActive = !items.isEmpty
@@ -213,6 +257,7 @@ final class ImageCollection: ObservableObject {
             for i in items.indices {
                 guard !Task.isCancelled else { return }
                 guard items[i].thumbnail == nil, let url = items[i].url else { continue }
+                items[i].asset.thumbnailState = .loading
 
                 // Remember which item this thumbnail belongs to: `items` can be
                 // replaced by a refresh while the decode is in flight, and an
@@ -226,6 +271,7 @@ final class ImageCollection: ObservableObject {
                 guard !Task.isCancelled else { return }
                 guard let current = items.firstIndex(where: { $0.id == itemID }) else { continue }
                 items[current].thumbnail = thumb
+                items[current].asset.libraryState.thumbnail = thumb == nil ? .failed : .ready
             }
         }
     }
