@@ -113,6 +113,3 @@ struct ColorGradingAdjustments: Codable, Equatable, Sendable {
         )
     }
 }
-
-/// Compatibility spelling for callers that use "channel" for a grading wheel.
-typealias ColorGradingChannel = ColorGradingWheel
