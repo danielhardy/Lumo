@@ -8,6 +8,11 @@ A fast, native macOS app for working with RAW and standard photos: non-destructi
 adjust controls, `.cube` LUTs, full-resolution export — built entirely on Apple frameworks with
 **zero third-party dependencies**.
 
+> **An agent-driven software project.** Lumo is not just written by agents; it is driven by them
+> through [DispatchGraph](.dg/README.md). Agents plan and claim work, implement changes, verify
+> results, and advance the product through a shared issue graph — making the development process
+> part of the experiment, not just the code it produces.
+
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-6-orange)
 ![UI](https://img.shields.io/badge/UI-SwiftUI%20%2B%20Core%20Image-9cf)
