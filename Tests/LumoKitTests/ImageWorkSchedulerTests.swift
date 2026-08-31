@@ -101,6 +101,22 @@ final class ImageWorkSchedulerTests: XCTestCase {
         XCTAssertEqual(started, ["running", "adjacent", "background-a"])
     }
 
+    func testThumbnailRunsImmediatelyWhenTheQueueIsDisabled() async throws {
+        let scheduler = ImageWorkScheduler(configuration: .init(
+            maxConcurrentThumbnails: 2, maxQueuedThumbnails: 0
+        ))
+        var started: [String] = []
+
+        scheduler.enqueue(id: .init("thumb"), lane: .thumbnail, priority: .background) {
+            started.append("thumb")
+        }
+
+        try await waitUntil("the thumbnail to run despite no queue capacity") {
+            started == ["thumb"]
+        }
+        XCTAssertEqual(scheduler.droppedThumbnailCount, 0)
+    }
+
     private func waitUntil(
         _ description: String,
         timeout: TimeInterval = 2,

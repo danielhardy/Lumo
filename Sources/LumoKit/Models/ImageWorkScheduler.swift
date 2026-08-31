@@ -162,8 +162,10 @@ final class ImageWorkScheduler {
 
     private func admitThumbnail(_ job: Job) {
         let pending = queued.values.filter { $0.lane == .thumbnail }
-        if pending.count >= configuration.maxQueuedThumbnails {
-            guard let worst = pending.max(by: { precedes($0, $1) }) else { return }
+        // `pending` is only empty here when `maxQueuedThumbnails == 0` — the caller already
+        // confirmed there is running capacity in that case, so there is nothing to evict and the
+        // job should be queued (transiently) for `pump()` to pick straight up.
+        if pending.count >= configuration.maxQueuedThumbnails, let worst = pending.max(by: { precedes($0, $1) }) {
             guard precedes(job, worst) else {
                 droppedThumbnailCount += 1
                 return
