@@ -146,7 +146,8 @@ final class AppViewModel: ObservableObject {
     /// way the old one did.
     ///
     /// A **develop-only** edit correctly reads `false` — `originalForComparison` keeps `rawDevelop`
-    /// and strips Light, adjustments, and the LUT, so both halves would render the same picture.
+    /// and strips Light, Color, adjustments, and the LUT, so both halves would render the same
+    /// picture.
     ///
     /// `adjustments.isEmpty` would have been a sound stand-in for "no adjustment is active" only
     /// because the array is sparse — `AdjustmentControl.setting(_:in:)` never stores an identity node, a
@@ -158,6 +159,7 @@ final class AppViewModel: ObservableObject {
     /// slider write.
     var isComparisonAvailable: Bool {
         !document.light.isIdentity ||
+            !document.color.isIdentity ||
             !document.adjustments.allSatisfy(\.isIdentity) || !document.lut.isIdentity
     }
 

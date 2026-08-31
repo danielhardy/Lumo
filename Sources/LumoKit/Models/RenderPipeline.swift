@@ -23,8 +23,8 @@ enum RenderPipeline {
     /// monotonic; some Contrast/Highlights/Shadows combinations previously produced a curve that
     /// inverted tones locally, so affected documents render different pixels even though the
     /// document schema is unchanged. v5 adds the Whites and Blacks endpoint stages. v6 adds the
-    /// editable master RGB curve.
-    static let cacheVersion = 6
+    /// editable master RGB curve. v7 adds the global Color stage.
+    static let cacheVersion = 7
 
     /// Build the graph for `document` over `source`.
     ///
@@ -81,10 +81,11 @@ enum RenderPipeline {
         includePostRenderWhiteBalance: Bool = true
     ) -> CIImage {
         let lightAdjusted = applyLight(document.light, to: developed)
+        let colorAdjusted = applyColor(document.color, to: lightAdjusted)
         let adjustmentNodes = includePostRenderWhiteBalance
             ? document.adjustments
             : document.adjustments.filter { $0.slot != .temperatureTint }
-        let adjusted = applyAdjustments(adjustmentNodes, to: lightAdjusted)
+        let adjusted = applyAdjustments(adjustmentNodes, to: colorAdjusted)
         return applyLUT(document.lut, lut: lut, to: adjusted, space: space, cache: lutCache)
     }
 
@@ -237,6 +238,43 @@ enum RenderPipeline {
         if light.blacks != 0 {
             result = applyBlackPoint(light.blacks, to: result)
         }
+        return result
+    }
+
+    // MARK: - Color
+
+    /// Apply global colour controls after Light and before the legacy ordered adjustment array.
+    ///
+    /// Core Image owns the per-pixel work for both controls. Vibrance runs first so it can protect
+    /// already-colourful pixels before the final global saturation multiplier is applied. At the
+    /// photographer-facing endpoints, saturation -100 maps to `inputSaturation = 0` (near
+    /// monochrome after the filter's luminance weighting), 0 maps to the exact filter identity, and
+    /// +100 maps to 2×. Vibrance -100...+100 maps linearly to `inputAmount` -1...+1.
+    ///
+    /// Core Image preserves input alpha and colour-space metadata; output encoding is still
+    /// performed by the caller with the request's `WorkingSpace`, so preview and export use the
+    /// same gamut boundary. Values are finite and clamped by `ColorAdjustments` before reaching
+    /// this stage.
+    static func applyColor(_ color: ColorAdjustments, to image: CIImage) -> CIImage {
+        guard !color.isIdentity else { return image }
+        var result = image
+
+        if color.vibrance != 0 {
+            let filter = CIFilter.vibrance()
+            filter.inputImage = result
+            filter.amount = Float(color.normalizedVibrance)
+            result = filter.outputImage ?? result
+        }
+
+        if color.saturation != 0 {
+            let filter = CIFilter.colorControls()
+            filter.inputImage = result
+            filter.brightness = 0
+            filter.contrast = 1
+            filter.saturation = Float(color.normalizedSaturation)
+            result = filter.outputImage ?? result
+        }
+
         return result
     }
 

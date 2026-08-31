@@ -55,6 +55,7 @@ final class RenderEngineTests: TempDirectoryTestCase {
                     LightCurvePoint(input: 0.5, output: 0.58),
                     LightCurvePoint(input: 0.75, output: 0.88),
                 ])),
+            color: ColorAdjustments(vibrance: 35, saturation: -20),
             adjustments: [.exposure(ev: 0.3), .vibrance(amount: 0.4)],
             lut: LUTSettings(lutID: lut.lutID, intensity: 0.8)
         )

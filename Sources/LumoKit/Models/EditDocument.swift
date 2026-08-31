@@ -25,34 +25,40 @@ struct EditDocument: Codable, Sendable, Equatable {
     /// Photographer-facing global tone controls. Missing from an older document means neutral.
     var light: LightAdjustments = .neutral
 
+    /// Photographer-facing global colour controls. Missing from an older document means neutral.
+    var color: ColorAdjustments = .neutral
+
     /// Ordered tone/colour stages. Order matters and duplicates are allowed — see `AdjustmentNode`.
     var adjustments: [AdjustmentNode] = []
 
     /// Which LUT, at what strength.
     var lut: LUTSettings = .none
 
-    /// Adding `light` is an additive v1 migration: older documents have no key and retain their
-    /// original ordered adjustment nodes. A schema bump is reserved for a format that requires
-    /// rewriting those nodes, which could change a user's existing look.
+    /// Adding `light` and `color` are additive v1 migrations: older documents have no key and
+    /// retain their original ordered adjustment nodes. A schema bump is reserved for a format that
+    /// requires rewriting those nodes, which could change a user's existing look.
     static let currentVersion = 1
 
     init(
         version: Int = EditDocument.currentVersion,
         rawDevelop: RAWDevelopSettings = .neutral,
         light: LightAdjustments = .neutral,
+        color: ColorAdjustments = .neutral,
         adjustments: [AdjustmentNode] = [],
         lut: LUTSettings = .none
     ) {
         self.version = version
         self.rawDevelop = rawDevelop
         self.light = light
+        self.color = color
         self.adjustments = adjustments
         self.lut = lut
     }
 
     /// True when this document would leave the source untouched.
     var isIdentity: Bool {
-        rawDevelop.isNeutral && light.isIdentity && adjustments.allSatisfy(\.isIdentity) && lut.isIdentity
+        rawDevelop.isNeutral && light.isIdentity && color.isIdentity &&
+            adjustments.allSatisfy(\.isIdentity) && lut.isIdentity
     }
 
     /// Stable SHA-256 identity for caches, undo diagnostics, and persistence comparisons.
@@ -73,13 +79,16 @@ struct EditDocument: Codable, Sendable, Equatable {
     /// engine's developed-source memo is keyed on it, so both sides of the comparison hit the same
     /// entry instead of re-developing the RAW on every Space press.
     var originalForComparison: EditDocument {
-        EditDocument(version: version, rawDevelop: rawDevelop, light: .neutral, adjustments: [], lut: .none)
+        EditDocument(
+            version: version, rawDevelop: rawDevelop, light: .neutral, color: .neutral,
+            adjustments: [], lut: .none
+        )
     }
 
     // MARK: - Codable
 
     enum CodingKeys: String, CodingKey {
-        case version, rawDevelop, light, adjustments, lut
+        case version, rawDevelop, light, color, adjustments, lut
     }
 
     /// Decoded field by field rather than by synthesis, for two reasons.
@@ -104,6 +113,7 @@ struct EditDocument: Codable, Sendable, Equatable {
         self.version = version
         self.rawDevelop = try container.decodeIfPresent(RAWDevelopSettings.self, forKey: .rawDevelop) ?? .neutral
         self.light = try container.decodeIfPresent(LightAdjustments.self, forKey: .light) ?? .neutral
+        self.color = try container.decodeIfPresent(ColorAdjustments.self, forKey: .color) ?? .neutral
         self.adjustments = try container.decodeIfPresent([AdjustmentNode].self, forKey: .adjustments) ?? []
         self.lut = try container.decodeIfPresent(LUTSettings.self, forKey: .lut) ?? .none
     }

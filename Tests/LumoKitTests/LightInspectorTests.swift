@@ -75,9 +75,11 @@ final class LightInspectorTests: TempDirectoryTestCase {
     func testComparisonBaselineRemovesLightButKeepsDevelop() {
         let document = EditDocument(
             rawDevelop: RAWDevelopSettings(exposure: 0.5),
-            light: LightAdjustments(exposure: 1)
+            light: LightAdjustments(exposure: 1),
+            color: ColorAdjustments(vibrance: 25)
         )
         XCTAssertTrue(document.originalForComparison.light.isIdentity)
+        XCTAssertTrue(document.originalForComparison.color.isIdentity)
         XCTAssertEqual(document.originalForComparison.rawDevelop.exposure, 0.5)
         XCTAssertTrue(document.originalForComparison.adjustments.isEmpty)
         XCTAssertTrue(document.originalForComparison.lut.isIdentity)
