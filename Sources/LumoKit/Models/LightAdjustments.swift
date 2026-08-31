@@ -82,6 +82,35 @@ struct LightToneCurve: Codable, Equatable, Sendable {
         return lower.output + (upper.output - lower.output) * fraction
     }
 
+    /// Return a curve with an interior point sampled from the current transfer function.
+    ///
+    /// This is the model operation behind clicking the drawn curve. Keeping the sampling here
+    /// means the editor and any future curve surface use exactly the same interpolation rule as
+    /// the renderer. Invalid and endpoint inputs are ignored because endpoint handles are fixed.
+    func addingPoint(at input: Double) -> LightToneCurve {
+        guard input.isFinite, input > 0.001, input < 0.999 else { return self }
+        guard !points.contains(where: { abs($0.input - input) < 0.005 }) else { return self }
+        return LightToneCurve(
+            version: version,
+            points: points + [LightCurvePoint(input: input, output: value(at: input))]
+        )
+    }
+
+    /// Return a curve with the interior point nearest to `input` removed.
+    ///
+    /// Endpoints are deliberately never candidates. A small hit tolerance makes this useful for
+    /// pointer gestures while preserving the invariant even if a caller supplies 0 or 1.
+    func removingPoint(at input: Double, tolerance: Double = 0.03) -> LightToneCurve {
+        guard input.isFinite, tolerance >= 0 else { return self }
+        guard let index = points.indices.dropFirst().dropLast().min(by: {
+            abs(points[$0].input - input) < abs(points[$1].input - input)
+        }) else { return self }
+        guard abs(points[index].input - input) <= tolerance else { return self }
+        var remaining = points
+        remaining.remove(at: index)
+        return LightToneCurve(version: version, points: remaining)
+    }
+
     private static func normalized(_ input: [LightCurvePoint]) -> [LightCurvePoint] {
         // Dictionary assignment gives duplicate inputs an explicit last-write-wins rule before
         // sorting; relying on sort stability would make a hand-edited document non-deterministic.

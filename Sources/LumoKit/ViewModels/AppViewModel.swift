@@ -806,6 +806,11 @@ final class AppViewModel: ObservableObject {
         endUndoGrouping()
     }
 
+    /// Read-only seam for controls implemented in extensions. Keeping the stored interaction flag
+    /// private preserves ownership of the lifecycle while allowing curve mutations to choose the
+    /// same immediate-vs-interactive render policy as the built-in sliders.
+    var isToneCurvePreviewInteractionActive: Bool { isPreviewInteractionActive }
+
     // MARK: - Undo and reset
 
     /// Start one history entry for a continuous slider gesture.

@@ -117,6 +117,41 @@ final class LightInspectorTests: TempDirectoryTestCase {
         XCTAssertEqual(interior.first?.output ?? -1, synthetic.output + 0.01, accuracy: 0.000_001)
     }
 
+    func testCurveAddAndRemoveEachUseOneUndoStep() {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+
+        viewModel.addToneCurvePoint(input: 0.25)
+        XCTAssertEqual(
+            viewModel.document.light.toneCurve.value(at: 0.25), 0.25, accuracy: 0.000_001
+        )
+
+        viewModel.removeToneCurvePoint(atInput: 0.25)
+        XCTAssertTrue(viewModel.document.light.toneCurve.isIdentity)
+
+        viewModel.undo()
+        XCTAssertEqual(viewModel.document.light.toneCurve.points.dropFirst().dropLast().count, 1)
+        viewModel.undo()
+        XCTAssertTrue(viewModel.document.light.toneCurve.isIdentity)
+    }
+
+    func testCurveDragCoalescesEveryTickIntoOneUndoStep() {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        viewModel.beginPreviewInteraction()
+
+        for output in [0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85] {
+            viewModel.moveToneCurvePoint(fromInput: 0.5, input: 0.5, output: output)
+        }
+        viewModel.endPreviewInteraction()
+
+        XCTAssertEqual(
+            viewModel.document.light.toneCurve.value(at: 0.5), 0.85, accuracy: 0.000_001
+        )
+        viewModel.undo()
+        XCTAssertTrue(viewModel.document.light.toneCurve.isIdentity,
+                      "all curve drag ticks should undo as one gesture")
+        XCTAssertFalse(viewModel.canUndo)
+    }
+
     private func waitUntil(
         timeout: TimeInterval = 2,
         _ condition: @escaping @MainActor () -> Bool

@@ -87,6 +87,30 @@ final class LightAdjustmentsTests: XCTestCase {
         XCTAssertTrue(curve.isMonotonic)
     }
 
+    func testToneCurveClickSamplesTheCurrentCurve() {
+        let curve = LightToneCurve(points: [
+            LightCurvePoint(input: 0.25, output: 0.1),
+            LightCurvePoint(input: 0.75, output: 0.9),
+        ])
+
+        let clicked = curve.addingPoint(at: 0.5)
+
+        XCTAssertEqual(clicked.points.map(\.input), [0, 0.25, 0.5, 0.75, 1])
+        XCTAssertEqual(clicked.points[2].output, 0.5, accuracy: 0.000_001)
+    }
+
+    func testToneCurveRemovalOnlyChangesInteriorPoints() {
+        let curve = LightToneCurve(points: [
+            LightCurvePoint(input: 0.25, output: 0.1),
+            LightCurvePoint(input: 0.75, output: 0.9),
+        ])
+
+        XCTAssertEqual(curve.removingPoint(at: 0), curve)
+        XCTAssertEqual(curve.removingPoint(at: 1), curve)
+        XCTAssertEqual(curve.removingPoint(at: 0.5), curve)
+        XCTAssertEqual(curve.removingPoint(at: 0.74).points.map(\.input), [0, 0.25, 1])
+    }
+
     func testToneCurveReportsNonMonotonicControlPointsWithoutRewritingThem() {
         let curve = LightToneCurve(points: [
             LightCurvePoint(input: 0.25, output: 0.8),

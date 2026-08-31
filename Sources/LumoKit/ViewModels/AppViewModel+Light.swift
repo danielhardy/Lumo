@@ -51,6 +51,17 @@ extension AppViewModel {
         updateDocument(debounced: true) { $0.light.toneCurve = LightToneCurve(points: points) }
     }
 
+    /// Remove an interior point. The model owns endpoint protection; this method is intentionally
+    /// a no-op for an endpoint or for a miss outside the pointer hit tolerance.
+    func removeToneCurvePoint(atInput input: Double) {
+        let curve = document.light.toneCurve
+        let updated = curve.removingPoint(at: input)
+        guard updated != curve else { return }
+        updateDocument(debounced: isToneCurvePreviewInteractionActive) {
+            $0.light.toneCurve = updated
+        }
+    }
+
     func moveToneCurvePoint(fromInput: Double, input: Double, output: Double) {
         let points = document.light.toneCurve.points
         guard let point = points.dropFirst().dropLast().min(by: {
@@ -77,6 +88,19 @@ extension AppViewModel {
         guard !curve.points.contains(where: { abs($0.input - input) < 0.005 }) else { return }
         var points = curve.points
         points.append(LightCurvePoint(input: input, output: output))
-        updateDocument { $0.light.toneCurve = LightToneCurve(points: points) }
+        updateDocument(debounced: isToneCurvePreviewInteractionActive) {
+            $0.light.toneCurve = LightToneCurve(points: points)
+        }
+    }
+
+    /// Add a point sampled from the current curve. Used by the click gesture so callers cannot
+    /// accidentally create a point with a stale or guessed output value.
+    func addToneCurvePoint(input: Double) {
+        let curve = document.light.toneCurve
+        let updated = curve.addingPoint(at: input)
+        guard updated != curve else { return }
+        updateDocument(debounced: isToneCurvePreviewInteractionActive) {
+            $0.light.toneCurve = updated
+        }
     }
 }

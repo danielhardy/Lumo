@@ -36,6 +36,11 @@ final class PreviewCoordinator {
     private let settleDelay: Duration
     private var interactiveTask: Task<Void, Never>?
     private var settleTask: Task<Void, Never>?
+    /// True only after an interactive task has entered the renderer. A renderer actor may still be
+    /// finishing a non-cancellable Core Image operation after its caller is cancelled; tracking
+    /// that boundary prevents every pointer tick from becoming another actor message.
+    private var interactiveRenderInFlight = false
+    private var pendingInteractive: (request: RenderRequest, token: Token)?
     private var latestRequest: RenderRequest?
     private var latestToken: Token?
     private var nextRevision: UInt64 = 0
@@ -94,6 +99,7 @@ final class PreviewCoordinator {
         interactiveTask = nil
         settleTask?.cancel()
         settleTask = nil
+        pendingInteractive = nil
 
         switch phase {
         case .interactive:
@@ -132,6 +138,7 @@ final class PreviewCoordinator {
         interactiveTask = nil
         settleTask?.cancel()
         settleTask = nil
+        pendingInteractive = nil
         isInteracting = false
     }
 
@@ -143,16 +150,40 @@ final class PreviewCoordinator {
         interactiveTask?.cancel()
         interactiveTask = nil
         settleTask = nil
+        pendingInteractive = nil
         scheduleSettled(Self.request(request, quality: .preview), token: token)
     }
 
     private func scheduleInteractive(_ request: RenderRequest, token: Token) {
+        if interactiveRenderInFlight {
+            // Keep only value state while the renderer finishes the one operation already in
+            // flight. This is latest-wins coalescing without building an actor/task queue.
+            pendingInteractive = (request, token)
+            return
+        }
+
         let delay = interactiveDelay
         interactiveTask = Task { [weak self, engine] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
+            self?.interactiveRenderInFlight = true
             await self?.render(request, token: token, phase: .interactive, engine: engine)
+            self?.interactiveRenderFinished(token: token)
         }
+    }
+
+    private func interactiveRenderFinished(token: Token) {
+        guard interactiveRenderInFlight else { return }
+        interactiveRenderInFlight = false
+
+        // A settled request supersedes this work when a gesture ended, so only continue an
+        // interactive burst that is still active.
+        guard isInteracting, let pending = pendingInteractive else {
+            pendingInteractive = nil
+            return
+        }
+        pendingInteractive = nil
+        scheduleInteractive(pending.request, token: pending.token)
     }
 
     private func scheduleSettled(_ request: RenderRequest, token: Token) {

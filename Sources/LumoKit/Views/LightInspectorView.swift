@@ -123,6 +123,11 @@ private struct ToneCurveEditor: View {
                 let size = proxy.size
                 ZStack {
                     curveGraph(size: size)
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(
+                            SpatialTapGesture(count: 1)
+                                .onEnded { value in addPoint(at: value.location, in: size) }
+                        )
                     ForEach(editablePoints, id: \.input) { point in
                         pointHandle(point, size: size)
                     }
@@ -200,13 +205,23 @@ private struct ToneCurveEditor: View {
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
+                    if draggingInput == nil {
+                        viewModel.beginPreviewInteraction()
+                    }
                     let input = min(max(value.location.x / max(size.width, 1), 0.001), 0.999)
                     let output = min(max(1 - value.location.y / max(size.height, 1), 0), 1)
                     let sourceInput = draggingInput ?? point.input
                     viewModel.moveToneCurvePoint(fromInput: sourceInput, input: input, output: output)
                     draggingInput = input
                 }
-                .onEnded { _ in draggingInput = nil }
+                .onEnded { _ in
+                    draggingInput = nil
+                    viewModel.endPreviewInteraction()
+                }
+        )
+        .simultaneousGesture(
+            SpatialTapGesture(count: 2)
+                .onEnded { _ in removePoint(point) }
         )
         .focusable()
         .accessibilityLabel("Tone curve point")
@@ -226,5 +241,27 @@ private struct ToneCurveEditor: View {
 
     private func position(for point: LightCurvePoint, in size: CGSize) -> CGPoint {
         CGPoint(x: point.input * size.width, y: (1 - point.output) * size.height)
+    }
+
+    private func addPoint(at location: CGPoint, in size: CGSize) {
+        let width = max(size.width, 1)
+        let height = max(size.height, 1)
+        let input = min(max(location.x / width, 0), 1)
+        let output = min(max(1 - location.y / height, 0), 1)
+        let curve = viewModel.document.light.toneCurve
+
+        // A click slightly beside a two-pixel stroke should still feel like a click on the line,
+        // while an empty graph remains inert. The tolerance is expressed in normalized graph units
+        // so it behaves consistently when the inspector is resized.
+        guard abs(output - curve.value(at: input)) <= 0.06 else { return }
+        viewModel.beginPreviewInteraction()
+        viewModel.addToneCurvePoint(input: input)
+        viewModel.endPreviewInteraction()
+    }
+
+    private func removePoint(_ point: LightCurvePoint) {
+        viewModel.beginPreviewInteraction()
+        viewModel.removeToneCurvePoint(atInput: point.input)
+        viewModel.endPreviewInteraction()
     }
 }

@@ -66,6 +66,75 @@ final class PreviewCoordinatorTests: XCTestCase {
         XCTAssertEqual(publications[0].revision, 2)
     }
 
+    func testInteractiveUpdatesDoNotStartAnotherRenderWhileOneIsInFlight() async throws {
+        let fake = ControlledRenderEngine()
+        let coordinator = PreviewCoordinator(
+            engine: fake, interactiveDelay: .zero, settleDelay: .seconds(10)
+        )
+        coordinator.beginInteraction()
+        let source = makeSource()
+
+        coordinator.submit(request(source: source, exposure: 0.1), phase: .interactive)
+        try await waitUntil("the first interactive request") { await fake.requests.count == 1 }
+
+        for step in 2...5 {
+            coordinator.submit(
+                request(source: source, exposure: Double(step) / 10), phase: .interactive
+            )
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        let inFlightCount = await fake.requests.count
+        XCTAssertEqual(inFlightCount, 1,
+                       "superseded pointer values must remain value state, not queued renders")
+
+        await fake.releaseNext()
+        try await waitUntil("the latest interactive request") { await fake.requests.count == 2 }
+        let requests = await fake.allRequests()
+        XCTAssertEqual(requests[1].document.rawDevelop.exposure, 0.5)
+        await fake.releaseNext()
+        coordinator.endInteraction()
+    }
+
+    /// Opt-in smoke benchmark for the pointer-to-pixel path using a 60 MP-class source extent.
+    /// The fake renderer keeps this repeatable in CI; the Instruments recipe remains the source of
+    /// truth for hardware measurements with a real RAW and GPU.
+    func testLargePreviewInteractiveLatencyBenchmark() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["LUMO_BENCH"] != nil,
+            "set LUMO_BENCH=1 to run the interactive latency benchmark"
+        )
+
+        let fake = FakeRenderEngine()
+        let coordinator = PreviewCoordinator(engine: fake, interactiveDelay: .zero)
+        let source = ImageSource(
+            url: URL(fileURLWithPath: "/tmp/60mp-tone-curve-test.raw"),
+            nativeExtent: CGSize(width: 9_504, height: 6_336)
+        )
+        var publications = 0
+        var samples: [Double] = []
+        coordinator.onPublication = { publication in
+            guard publication.phase == .interactive else { return }
+            publications += 1
+        }
+        coordinator.beginInteraction()
+
+        for step in 0..<20 {
+            let before = Date()
+            coordinator.submit(
+                request(source: source, exposure: Double(step) / 20), phase: .interactive
+            )
+            try await waitUntil("interactive benchmark frame") { publications == step + 1 }
+            samples.append(Date().timeIntervalSince(before) * 1_000)
+        }
+        coordinator.endInteraction()
+
+        let sorted = samples.sorted()
+        let p50 = sorted[sorted.count / 2]
+        let p95 = sorted[Int(Double(sorted.count - 1) * 0.95)]
+        print(String(format: "tone-curve 60 MP-class pointer-to-pixel latency: p50 %.1f ms, p95 %.1f ms", p50, p95))
+        XCTAssertLessThanOrEqual(p95, 50, "interactive preview must stay within the 50 ms budget")
+    }
+
     private func request(source: ImageSource, exposure: Double) -> RenderRequest {
         RenderRequest(
             source: source,
