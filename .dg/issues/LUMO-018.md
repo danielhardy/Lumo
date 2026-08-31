@@ -2,20 +2,23 @@
 id: LUMO-018
 title: Introduce stable PhotoAsset and library metadata records
 type: task
-status: verification
+status: done
 priority: urgent
 labels:
   - mvp
   - epic:library
   - phase:3
 created: 2026-08-30T18:30:23.027Z
-updated: 2026-08-31T14:33:49.991Z
+updated: 2026-08-31T14:45:49.075Z
 depends_on:
   - LUMO-004
   - LUMO-006
 estimate: 5
 order: a0
 board: product
+branch: agent/lumo-018
+commits:
+  - 0d14f3d
 ---
 
 ## Objective
@@ -52,6 +55,38 @@ Part of **Epic 3 — Folder library and rapid culling**. The source product brie
 
 Implemented in commit 0961319. Added Codable/Sendable PhotoAsset, PhotoAssetID, PhotoAssetSource, bounded PhotoSourceFingerprint, metadata and mutable culling/thumbnail state; replaced ImageCollection's session UUID item IDs with stable asset IDs; documented the Photos data-only SHA-256 identity policy; added stable-ID, collision, moved/replaced-source, Codable, and collection rescan tests. Verification: swift build, swift test (314 executed, 20 expected skips, 0 failures), swift build -c release, dg validate OK (pre-existing warnings only).
 
+### Comment — claude @ 2026-08-31T14:45:46.389Z
+
+## Verification report (counterpoint agent, independent pass)
+
+**Scope reviewed:** commit 0961319 (PhotoAsset/PhotoAssetID/PhotoAssetSource/PhotoSourceFingerprint,
+ImageCollection integration, ImageMetadata Codable/Sendable conformance, PhotoAssetTests).
+
+**Checks run:**
+- `swift build` — clean.
+- `swift test` — 314 executed, 20 expected skips, 0 failures (matches prior claim).
+- `swift build -c release` — clean.
+- `dg validate` — OK, pre-existing warnings only.
+- `swift test --filter PackageSettingsTests` — Swift 6 mode intact, zero concurrency escape hatches.
+
+**Findings:**
+- Correctness: identity/fingerprint/matching semantics check out against the acceptance criteria —
+  same-file identity is stable across rebuilds, distinct files with identical bytes don't collide,
+  in-place edits change the fingerprint/cache key while a same-volume move preserves it, and the
+  asset/library-state split round-trips through Codable. `ImageCollection` items now carry stable
+  `PhotoAssetID`s across rescans (covered by `testCollectionItemsUseStableAssetIDs`).
+  Acceptance criterion 4 (documented Photos-imported identity policy) is covered in the README diff.
+- No blockers found.
+- Minor maintainability nit (fixed directly, localized/testable): `PhotoAsset` exposed two identical
+  computed properties, `bookmarkData` and `bookmark`, both forwarding to `source.bookmarkData`.
+  `bookmark` was unused anywhere in the codebase — removed in commit 0d14f3d. Re-ran the full suite
+  and targeted PhotoAssetTests after the change; still 314/0 and green.
+
+**Verdict:** PASS. No child tickets needed — the one issue found was small enough to fix inline per
+the action rules. Moving to `done`.
+
 ## Agent log
 
 <!-- Generated summaries only. Detailed activity lives in events.jsonl. -->
+
+- 2026-08-31T14:45:49.074Z: Independent verification pass: build/test/release/dg validate all green (314 tests, 0 failures), matches prior claim. Removed one dead duplicate accessor (PhotoAsset.bookmark) as a localized fix. No blockers.
