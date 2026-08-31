@@ -164,18 +164,41 @@ actor RenderEngine: RenderEngining {
     // MARK: - Rendering
 
     func render(_ request: RenderRequest) async throws -> RenderResult {
+        var interval = LumoObservability.begin(
+            .render, source: request.source, quality: request.quality
+        )
+        defer { interval.end() }
+
         // An interactive request can sit behind another Core Image operation on this actor. Check
         // before doing any work so cancellation drops queued superseded values instead of making
         // the coordinator wait for an obsolete graph to rasterize.
         try Task.checkCancellation()
         let scale = request.renderScale
         let previewKey = previewCacheKey(for: request, scale: scale)
-        if let previewKey, let cached = previewCache.value(for: previewKey) {
-            return cached
+        if let previewKey {
+            var cacheInterval = LumoObservability.begin(.cache, source: request.source,
+                                                        quality: request.quality)
+            defer { cacheInterval.end() }
+            if let cached = previewCache.value(for: previewKey) {
+                LumoObservability.event(.cacheHit, source: request.source, quality: request.quality,
+                                        detail: "layer=preview")
+                return cached
+            }
+            LumoObservability.event(.cacheMiss, source: request.source, quality: request.quality,
+                                    detail: "layer=preview")
         }
-        guard let image = buildImage(
-            request.source, request.document, request.lut, scale, request.space
-        ) else {
+
+        let image: CIImage?
+        if scale.isFull {
+            var decodeInterval = LumoObservability.begin(
+                .decode, source: request.source, quality: request.quality
+            )
+            image = buildImage(request.source, request.document, request.lut, scale, request.space)
+            decodeInterval.end()
+        } else {
+            image = buildImage(request.source, request.document, request.lut, scale, request.space)
+        }
+        guard let image else {
             throw ImageError.processingFailed
         }
         let rect = image.extent.integral
@@ -245,6 +268,9 @@ actor RenderEngine: RenderEngining {
         space: WorkingSpace = .current,
         maxDimension: Int = 512
     ) -> HistogramData? {
+        var interval = LumoObservability.begin(.histogram, source: source, quality: .preview)
+        defer { interval.end() }
+
         guard maxDimension > 0, let image = buildImage(source, document, lut, scale, space) else {
             return nil
         }
@@ -339,7 +365,8 @@ actor RenderEngine: RenderEngining {
     func cacheStatistics() -> RenderCacheStatistics {
         RenderCacheStatistics(
             preview: previewCache.statistics,
-            developedSource: developedSourceCache.statistics
+            developedSource: developedSourceCache.statistics,
+            lutFilter: lutCache.statistics
         )
     }
 
@@ -416,7 +443,20 @@ actor RenderEngine: RenderEngining {
             scale: RenderScaleKey(scale),
             pipelineVersion: RenderPipeline.cacheVersion
         )
-        if let image = developedSourceCache.value(for: key) { return image }
+        var cacheInterval = LumoObservability.begin(.cache, source: source, quality: .preview)
+        let cachedImage = developedSourceCache.value(for: key)
+        cacheInterval.end()
+        if let image = cachedImage {
+            LumoObservability.event(.cacheHit, source: source, quality: .preview,
+                                    detail: "layer=developedSource")
+            return image
+        }
+
+        LumoObservability.event(.cacheMiss, source: source, quality: .preview,
+                                detail: "layer=developedSource")
+
+        var decodeInterval = LumoObservability.begin(.decode, source: source, quality: .preview)
+        defer { decodeInterval.end() }
 
         guard let image = RenderPipeline.developedSource(
             source, rawDevelop: rawDevelop, scale: scale

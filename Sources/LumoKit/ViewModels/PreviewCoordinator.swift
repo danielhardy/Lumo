@@ -75,6 +75,18 @@ final class PreviewCoordinator {
     /// Submit a complete display request. The request is value state, so a caller can safely create
     /// it on the main actor and the renderer can evaluate it elsewhere.
     func submit(_ request: RenderRequest, phase: Phase = .settled) {
+        let hadPendingWork = interactiveTask != nil || settleTask != nil
+        if hadPendingWork {
+            LumoObservability.event(.cancellation, source: request.source, quality: request.quality,
+                                    detail: "superseded")
+        }
+        // A previous settled request is not a coalesced edit. Only count a new interactive value
+        // replacing another interactive task in the same burst.
+        if phase == .interactive, interactiveTask != nil {
+            LumoObservability.event(.coalesced, source: request.source, quality: .interactive,
+                                    detail: "interactive-burst")
+        }
+
         nextRevision &+= 1
         let token = Token(source: request.source, revision: nextRevision)
         latestRequest = request
@@ -111,6 +123,10 @@ final class PreviewCoordinator {
     /// Invalidate every in-flight publication, including one for a source that happens to compare
     /// equal to the next source. This is the source-generation boundary used by navigation.
     func cancel() {
+        if interactiveTask != nil || settleTask != nil {
+            LumoObservability.event(.cancellation, source: latestRequest?.source,
+                                    quality: latestRequest?.quality, detail: "navigation")
+        }
         nextRevision &+= 1
         latestRequest = nil
         latestToken = nil
@@ -162,9 +178,13 @@ final class PreviewCoordinator {
 
             // RenderResult deliberately carries Sendable bytes. ImageIO decode is still work, so it
             // is detached from the main actor before NSImage/UI state is touched by the handler.
+            var decodeInterval = LumoSignpostInterval(
+                .decode, context: LumoTraceContext(source: request.source, quality: request.quality)
+            )
             let image = await Task.detached {
                 PreviewImageDecoder.decode(result.data)
             }.value
+            decodeInterval.end()
 
             guard !Task.isCancelled, isCurrent(token) else { return }
             onPublication?(Publication(

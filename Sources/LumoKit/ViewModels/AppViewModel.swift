@@ -242,6 +242,9 @@ final class AppViewModel: ObservableObject {
     // MARK: - Init
 
     init(engine: any RenderEngining = RenderEngine.shared) {
+        var interval = LumoSignpostInterval(.launch, context: .unknown)
+        defer { interval.end() }
+
         self.engine = engine
         self.export = ExportCoordinator(engine: engine)
         self.previewCoordinator = PreviewCoordinator(engine: engine)
@@ -388,6 +391,12 @@ final class AppViewModel: ObservableObject {
         statusMessage = "Loading \(name)..."
 
         loadTask = Task {
+            var interval = LumoSignpostInterval(
+                .photoSwitch,
+                context: LumoTraceContext(sourceFingerprint: name, quality: "interactive")
+            )
+            defer { interval.end() }
+
             let decoded: Result<CIImage, Error> = await Task.detached {
                 do {
                     if let url {

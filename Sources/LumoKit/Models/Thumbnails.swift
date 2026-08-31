@@ -54,8 +54,10 @@ enum Thumbnails {
             maxPixelSize: maxPixelSize
         )
         if let data = cache.value(for: key), let image = image(fromPNG: data) {
+            LumoObservability.event(.cacheHit, quality: .thumbnail, detail: "layer=thumbnail")
             return image
         }
+        LumoObservability.event(.cacheMiss, quality: .thumbnail, detail: "layer=thumbnail")
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         return thumbnail(from: source, maxPixelSize: maxPixelSize, cacheKey: key)
     }
@@ -66,8 +68,10 @@ enum Thumbnails {
         let sourceIdentity = ImageSource(data: data, nativeExtent: .zero)
         let key = cacheKey(source: RenderSourceFingerprint(sourceIdentity).value, maxPixelSize: maxPixelSize)
         if let data = cache.value(for: key), let image = image(fromPNG: data) {
+            LumoObservability.event(.cacheHit, quality: .thumbnail, detail: "layer=thumbnail")
             return image
         }
+        LumoObservability.event(.cacheMiss, quality: .thumbnail, detail: "layer=thumbnail")
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         return thumbnail(from: source, maxPixelSize: maxPixelSize, cacheKey: key)
     }

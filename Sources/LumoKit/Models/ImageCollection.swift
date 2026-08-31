@@ -114,6 +114,11 @@ final class ImageCollection: ObservableObject {
         isActive = false
 
         scanTask = Task {
+            var interval = LumoSignpostInterval(
+                .scan,
+                context: LumoTraceContext(sourceFingerprint: url.standardizedFileURL.path, quality: "background")
+            )
+            defer { interval.end() }
             let scanned = await Task.detached { Self.scanFolder(url) }.value
             guard !Task.isCancelled else { return }
             self.items = scanned

@@ -205,10 +205,14 @@ Then select the **Lumo** scheme and **Run** (`⌘R`). For a sandboxed build, add
 ```bash
 swift test
 ```
-308 tests, no fixtures to download — everything they need is generated into a temp directory. The
+328 tests, no fixtures to download — everything they need is generated into a temp directory. The
 handful of tests that want real camera files look for an opt-in `realworldtest/` directory (gitignored)
 and skip cleanly without it, as on CI. The suite runs debug build → tests → release build in CI on
 every push and PR.
+
+For repeatable launch, photo-switch, slider, cache, histogram, and export profiling, see the
+[Instruments capture recipe](docs/INSTRUMENTS.md). Its thresholds are targets to validate with a
+trace, not claims that the current build has already met them.
 
 **Requirements:**
 

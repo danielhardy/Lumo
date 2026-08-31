@@ -125,6 +125,8 @@ final class ExportCoordinator: ObservableObject {
         onStatus?("Exporting...")
 
         Task { [engine, format] in
+            var interval = LumoObservability.begin(.export, source: source, quality: .export)
+            defer { interval.end() }
             do {
                 let data = try await engine.render(RenderRequest(
                     source: source, document: document, lut: lut,
@@ -196,6 +198,8 @@ final class ExportCoordinator: ObservableObject {
                 let base = Self.exportBaseName(source: item.name, lut: lut)
                 let dest = uniqueExportURL(in: folder, base: base, ext: fmt.fileExtension)
                 do {
+                    var interval = LumoObservability.begin(.export, source: source, quality: .export)
+                    defer { interval.end() }
                     let data = try await engine.render(RenderRequest(
                         source: source, document: document, lut: lut,
                         quality: .export,

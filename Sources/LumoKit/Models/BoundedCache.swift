@@ -21,6 +21,7 @@ struct RenderCacheConfiguration: Sendable, Equatable {
 struct RenderCacheStatistics: Sendable, Equatable {
     let preview: CacheStatistics
     let developedSource: CacheStatistics
+    let lutFilter: CacheStatistics
 }
 
 /// An actor-local least-recently-used cache.
