@@ -21,6 +21,41 @@ final class PreviewCostBenchmark: XCTestCase {
 
     private static let previewBox = CGSize(width: 1600, height: 1200)
 
+    /// The pre-LUMO-071 implementation, retained here as a benchmark baseline. It intentionally
+    /// constructs the cube for every curve value, matching the old per-render `CIColorCube` path.
+    private static func baselineToneCurve(_ curve: LightToneCurve, image: CIImage) -> CIImage {
+        let dimension = 64
+        let denominator = Double(dimension - 1)
+        let samples = (0..<dimension).map { Float(curve.value(at: Double($0) / denominator)) }
+        var values = [Float]()
+        values.reserveCapacity(dimension * dimension * dimension * 4)
+        for b in 0..<dimension {
+            for g in 0..<dimension {
+                for r in 0..<dimension {
+                    values.append(samples[r])
+                    values.append(samples[g])
+                    values.append(samples[b])
+                    values.append(1)
+                }
+            }
+        }
+        let data = values.withUnsafeBufferPointer { Data(buffer: $0) }
+        guard let filter = CIFilter(name: "CIColorCube") else { return image }
+        filter.setValue(dimension, forKey: "inputCubeDimension")
+        filter.setValue(data as NSData, forKey: "inputCubeData")
+        filter.setValue(image, forKey: kCIInputImageKey)
+        return filter.outputImage ?? image
+    }
+
+    private static func dragCurve(tick: Int, ticks: Int) -> LightToneCurve {
+        let progress = Double(tick % ticks) / Double(ticks - 1)
+        return LightToneCurve(points: [
+            LightCurvePoint(input: 0, output: 0),
+            LightCurvePoint(input: 0.5, output: 0.5 + 0.18 * progress),
+            LightCurvePoint(input: 1, output: 1),
+        ])
+    }
+
     /// The shape the app used before the cutover — grade an already-decoded image, then rasterize —
     /// reproduced here rather than called.
     ///
@@ -158,6 +193,57 @@ final class PreviewCostBenchmark: XCTestCase {
                      viaEngine / old, oneOffDecode))
         print(String(format: "  PNG round-trip overhead vs direct raster: %.1f ms (%.2fx)\n",
                      roundTrip - direct, roundTrip / direct))
+    }
+
+    /// Measures the specific LUMO-071 acceptance criterion. This is deliberately opt-in because it
+    /// allocates the historical 4 MiB cube and forces a GPU render for every sample.
+    func testMeasureToneCurveDragCost() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["LUMO_BENCH"] != nil,
+            "set LUMO_BENCH=1 to run the tone-curve measurement"
+        )
+
+        let context = CIContext(mtlDevice: MTLCreateSystemDefaultDevice()!)
+        let image = CIImage(cgImage: try Fixtures.makeCGImage(width: 1024, height: 768))
+        let ticks = 30
+        let warmup = 3
+        let oldPayloadBytes = 64 * 64 * 64 * 4 * MemoryLayout<Float>.size
+        let newPayloadBytes = 256 * 4 * MemoryLayout<Float>.size
+
+        func measure(_ label: String, _ body: (Int) -> CIImage) -> Double {
+            for tick in 0..<warmup {
+                _ = context.createCGImage(body(tick), from: image.extent,
+                                          format: .RGBA8, colorSpace: WorkingSpace.current.cgColorSpace)
+            }
+            let start = Date()
+            for tick in 0..<ticks {
+                _ = context.createCGImage(body(tick + warmup), from: image.extent,
+                                          format: .RGBA8, colorSpace: WorkingSpace.current.cgColorSpace)
+            }
+            let milliseconds = Date().timeIntervalSince(start) / Double(ticks) * 1000
+            print(String(format: "  %-30@ %8.2f ms/tick", label as NSString, milliseconds))
+            return milliseconds
+        }
+
+        let old = measure("before: 64³ cube + GPU render") { tick in
+            Self.baselineToneCurve(Self.dragCurve(tick: tick, ticks: ticks), image: image)
+        }
+        let cache = ToneCurveFilterCache()
+        let new = measure("after: 256×1 texture + GPU render") { tick in
+            RenderPipeline.applyLight(
+                LightAdjustments(toneCurve: Self.dragCurve(tick: tick, ticks: ticks)),
+                to: image,
+                cache: cache
+            )
+        }
+
+        XCTAssertLessThanOrEqual(newPayloadBytes * 100, oldPayloadBytes,
+                                 "the replacement payload should remain at least 100× smaller")
+        print("\n=== LUMO-071 tone-curve drag benchmark (\(ticks) ticks, 1024×768) ===")
+        print("  before table allocated/uploaded per tick: \(oldPayloadBytes) bytes")
+        print("  after table allocated/uploaded per tick:  \(newPayloadBytes) bytes")
+        print(String(format: "  payload reduction: %.0fx", Double(oldPayloadBytes) / Double(newPayloadBytes)))
+        print(String(format: "  measured timing: %.2f → %.2f ms/tick (%.2fx)", old, new, new / old))
     }
 
     /// The same question for a standard image. `CIImage(contentsOf:)` is lazy, so the *construction*
