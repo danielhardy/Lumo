@@ -137,6 +137,11 @@ actor RenderEngine: RenderEngining {
     private let lutCache = LUTFilterCache()
     private let previewCache: BoundedLRUCache<PreviewCacheKey, RenderResult>
     private let developedSourceCache: BoundedLRUCache<DevelopedSourceCacheKey, CIImage>
+    /// The interactive RAW decoder is deliberately a single-entry cache. `CIRAWFilter` is mutable
+    /// and is only safe behind this actor; retaining one filter for the visible source avoids
+    /// rebuilding its immutable source/decode setup on every pointer tick. It is discarded at the
+    /// source boundary, so a replaced URL or a different photo can never reuse decoder state.
+    private var interactiveRAWSession: InteractiveRAWFilterSession?
     private var memoryPressureSource: DispatchSourceMemoryPressure?
 
     init(configuration: RenderCacheConfiguration = .default) {
@@ -188,7 +193,8 @@ actor RenderEngine: RenderEngining {
         defer { interval.end() }
 
         let image = buildImage(
-            request.source, request.document, request.lut, request.renderScale, request.space
+            request.source, request.document, request.lut, request.renderScale, request.space,
+            quality: request.quality
         )
         guard let image,
               image.extent.isRasterizable,
@@ -231,10 +237,12 @@ actor RenderEngine: RenderEngining {
             var decodeInterval = LumoObservability.begin(
                 .decode, source: request.source, quality: request.quality
             )
-            image = buildImage(request.source, request.document, request.lut, scale, request.space)
+            image = buildImage(request.source, request.document, request.lut, scale, request.space,
+                               quality: request.quality)
             decodeInterval.end()
         } else {
-            image = buildImage(request.source, request.document, request.lut, scale, request.space)
+            image = buildImage(request.source, request.document, request.lut, scale, request.space,
+                               quality: request.quality)
         }
         guard let image else {
             throw ImageError.processingFailed
@@ -309,7 +317,8 @@ actor RenderEngine: RenderEngining {
         var interval = LumoObservability.begin(.histogram, source: source, quality: .preview)
         defer { interval.end() }
 
-        guard maxDimension > 0, let image = buildImage(source, document, lut, scale, space) else {
+        guard maxDimension > 0,
+              let image = buildImage(source, document, lut, scale, space, quality: .preview) else {
             return nil
         }
         let extent = image.extent
@@ -412,6 +421,7 @@ actor RenderEngine: RenderEngining {
     func evictForMemoryPressure() {
         previewCache.removeAll(countAsEvictions: true)
         developedSourceCache.removeAll(countAsEvictions: true)
+        interactiveRAWSession = nil
         lutCache.removeAll()
         Thumbnails.evictForMemoryPressure()
     }
@@ -420,6 +430,7 @@ actor RenderEngine: RenderEngining {
     func invalidateRenderCaches() {
         previewCache.removeAll()
         developedSourceCache.removeAll()
+        interactiveRAWSession = nil
         Thumbnails.invalidateCache()
     }
 
@@ -437,9 +448,13 @@ actor RenderEngine: RenderEngining {
         _ document: EditDocument,
         _ lut: CubeLUT?,
         _ scale: RenderScale,
-        _ space: WorkingSpace
+        _ space: WorkingSpace,
+        quality: RenderQuality
     ) -> CIImage? {
-        guard let developed = developedSource(source, document.rawDevelop, scale) else { return nil }
+        guard let developed = developedSource(
+            source, document.rawDevelop, scale,
+            interactive: quality == .interactive
+        ) else { return nil }
         return RenderPipeline.buildImage(
             developed: developed, document: document, lut: lut, space: space, lutCache: lutCache,
             includePostRenderWhiteBalance: source.kind == .standard
@@ -471,8 +486,23 @@ actor RenderEngine: RenderEngining {
     private func developedSource(
         _ source: ImageSource,
         _ rawDevelop: RAWDevelopSettings,
-        _ scale: RenderScale
+        _ scale: RenderScale,
+        interactive: Bool = false
     ) -> CIImage? {
+        if interactive, source.kind == .raw {
+            let fingerprint = source.cacheFingerprint
+            let reused = interactiveRAWSession?.fingerprint == fingerprint
+            if interactiveRAWSession?.fingerprint != fingerprint {
+                // This is an explicit one-entry boundary: source changes release the old mutable
+                // Core Image object and its source-backed decode graph before creating another.
+                interactiveRAWSession = InteractiveRAWFilterSession(source: source)
+            }
+            LumoObservability.event(
+                reused ? .cacheHit : .cacheMiss, source: source, quality: .interactive,
+                detail: "layer=interactiveRAWFilter reused=\(reused)"
+            )
+            return interactiveRAWSession?.output(rawDevelop: rawDevelop, scale: scale)
+        }
         guard !scale.isFull else {
             return RenderPipeline.developedSource(source, rawDevelop: rawDevelop, scale: scale)
         }
@@ -516,6 +546,98 @@ actor RenderEngine: RenderEngining {
     /// it lets a caller release the intermediates when no image is on screen.
     func invalidateSourceCache() {
         developedSourceCache.removeAll()
+        interactiveRAWSession = nil
+    }
+
+    /// A reusable actor-local RAW filter for the short-lived interactive tier. The baseline values
+    /// are captured once because applying an optional setting cannot undo a value written on the
+    /// previous tick (`nil` means decoder default, not "clear this mutable filter property").
+    private final class InteractiveRAWFilterSession {
+        let fingerprint: String
+        private let filter: CIRAWFilter
+        private let baseline: RAWFilterBaseline
+
+        init?(source: ImageSource) {
+            guard let filter = RenderPipeline.rawFilter(for: source.backing) else { return nil }
+            self.fingerprint = source.cacheFingerprint
+            self.filter = filter
+            self.baseline = RAWFilterBaseline(filter: filter)
+        }
+
+        func output(rawDevelop: RAWDevelopSettings, scale: RenderScale) -> CIImage? {
+            baseline.restore(to: filter)
+            rawDevelop.apply(to: filter)
+            let factor = scale.factor(for: filter.nativeSize)
+            filter.scaleFactor = Float(factor)
+            return filter.outputImage
+        }
+    }
+
+    /// All mutable develop values touched by `RAWDevelopSettings.apply`. Keeping this snapshot
+    /// local to the renderer makes reset semantics explicit without sharing a `CIRAWFilter` across
+    /// actors or changing the settled, deterministic pipeline.
+    private struct RAWFilterBaseline {
+        let exposure: Float
+        let baselineExposure: Float
+        let shadowBias: Float
+        let boostAmount: Float
+        let boostShadowAmount: Float
+        let neutralTemperature: Float
+        let neutralTint: Float
+        let gamutMappingEnabled: Bool
+        let extendedDynamicRangeAmount: Float
+        let sharpnessAmount: Float
+        let contrastAmount: Float
+        let detailAmount: Float
+        let moireReductionAmount: Float
+        let localToneMapAmount: Float
+        let luminanceNoiseReductionAmount: Float
+        let colorNoiseReductionAmount: Float
+        let lensCorrectionEnabled: Bool
+        let highlightRecoveryEnabled: Bool?
+
+        init(filter: CIRAWFilter) {
+            exposure = filter.exposure; baselineExposure = filter.baselineExposure
+            shadowBias = filter.shadowBias; boostAmount = filter.boostAmount
+            boostShadowAmount = filter.boostShadowAmount
+            neutralTemperature = filter.neutralTemperature; neutralTint = filter.neutralTint
+            gamutMappingEnabled = filter.isGamutMappingEnabled
+            extendedDynamicRangeAmount = filter.extendedDynamicRangeAmount
+            sharpnessAmount = filter.sharpnessAmount; contrastAmount = filter.contrastAmount
+            detailAmount = filter.detailAmount; moireReductionAmount = filter.moireReductionAmount
+            localToneMapAmount = filter.localToneMapAmount
+            luminanceNoiseReductionAmount = filter.luminanceNoiseReductionAmount
+            colorNoiseReductionAmount = filter.colorNoiseReductionAmount
+            lensCorrectionEnabled = filter.isLensCorrectionEnabled
+            if #available(macOS 26, *), filter.isHighlightRecoverySupported {
+                highlightRecoveryEnabled = filter.isHighlightRecoveryEnabled
+            } else { highlightRecoveryEnabled = nil }
+        }
+
+        func restore(to filter: CIRAWFilter) {
+            filter.exposure = exposure; filter.baselineExposure = baselineExposure
+            filter.shadowBias = shadowBias; filter.boostAmount = boostAmount
+            filter.boostShadowAmount = boostShadowAmount
+            filter.neutralTemperature = neutralTemperature; filter.neutralTint = neutralTint
+            filter.isGamutMappingEnabled = gamutMappingEnabled
+            filter.extendedDynamicRangeAmount = extendedDynamicRangeAmount
+            if filter.isSharpnessSupported { filter.sharpnessAmount = sharpnessAmount }
+            if filter.isContrastSupported { filter.contrastAmount = contrastAmount }
+            if filter.isDetailSupported { filter.detailAmount = detailAmount }
+            if filter.isMoireReductionSupported { filter.moireReductionAmount = moireReductionAmount }
+            if filter.isLocalToneMapSupported { filter.localToneMapAmount = localToneMapAmount }
+            if filter.isLuminanceNoiseReductionSupported {
+                filter.luminanceNoiseReductionAmount = luminanceNoiseReductionAmount
+            }
+            if filter.isColorNoiseReductionSupported {
+                filter.colorNoiseReductionAmount = colorNoiseReductionAmount
+            }
+            if filter.isLensCorrectionSupported { filter.isLensCorrectionEnabled = lensCorrectionEnabled }
+            if let highlightRecoveryEnabled, #available(macOS 26, *),
+               filter.isHighlightRecoverySupported {
+                filter.isHighlightRecoveryEnabled = highlightRecoveryEnabled
+            }
+        }
     }
 
     private func previewCacheKey(for request: RenderRequest, scale: RenderScale) -> PreviewCacheKey? {
