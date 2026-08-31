@@ -140,6 +140,26 @@ final class RenderPipelineTests: TempDirectoryTestCase {
         XCTAssertGreaterThan(contrasted[192], base[192], "positive contrast should lift the upper midtones")
     }
 
+    /// Contrast, Highlights, and Shadows share one tone curve, so opposing values (e.g. negative
+    /// Contrast pulling an interior point down while positive Shadows pulls it up) can otherwise
+    /// push a lower-tone control point above a higher-tone one. `CIToneCurve` does not enforce
+    /// monotonicity itself, so a crossed pair renders as a local tone inversion rather than a
+    /// smooth curve. Assert the rendered ramp stays monotonically non-decreasing for the
+    /// combination that reproduces the crossing (contrast -100, highlights -100, shadows +100).
+    func testCombinedLightControlsStayMonotonic() throws {
+        let source = try linearRamp()
+        let samples = try linearSamples(of: RenderPipeline.applyLight(
+            LightAdjustments(contrast: -100, highlights: -100, shadows: 100), to: source
+        ))
+
+        for index in stride(from: 1, to: samples.count, by: 1) {
+            XCTAssertGreaterThanOrEqual(
+                samples[index], samples[index - 1] - 0.002,
+                "Light tone curve must not invert tones at ramp index \(index)"
+            )
+        }
+    }
+
     /// Keep representative rendered samples in the XCTest result for visual inspection while the
     /// numeric properties above protect the behavior in CI. The images are generated per run and
     /// are intentionally not checked into the repository.

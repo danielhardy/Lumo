@@ -19,9 +19,11 @@ enum RenderPipeline {
     /// Increment whenever the pixels produced by the graph can change without a cache-key input
     /// changing. This makes cache invalidation explicit when the pipeline evolves.
     /// v2 added the Light stage to the graph. v3 refines its non-neutral mapping to the native EV
-    /// plus tonal-curve implementation; the version advances because existing Light edits render
-    /// different pixels even though the document schema is unchanged.
-    static let cacheVersion = 3
+    /// plus tonal-curve implementation. v4 clamps the tone curve's interior points to stay
+    /// monotonic; some Contrast/Highlights/Shadows combinations previously produced a curve that
+    /// inverted tones locally, so affected documents render different pixels even though the
+    /// document schema is unchanged.
+    static let cacheVersion = 4
 
     /// Build the graph for `document` over `source`.
     ///
@@ -190,16 +192,23 @@ enum RenderPipeline {
         // Fixed endpoints keep a moderate contrast move from clipping usable blacks and whites.
         // The slider deltas are deliberately bounded well inside the endpoint interval, and the
         // interior weights taper toward the opposite tonal region.
+        //
+        // Opposing controls (e.g. negative Contrast with positive Shadows and negative Highlights)
+        // can otherwise push an interior point below its lower neighbor, which makes CIToneCurve's
+        // spline invert tones locally instead of just changing separation. Clamp each interior point
+        // to be no lower than the previous one so the curve stays monotonic for every slider
+        // combination.
+        var output1 = clampedToneValue(0.25 - 0.12 * contrast + 0.15 * shadows)
+        var output2 = clampedToneValue(0.5 + 0.025 * (highlights + shadows))
+        var output3 = clampedToneValue(0.75 + 0.12 * contrast + 0.15 * highlights)
+        output1 = max(output1, 0)
+        output2 = max(output2, output1)
+        output3 = max(output3, output2)
+
         curve.point0 = toneCurvePoint(input: 0, output: 0)
-        curve.point1 = toneCurvePoint(input: 0.25, output: clampedToneValue(
-            0.25 - 0.12 * contrast + 0.15 * shadows
-        ))
-        curve.point2 = toneCurvePoint(input: 0.5, output: clampedToneValue(
-            0.5 + 0.025 * (highlights + shadows)
-        ))
-        curve.point3 = toneCurvePoint(input: 0.75, output: clampedToneValue(
-            0.75 + 0.12 * contrast + 0.15 * highlights
-        ))
+        curve.point1 = toneCurvePoint(input: 0.25, output: output1)
+        curve.point2 = toneCurvePoint(input: 0.5, output: output2)
+        curve.point3 = toneCurvePoint(input: 0.75, output: output3)
         curve.point4 = toneCurvePoint(input: 1, output: 1)
 
         return curve.outputImage ?? result
