@@ -133,10 +133,12 @@ actor RenderEngine: RenderEngining {
 
     /// Shared by the persistent SwiftUI presentation surfaces. Keeping this in the render-stack
     /// owner preserves the single-context invariant while allowing MTKView to draw its drawable.
-    @MainActor static let presentationContext: CIContext = {
-        if let device = MTLCreateSystemDefaultDevice() { return CIContext(mtlDevice: device) }
-        return CIContext()
-    }()
+    ///
+    /// `presentationContext` is built from this same device: the `MTKView` and the `CIContext`
+    /// rendering into its drawable's texture must agree on device, or the render silently no-ops.
+    @MainActor static let presentationDevice: MTLDevice = MTLCreateSystemDefaultDevice()!
+
+    @MainActor static let presentationContext: CIContext = CIContext(mtlDevice: presentationDevice)
 
     func makeCIImage(_ request: RenderRequest) async -> sending CIImage? {
         guard request.output == .raster, !Task.isCancelled else { return nil }

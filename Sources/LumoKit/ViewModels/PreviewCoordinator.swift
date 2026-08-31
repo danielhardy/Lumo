@@ -214,7 +214,7 @@ final class PreviewCoordinator {
         // frames are surface-only and never take this allocation path.
         let image = gpuImage == nil || phase == .settled ? await engine.makeCGImage(request) : nil
         guard !Task.isCancelled, isCurrent(token) else { return }
-        guard let image else {
+        guard image != nil || gpuImage != nil else {
             onFailure?(request)
             return
         }
