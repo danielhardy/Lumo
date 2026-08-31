@@ -14,6 +14,10 @@ import CoreGraphics
 enum RenderScale: Sendable, Equatable {
     /// Fit within `maxSize`, never upscaling.
     case preview(maxSize: CGSize)
+    /// Interaction policy. The input is the canvas backing-pixel size, not a fixed export box.
+    /// Interactive rendering intentionally uses a bounded pixel budget so a large RAW cannot
+    /// monopolize the GPU past the next display tick.
+    case interactive(maxSize: CGSize, frameBudgetMilliseconds: Double = 16.7)
     /// Native resolution.
     case full
 
@@ -26,6 +30,18 @@ enum RenderScale: Sendable, Equatable {
     var targetSize: CGSize? {
         switch self {
         case .preview(let maxSize): return maxSize
+        case .interactive(let maxSize, let budget):
+            let safeBudget = budget.isFinite && budget > 0 ? budget : 16.7
+            // The 1.5 MP cap is the interaction budget calibrated against the existing preview
+            // benchmark. Scale it by the requested frame budget, while always respecting the
+            // actual drawable size and never upscaling.
+            let budgetPixels = 1_500_000.0 * safeBudget / 16.7
+            guard maxSize.width > 0, maxSize.height > 0,
+                  maxSize.width.isFinite, maxSize.height.isFinite else { return maxSize }
+            let pixels = maxSize.width * maxSize.height
+            guard pixels > budgetPixels else { return maxSize }
+            let factor = sqrt(budgetPixels / pixels)
+            return CGSize(width: maxSize.width * factor, height: maxSize.height * factor)
         case .full: return nil
         }
     }
@@ -40,7 +56,7 @@ enum RenderScale: Sendable, Equatable {
         switch self {
         case .full:
             return 1.0
-        case .preview(let maxSize):
+        case .preview(let maxSize), .interactive(let maxSize, _):
             guard nativeExtent.width > 0, nativeExtent.height > 0,
                   nativeExtent.width.isFinite, nativeExtent.height.isFinite,
                   maxSize.width > 0, maxSize.height > 0

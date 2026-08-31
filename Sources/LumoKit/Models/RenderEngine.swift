@@ -473,7 +473,7 @@ actor RenderEngine: RenderEngining {
         _ rawDevelop: RAWDevelopSettings,
         _ scale: RenderScale
     ) -> CIImage? {
-        guard case .preview = scale else {
+        guard !scale.isFull else {
             return RenderPipeline.developedSource(source, rawDevelop: rawDevelop, scale: scale)
         }
         let key = DevelopedSourceCacheKey(

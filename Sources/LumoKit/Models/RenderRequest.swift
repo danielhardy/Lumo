@@ -55,8 +55,10 @@ struct RenderRequest: Sendable, Equatable {
     /// while the current implementation uses the requested viewport as the only pixel policy.
     var renderScale: RenderScale {
         switch quality {
-        case .thumbnail, .interactive, .preview:
+        case .thumbnail, .preview:
             return .preview(maxSize: targetSize ?? source.nativeExtent)
+        case .interactive:
+            return .interactive(maxSize: targetSize ?? source.nativeExtent)
         case .fullResolution, .export:
             return .full
         }

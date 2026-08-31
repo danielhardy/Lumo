@@ -28,6 +28,13 @@ struct PreviewView: View {
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers)
         }
+        .background {
+            GeometryReader { geometry in
+                Color.clear
+                    .onAppear { reportBackingSize(geometry.size) }
+                    .onChange(of: geometry.size) { _, size in reportBackingSize(size) }
+            }
+        }
     }
 
     // MARK: - Side-by-side
@@ -69,7 +76,6 @@ struct PreviewView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(maxWidth: width, maxHeight: .infinity)
-                    .animation(.easeInOut(duration: 0.15), value: viewModel.selectedLUT)
             }
 
             ComparisonBadge(text: label)
@@ -87,8 +93,6 @@ struct PreviewView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .padding(8)
-                    .animation(.easeInOut(duration: 0.15), value: viewModel.isShowingOriginal)
-                    .animation(.easeInOut(duration: 0.15), value: viewModel.selectedLUT)
 
                 // Comparison badge
                 if viewModel.isShowingOriginal && viewModel.isComparisonAvailable {
@@ -115,6 +119,12 @@ struct PreviewView: View {
                 }
             }
         }
+    }
+
+    private func reportBackingSize(_ points: CGSize) {
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        viewModel.updatePreviewBackingSize(CGSize(width: points.width * scale,
+                                                   height: points.height * scale))
     }
 
     // MARK: - Empty state

@@ -28,7 +28,7 @@ struct RenderScaleKey: Hashable, Sendable {
             isFull = true
             widthBits = 0
             heightBits = 0
-        case .preview(let size):
+        case .preview(let size), .interactive(let size, _):
             isFull = false
             widthBits = Double(size.width).bitPattern
             heightBits = Double(size.height).bitPattern

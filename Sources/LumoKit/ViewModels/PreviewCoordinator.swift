@@ -51,7 +51,7 @@ final class PreviewCoordinator {
 
     init(
         engine: any RenderEngining,
-        interactiveDelay: Duration = .milliseconds(16),
+        interactiveDelay: Duration = .zero,
         settleDelay: Duration = .milliseconds(60)
     ) {
         self.engine = engine
@@ -162,9 +162,13 @@ final class PreviewCoordinator {
             return
         }
 
-        let delay = interactiveDelay
         interactiveTask = Task { [weak self, engine] in
-            try? await Task.sleep(for: delay)
+            // No debounce belongs before the first interactive frame. The in-flight/pending
+            // state below is the frame pacer: it permits one render and retains only the latest
+            // document while Core Image finishes the non-cancellable operation.
+            if self?.interactiveDelay != .zero {
+                try? await Task.sleep(for: self?.interactiveDelay ?? .zero)
+            }
             guard !Task.isCancelled else { return }
             self?.interactiveRenderInFlight = true
             await self?.render(request, token: token, phase: .interactive, engine: engine)

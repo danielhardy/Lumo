@@ -737,7 +737,9 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Preview
 
-    private let maxPreview = CGSize(width: 1600, height: 1200)
+    /// Backing pixels of the visible canvas. PreviewView updates this from its live geometry;
+    /// the fallback is only used before the first layout pass.
+    private var previewBackingSize = CGSize(width: 1600, height: 1200)
     private static let intensityDebounceMs = 60
 
     /// What the main preview panel should currently show, as a render request.
@@ -768,7 +770,7 @@ final class AppViewModel: ObservableObject {
         let (requested, lut) = displayRequest
         previewCoordinator.submit(RenderRequest(
                 source: imageSource, document: requested, lut: lut,
-                targetSize: maxPreview, quality: .preview, output: .raster, space: .current
+                targetSize: previewBackingSize, quality: .preview, output: .raster, space: .current
             ), phase: .settled)
     }
 
@@ -779,8 +781,26 @@ final class AppViewModel: ObservableObject {
         let (requested, lut) = displayRequest
         previewCoordinator.submit(RenderRequest(
             source: imageSource, document: requested, lut: lut,
-            targetSize: maxPreview, quality: .interactive, output: .raster, space: .current
+            targetSize: previewBackingSize, quality: .interactive, output: .raster, space: .current
         ), phase: .interactive)
+    }
+
+    /// Called by the persistent preview surface after layout. Keeping this as value state avoids
+    /// publishing a new image merely because the window changed size.
+    func updatePreviewBackingSize(_ size: CGSize) {
+        let width = size.width.rounded(.down)
+        let height = size.height.rounded(.down)
+        guard width >= 1, height >= 1,
+              width.isFinite, height.isFinite,
+              abs(width - previewBackingSize.width) > 1 || abs(height - previewBackingSize.height) > 1
+        else { return }
+        previewBackingSize = CGSize(width: width, height: height)
+        guard imageSource != nil else { return }
+        if isPreviewInteractionActive {
+            scheduleInteractivePreview()
+        } else {
+            schedulePreview()
+        }
     }
 
     private func scheduleSettledPreviewAfterDebounce() {
@@ -890,7 +910,7 @@ final class AppViewModel: ObservableObject {
             return
         }
         let baseline = document.originalForComparison
-        let box = maxPreview
+        let box = previewBackingSize
         let sourceRevision = self.sourceRevision
         let documentRevision = self.documentRevision
 
@@ -950,7 +970,7 @@ final class AppViewModel: ObservableObject {
             return
         }
         let (requested, lut) = displayRequest
-        let box = maxPreview
+        let box = previewBackingSize
         let sourceRevision = self.sourceRevision
         let documentRevision = self.documentRevision
 

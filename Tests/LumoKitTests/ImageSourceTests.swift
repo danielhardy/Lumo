@@ -101,6 +101,17 @@ final class ImageSourceTests: TempDirectoryTestCase {
         XCTAssertEqual(scale, 1.0)
     }
 
+    func testInteractiveScaleUsesDrawableSizeAndPixelBudget() {
+        let drawable = CGSize(width: 2400, height: 1600)
+        let scale = RenderScale.interactive(maxSize: drawable)
+        let target = try! XCTUnwrap(scale.targetSize)
+
+        XCTAssertNotEqual(scale, .preview(maxSize: drawable))
+        XCTAssertLessThanOrEqual(target.width * target.height, 1_500_001)
+        XCTAssertLessThanOrEqual(target.width, drawable.width)
+        XCTAssertLessThanOrEqual(target.height, drawable.height)
+    }
+
     /// Degenerate inputs return 1.0 rather than 0 or NaN. A zero scale reaches `Int(width)` as a
     /// zero-sized raster; a NaN one traps there. Both are the caller's extent check to reject, not
     /// this function's to produce.
