@@ -101,17 +101,20 @@ final class AppViewModel: ObservableObject {
     }
 
     private var capabilitiesTask: Task<Void, Never>?
-    private var developTask: Task<Void, Never>?
+
+    /// Source generation prevents delayed work from a previous navigation selection from publishing
+    /// into the new image, even if the source values happen to compare equal.
+    private var sourceRevision: UInt64 = 0
+    /// Document generation guards the side-by-side baseline, whose request is managed separately
+    /// from the primary visible render.
+    private var documentRevision: UInt64 = 0
+    private var isPreviewInteractionActive = false
 
     /// Whether any call since the last fired render changed `rawDevelop`.
     ///
-    /// A coalesced burst of `updateDocument(debounced:)` calls shares one `developTask` — only the
-    /// last call in the burst survives to fire. If that flag were captured per call (as it was
-    /// before this existed), an earlier call in the burst that touched `rawDevelop` would have its
-    /// `developChanged == true` thrown away the moment a later call in the same burst cancelled its
-    /// task, even though the comparison baseline genuinely needs to move. Accumulating the flag here
-    /// instead — OR'd in by every call, read and cleared by whichever call actually fires the render —
-    /// means the baseline re-renders if *any* call in the burst touched develop, not just the last.
+    /// A coalesced burst of edits accumulates this flag while the preview coordinator keeps only the
+    /// newest visible request. A baseline is released after that settled visible request, so an
+    /// earlier develop edit in the burst is not lost when a later tick supersedes its value.
     private var pendingDevelopChange = false
 
     /// LUTs a document can reference that no folder scan produces — a freshly derived LUT, and the
@@ -230,10 +233,10 @@ final class AppViewModel: ObservableObject {
     /// The renderer. An `any RenderEngining` rather than the concrete actor so a test can drive the
     /// preview flow without a GPU — the reason Step 4 introduced the protocol.
     private let engine: any RenderEngining
+    private let previewCoordinator: PreviewCoordinator
     private var loadTask: Task<Void, Never>?
-    private var previewTask: Task<Void, Never>?
     private var originalPreviewTask: Task<Void, Never>?
-    private var intensityTask: Task<Void, Never>?
+    private var previewDebounceTask: Task<Void, Never>?
     private var cancellables: [AnyCancellable] = []
 
     // MARK: - Init
@@ -241,6 +244,7 @@ final class AppViewModel: ObservableObject {
     init(engine: any RenderEngining = RenderEngine.shared) {
         self.engine = engine
         self.export = ExportCoordinator(engine: engine)
+        self.previewCoordinator = PreviewCoordinator(engine: engine)
 
         // Forward nested ObservableObject changes so SwiftUI views update.
         for child in [
@@ -254,6 +258,14 @@ final class AppViewModel: ObservableObject {
                     self?.objectWillChange.send()
                 }
             })
+        }
+
+        previewCoordinator.onPublication = { [weak self] publication in
+            self?.publishPreview(publication)
+        }
+        previewCoordinator.onFailure = { [weak self] request in
+            guard request.quality == .preview else { return }
+            self?.statusMessage = "Could not render \(self?.sourceName ?? "image")"
         }
 
         wireCoordinators()
@@ -326,6 +338,8 @@ final class AppViewModel: ObservableObject {
 
         guard let current = document.lut.lutID, current == derive.derivedLUT?.lutID else { return }
         document.lut.lutID = saved.lutID
+        documentRevision &+= 1
+        originalPreviewTask?.cancel()
         schedulePreview()
     }
 
@@ -358,12 +372,13 @@ final class AppViewModel: ObservableObject {
     /// previews. RAW demosaicing is expensive enough (hundreds of ms) that
     /// doing it inline would freeze the window on every ←/→ step.
     private func load(name: String, url: URL?, data: Data?) {
+        sourceRevision &+= 1
+        previewCoordinator.cancel()
+        isPreviewInteractionActive = false
         loadTask?.cancel()
-        previewTask?.cancel()
         originalPreviewTask?.cancel()
-        intensityTask?.cancel()
+        previewDebounceTask?.cancel()
         capabilitiesTask?.cancel()
-        developTask?.cancel()
         // A pending develop flag describes the image being left; it must not survive onto whatever
         // opens next, or an unrelated first edit on the new image would render a comparison baseline
         // for develop settings that were never actually touched on it.
@@ -411,8 +426,10 @@ final class AppViewModel: ObservableObject {
                 self.statusMessage = "\(name)  \(Int(ci.extent.width))\u{00D7}\(Int(ci.extent.height))"
                 self.isLoading = false
 
-                self.scheduleOriginalPreview()
                 self.schedulePreview()
+                // The visible render is submitted first. The coordinator starts it before this
+                // supporting baseline task, preserving the visible-image priority at open.
+                self.scheduleOriginalPreview()
                 self.refreshMetadata(url: url, data: data)
                 self.refreshCapabilities()
             }
@@ -518,6 +535,8 @@ final class AppViewModel: ObservableObject {
         // user derives again.
         if let lut, lut.lutID.isDerived { derivedRegistry.register(lut) }
         document.lut.lutID = lut?.lutID
+        documentRevision &+= 1
+        originalPreviewTask?.cancel()
         applyLUT()
     }
 
@@ -551,29 +570,25 @@ final class AppViewModel: ObservableObject {
 
         let developChanged = updated.rawDevelop != document.rawDevelop
         document = updated
+        documentRevision &+= 1
+        // A supporting baseline from the previous state is no longer useful once the document
+        // changes. Cancel it before the new visible request is submitted; a develop edit will queue
+        // the correct baseline after its settled visible result publishes.
+        originalPreviewTask?.cancel()
         // OR'd in rather than assigned: a call earlier in a coalesced burst may have changed
         // `rawDevelop` even though *this* call didn't, and only the last call's task survives to
         // fire (see `pendingDevelopChange`'s doc comment).
         pendingDevelopChange = pendingDevelopChange || developChanged
 
-        developTask?.cancel()
-
         guard debounced else {
-            let shouldRenderBaseline = pendingDevelopChange
-            pendingDevelopChange = false
-            if shouldRenderBaseline { scheduleOriginalPreview() }
             schedulePreview()
             return
         }
 
-        developTask = Task {
-            try? await Task.sleep(for: .milliseconds(Self.intensityDebounceMs))
-            guard !Task.isCancelled else { return }
-            if self.pendingDevelopChange {
-                self.pendingDevelopChange = false
-                self.scheduleOriginalPreview()
-            }
-            self.schedulePreview()
+        if isPreviewInteractionActive {
+            scheduleInteractivePreview()
+        } else {
+            scheduleSettledPreviewAfterDebounce()
         }
     }
 
@@ -621,12 +636,13 @@ final class AppViewModel: ObservableObject {
         let clamped = max(0, min(1, value))
         guard clamped != document.lut.intensity else { return }
         document.lut.intensity = clamped
+        documentRevision &+= 1
+        originalPreviewTask?.cancel()
 
-        intensityTask?.cancel()
-        intensityTask = Task {
-            try? await Task.sleep(for: .milliseconds(Self.intensityDebounceMs))
-            guard !Task.isCancelled else { return }
-            self.schedulePreview()
+        if isPreviewInteractionActive {
+            scheduleInteractivePreview()
+        } else {
+            scheduleSettledPreviewAfterDebounce()
         }
     }
 
@@ -652,40 +668,76 @@ final class AppViewModel: ObservableObject {
     ///
     /// **This is the Step 5 cutover.** The preview no longer grades a baked `CIImage` on the main
     /// actor and rasterizes it through the old `ImageProcessor`; it hands the whole document to
-    /// `RenderEngine`, which builds the graph and evaluates it inside the actor that owns the one
-    /// `CIContext`. Develop, adjustments, LUT and intensity all reach the screen through one call.
-    ///
-    /// Nothing here touches `CIImage` any more — only `Sendable` values cross to the engine and a
-    /// `CGImage` comes back, which is wrapped for AppKit on this actor.
-    ///
-    /// Any in-flight render is cancelled first, so a slider drag drops stale work rather than
-    /// queueing it.
+    /// `PreviewCoordinator`, which selects the interactive or settled quality and asks
+    /// `RenderEngine` to evaluate the graph inside its actor.
     private func schedulePreview() {
-        previewTask?.cancel()
-
         guard let imageSource else {
             previewNSImage = nil
             return
         }
 
         let (requested, lut) = displayRequest
-        let box = maxPreview
-
-        previewTask = Task { [engine] in
-            let result = try? await engine.render(RenderRequest(
+        previewCoordinator.submit(RenderRequest(
                 source: imageSource, document: requested, lut: lut,
-                targetSize: box, quality: .preview, output: .raster, space: .current
-            ))
+                targetSize: maxPreview, quality: .preview, output: .raster, space: .current
+            ), phase: .settled)
+    }
+
+    /// A viewport-sized interactive render. `PreviewCoordinator` drops superseded values and
+    /// promotes the last value to a normal `.preview` render after the quiet period.
+    private func scheduleInteractivePreview() {
+        guard let imageSource else { return }
+        let (requested, lut) = displayRequest
+        previewCoordinator.submit(RenderRequest(
+            source: imageSource, document: requested, lut: lut,
+            targetSize: maxPreview, quality: .interactive, output: .raster, space: .current
+        ), phase: .interactive)
+    }
+
+    private func scheduleSettledPreviewAfterDebounce() {
+        previewDebounceTask?.cancel()
+        previewDebounceTask = Task {
+            try? await Task.sleep(for: .milliseconds(Self.intensityDebounceMs))
             guard !Task.isCancelled else { return }
-            guard let result, let image = NSImage(data: result.data) else {
-                // Not per-LUT validation — a bad cube is caught and reported at parse time (§7).
-                // This is the render itself failing, which means the source stopped being readable.
-                self.statusMessage = "Could not render \(self.sourceName)"
-                return
+            self.schedulePreview()
+        }
+    }
+
+    func beginPreviewInteraction() {
+        isPreviewInteractionActive = true
+        previewCoordinator.beginInteraction()
+    }
+
+    func endPreviewInteraction() {
+        isPreviewInteractionActive = false
+        previewDebounceTask?.cancel()
+        previewDebounceTask = nil
+        previewCoordinator.endInteraction()
+    }
+
+    private func publishPreview(_ publication: PreviewCoordinator.Publication) {
+        guard publication.request.source == imageSource else { return }
+        guard let cgImage = publication.image else {
+            if publication.phase == .settled {
+                statusMessage = "Could not render \(sourceName)"
             }
-            image.size = NSSize(width: result.extent.width, height: result.extent.height)
-            self.previewNSImage = image
-            self.updateHistogram()
+            return
+        }
+
+        let image = NSImage(
+            cgImage: cgImage,
+            size: NSSize(width: cgImage.width, height: cgImage.height)
+        )
+        previewNSImage = image
+
+        // The comparison baseline is supporting work. Queue it only after the visible settled
+        // result has published so a navigation/edit burst cannot put it ahead of the main image.
+        if publication.phase == .settled {
+            if pendingDevelopChange {
+                pendingDevelopChange = false
+                scheduleOriginalPreview()
+            }
+            updateHistogram()
         }
     }
 
@@ -700,14 +752,27 @@ final class AppViewModel: ObservableObject {
         }
         let baseline = document.originalForComparison
         let box = maxPreview
+        let sourceRevision = self.sourceRevision
+        let documentRevision = self.documentRevision
 
         originalPreviewTask = Task { [engine] in
             let result = try? await engine.render(RenderRequest(
                 source: imageSource, document: baseline, lut: nil,
                 targetSize: box, quality: .preview, output: .raster, space: .current
             ))
-            guard !Task.isCancelled, let result, let image = NSImage(data: result.data) else { return }
-            image.size = NSSize(width: result.extent.width, height: result.extent.height)
+            guard !Task.isCancelled, let result else { return }
+            let cgImage = await Task.detached {
+                PreviewImageDecoder.decode(result.data)
+            }.value
+            guard !Task.isCancelled,
+                  sourceRevision == self.sourceRevision,
+                  documentRevision == self.documentRevision,
+                  self.imageSource == imageSource,
+                  let cgImage else { return }
+            let image = NSImage(
+                cgImage: cgImage,
+                size: NSSize(width: cgImage.width, height: cgImage.height)
+            )
             self.originalPreviewNSImage = image
         }
     }
@@ -751,6 +816,8 @@ final class AppViewModel: ObservableObject {
         }
         let (requested, lut) = displayRequest
         let box = maxPreview
+        let sourceRevision = self.sourceRevision
+        let documentRevision = self.documentRevision
 
         histogramTask?.cancel()
         histogramTask = Task { [engine] in
@@ -758,7 +825,10 @@ final class AppViewModel: ObservableObject {
                 source: imageSource, document: requested, lut: lut,
                 scale: .preview(maxSize: box), space: .current, maxDimension: 512
             )
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled,
+                  sourceRevision == self.sourceRevision,
+                  documentRevision == self.documentRevision,
+                  self.imageSource == imageSource else { return }
             self.histogram = result
         }
     }

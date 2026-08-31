@@ -164,6 +164,10 @@ actor RenderEngine: RenderEngining {
     // MARK: - Rendering
 
     func render(_ request: RenderRequest) async throws -> RenderResult {
+        // An interactive request can sit behind another Core Image operation on this actor. Check
+        // before doing any work so cancellation drops queued superseded values instead of making
+        // the coordinator wait for an obsolete graph to rasterize.
+        try Task.checkCancellation()
         let scale = request.renderScale
         let previewKey = previewCacheKey(for: request, scale: scale)
         if let previewKey, let cached = previewCache.value(for: previewKey) {
@@ -214,6 +218,7 @@ actor RenderEngine: RenderEngining {
         if let previewKey {
             previewCache.insert(result, for: previewKey, cost: data.count)
         }
+        try Task.checkCancellation()
         return result
     }
 
