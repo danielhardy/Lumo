@@ -212,7 +212,8 @@ final class AppViewModel: ObservableObject {
     // MARK: - Owned state
 
     let library = LUTLibrary()
-    let collection = ImageCollection()
+    let workScheduler: ImageWorkScheduler
+    let collection: ImageCollection
     /// Writing images to disk — the single export, the batch run, and naming.
     /// Shares this view model's engine, so an export renders through the same funnel the preview does.
     let export: ExportCoordinator
@@ -231,15 +232,15 @@ final class AppViewModel: ObservableObject {
     /// preview flow without a GPU — the reason Step 4 introduced the protocol.
     private let engine: any RenderEngining
     private var loadTask: Task<Void, Never>?
-    private var previewTask: Task<Void, Never>?
-    private var originalPreviewTask: Task<Void, Never>?
-    private var intensityTask: Task<Void, Never>?
+    private var previewDebounceTask: Task<Void, Never>?
     private var cancellables: [AnyCancellable] = []
 
     // MARK: - Init
 
     init(engine: any RenderEngining = RenderEngine.shared) {
         self.engine = engine
+        self.workScheduler = ImageWorkScheduler()
+        self.collection = ImageCollection(scheduler: workScheduler)
         self.export = ExportCoordinator(engine: engine)
 
         // Forward nested ObservableObject changes so SwiftUI views update.
@@ -326,6 +327,7 @@ final class AppViewModel: ObservableObject {
 
         guard let current = document.lut.lutID, current == derive.derivedLUT?.lutID else { return }
         document.lut.lutID = saved.lutID
+        workScheduler.cancel(id: Self.editorBaselineJobID)
         schedulePreview()
     }
 
@@ -359,9 +361,9 @@ final class AppViewModel: ObservableObject {
     /// doing it inline would freeze the window on every ←/→ step.
     private func load(name: String, url: URL?, data: Data?) {
         loadTask?.cancel()
-        previewTask?.cancel()
-        originalPreviewTask?.cancel()
-        intensityTask?.cancel()
+        workScheduler.cancel(id: Self.editorPreviewJobID)
+        workScheduler.cancel(id: Self.editorBaselineJobID)
+        previewDebounceTask?.cancel()
         capabilitiesTask?.cancel()
         developTask?.cancel()
         // A pending develop flag describes the image being left; it must not survive onto whatever
@@ -411,8 +413,8 @@ final class AppViewModel: ObservableObject {
                 self.statusMessage = "\(name)  \(Int(ci.extent.width))\u{00D7}\(Int(ci.extent.height))"
                 self.isLoading = false
 
-                self.scheduleOriginalPreview()
                 self.schedulePreview()
+                self.scheduleOriginalPreview()
                 self.refreshMetadata(url: url, data: data)
                 self.refreshCapabilities()
             }
@@ -482,7 +484,7 @@ final class AppViewModel: ObservableObject {
 
     func selectCollectionImage(at index: Int) {
         guard collection.items.indices.contains(index) else { return }
-        collection.selectedIndex = index
+        collection.select(at: index)
         let item = collection.items[index]
 
         if let url = item.url {
@@ -518,6 +520,7 @@ final class AppViewModel: ObservableObject {
         // user derives again.
         if let lut, lut.lutID.isDerived { derivedRegistry.register(lut) }
         document.lut.lutID = lut?.lutID
+        workScheduler.cancel(id: Self.editorBaselineJobID)
         applyLUT()
     }
 
@@ -551,6 +554,7 @@ final class AppViewModel: ObservableObject {
 
         let developChanged = updated.rawDevelop != document.rawDevelop
         document = updated
+        workScheduler.cancel(id: Self.editorBaselineJobID)
         // OR'd in rather than assigned: a call earlier in a coalesced burst may have changed
         // `rawDevelop` even though *this* call didn't, and only the last call's task survives to
         // fire (see `pendingDevelopChange`'s doc comment).
@@ -561,19 +565,19 @@ final class AppViewModel: ObservableObject {
         guard debounced else {
             let shouldRenderBaseline = pendingDevelopChange
             pendingDevelopChange = false
-            if shouldRenderBaseline { scheduleOriginalPreview() }
             schedulePreview()
+            if shouldRenderBaseline { scheduleOriginalPreview() }
             return
         }
 
         developTask = Task {
             try? await Task.sleep(for: .milliseconds(Self.intensityDebounceMs))
             guard !Task.isCancelled else { return }
+            self.schedulePreview()
             if self.pendingDevelopChange {
                 self.pendingDevelopChange = false
                 self.scheduleOriginalPreview()
             }
-            self.schedulePreview()
         }
     }
 
@@ -622,8 +626,8 @@ final class AppViewModel: ObservableObject {
         guard clamped != document.lut.intensity else { return }
         document.lut.intensity = clamped
 
-        intensityTask?.cancel()
-        intensityTask = Task {
+        previewDebounceTask?.cancel()
+        previewDebounceTask = Task {
             try? await Task.sleep(for: .milliseconds(Self.intensityDebounceMs))
             guard !Task.isCancelled else { return }
             self.schedulePreview()
@@ -634,6 +638,8 @@ final class AppViewModel: ObservableObject {
 
     private let maxPreview = CGSize(width: 1600, height: 1200)
     private static let intensityDebounceMs = 60
+    private static let editorPreviewJobID = ImageWorkScheduler.JobID("editor:preview")
+    private static let editorBaselineJobID = ImageWorkScheduler.JobID("editor:baseline")
 
     /// What the main preview panel should currently show, as a render request.
     ///
@@ -661,9 +667,8 @@ final class AppViewModel: ObservableObject {
     /// Any in-flight render is cancelled first, so a slider drag drops stale work rather than
     /// queueing it.
     private func schedulePreview() {
-        previewTask?.cancel()
-
         guard let imageSource else {
+            workScheduler.cancel(id: Self.editorPreviewJobID)
             previewNSImage = nil
             return
         }
@@ -671,7 +676,9 @@ final class AppViewModel: ObservableObject {
         let (requested, lut) = displayRequest
         let box = maxPreview
 
-        previewTask = Task { [engine] in
+        workScheduler.enqueue(
+            id: Self.editorPreviewJobID, lane: .editor, priority: .activeEditor
+        ) { [weak self, engine, imageSource, requested, lut, box] in
             let cgImage = await engine.makeCGImage(
                 source: imageSource, document: requested, lut: lut,
                 scale: .preview(maxSize: box), space: .current
@@ -680,36 +687,37 @@ final class AppViewModel: ObservableObject {
             guard let cgImage else {
                 // Not per-LUT validation — a bad cube is caught and reported at parse time (§7).
                 // This is the render itself failing, which means the source stopped being readable.
-                self.statusMessage = "Could not render \(self.sourceName)"
+                self?.statusMessage = "Could not render \(self?.sourceName ?? "image")"
                 return
             }
-            self.previewNSImage = NSImage(
+            self?.previewNSImage = NSImage(
                 cgImage: cgImage,
                 size: NSSize(width: cgImage.width, height: cgImage.height)
             )
-            self.updateHistogram()
+            self?.updateHistogram()
         }
     }
 
     /// Rasterize the comparison baseline for the side-by-side left panel. Only needs to re-run when
     /// the image or the develop settings change — not when the look does.
     private func scheduleOriginalPreview() {
-        originalPreviewTask?.cancel()
-
         guard let imageSource else {
+            workScheduler.cancel(id: Self.editorBaselineJobID)
             originalPreviewNSImage = nil
             return
         }
         let baseline = document.originalForComparison
         let box = maxPreview
 
-        originalPreviewTask = Task { [engine] in
+        workScheduler.enqueue(
+            id: Self.editorBaselineJobID, lane: .editor, priority: .activeEditor
+        ) { [weak self, engine, imageSource, baseline, box] in
             let cgImage = await engine.makeCGImage(
                 source: imageSource, document: baseline, lut: nil,
                 scale: .preview(maxSize: box), space: .current
             )
             guard !Task.isCancelled, let cgImage else { return }
-            self.originalPreviewNSImage = NSImage(
+            self?.originalPreviewNSImage = NSImage(
                 cgImage: cgImage,
                 size: NSSize(width: cgImage.width, height: cgImage.height)
             )
