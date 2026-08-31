@@ -8,15 +8,12 @@ This project is managed with DispatchGraph: markdown issues, YAML boards, and an
 - Default claim actor: `codex`.
 - Skip permission prompts on pickup for: cursor, claude, opencode, codex, pi.
 - Pickup is enabled (`dg pickup`) with runner `codex` (model `gpt-5.6-luna`).
-- Yolo mode is enabled: pickup skips the human review gate by automatically promoting successful `review` handoffs to `verification`. Agents should still hand off to `review` normally.
-- Each claim picked up by `dg pickup` runs in its own git worktree (`./dg-worktrees/<issue-id>`), so concurrent claims and a human working in the main checkout do not block each other.
-- The live DispatchGraph space (nested `.dg`) is linked into each worktree; use CLI/MCP from the worktree cwd as usual. `DG_SPACE_ROOT` also points at the live space.
-- Worktree pickup installs Node.js dependencies only (npm, pnpm, yarn, bun when package.json is present). Other stacks (Python, Ruby, Java, Swift, etc.) are not installed automatically — agents must set up each worktree themselves.
+- Worktree isolation is disabled; claims share the current checkout. Do not run more than one claim against this working tree at a time.
+- The live DispatchGraph space is used from the current checkout; `DG_SPACE_ROOT` points at the live space.
 - Counterpoint verification is enabled; default verifier: `claude` (model `sonnet`).
-- Pickup automatically moves successful implementation handoffs from `review` to `verification`, releases the implementation lease, and launches the verifier.
-- Verification uses its own process pool (max 1), independent from implementation pickup (max 1); worktrees isolate checkouts, but API spend and local services remain shared.
+- After human review, moving an issue to `verification` releases the implementation lease and launches the verifier through the same pickup process.
 - Verifiers review correctness, maintainability, security, and performance; apply only localized safe fixes; create `verification`-labeled child tickets for broader findings; return blockers to `review`; pass by completing to `done`.
-- Verified issue branches are auto-merged into `main` when verification completes (`agents.verification.merge_on_done`).
+- Do not merge issue branches. Work lands as commits on the current branch; `merge_on_done` is off.
 
 ## Quick start for agents
 
@@ -32,7 +29,7 @@ This project is managed with DispatchGraph: markdown issues, YAML boards, and an
 
 ## Claiming work
 
-Always claim before starting. Claims expire (default 60 minutes). Release if you lose context.
+Always claim before starting, passing the current branch from `git branch --show-current`. Claims expire (default 60 minutes). Release if you lose context.
 
 ## Comments
 
@@ -43,9 +40,11 @@ falls back to the `DG_ACTOR` environment variable, then the issue's active claim
 
 ## Git workflow
 
-- Work on the issue's dedicated branch/worktree created by DispatchGraph (`git.branch_per_issue` is on); keep issue changes isolated from `main`.
-- Keep the working tree to **one issue** at a time — do not pile unrelated tickets into the same session.
-- Commit coherent work on the current branch when the change is ready for review.
+- Tickets run **sequentially on the current branch**. Each ticket is one commit on that branch, not its own branch.
+- Stay on the branch that is already checked out. Do not create, switch to, or merge a per-issue branch.
+- Keep the working tree to **one issue** at a time. Finish and commit it before claiming the next.
+- Do **not** commit during implementation. Leave uncommitted work in the tree until the issue is ready for review.
+- When moving the issue to `review`, first create **one coherent commit** of that issue's work on the current branch. The message should reference the issue id.
 - Implementation agents move the issue to `review` with a short summary comment. Do **not** mark `done` or merge unless a human or CI asks you to.
 - Verification agents continue in the same working tree using the project Git mode; on pass they may complete to `done` after appending a structured report.
 - Push or open a PR only when a human asks or project policy clearly allows it (`git.mode` is manual and `auto_commit` is off by default).

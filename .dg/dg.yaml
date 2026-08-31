@@ -14,7 +14,7 @@ git:
   mode: manual
   auto_commit: false
   target_branch: main
-  branch_per_issue: true
+  branch_per_issue: false
 agents:
   claim_ttl_minutes: 60
   default_actor: codex
@@ -45,8 +45,7 @@ agents:
     labels: []
     context_budget: 12000
     worktrees:
-      enabled: true
-      dir: ./dg-worktrees
+      enabled: false
   verification:
     enabled: true
     max_concurrency: 1
