@@ -707,10 +707,12 @@ final class ImageCollection: ObservableObject {
     private func reconcileSelection() {
         var next = selection
         let ids = items.map(\.id)
+        next.reconcile(with: ids)
+        // `reconcile` alone can leave the selection empty (e.g. the sole selected item was just
+        // removed as unreadable) even though other items remain; fall back to the first one so a
+        // non-empty library always keeps an active item, matching native list behavior.
         if next.isEmpty, let first = ids.first {
             next.click(first, in: ids)
-        } else {
-            next.reconcile(with: ids)
         }
         selection = next
         syncSelectedIndex()

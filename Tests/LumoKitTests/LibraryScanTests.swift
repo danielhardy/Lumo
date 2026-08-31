@@ -247,6 +247,23 @@ final class LibraryScanTests: TempDirectoryTestCase {
         XCTAssertTrue(collection.scanWarnings.contains { $0.message.contains("bad.jpg") })
     }
 
+    /// Regression: dropping the currently-active item (an unreadable file discovered during
+    /// metadata scan, here alphabetically first and so the initial active selection) must not
+    /// leave the library with a non-empty item list and no active selection.
+    func testRemovingActiveItemFallsBackToRemainingSelection() async throws {
+        try Data("not an image".utf8).write(to: tempDirectory.appendingPathComponent("aaa-bad.jpg"))
+        try Fixtures.writeJPEG(width: 8, height: 8, orientation: 1, named: "zzz-good.jpg", in: tempDirectory)
+
+        let collection = ImageCollection()
+        collection.loadFromFolder(tempDirectory)
+        await collection.scanCompletion()
+        await collection.metadataCompletion()
+
+        XCTAssertEqual(collection.items.map(\.displayName), ["zzz-good"])
+        XCTAssertNotNil(collection.selectedItem, "a non-empty library must keep an active item")
+        XCTAssertEqual(collection.selectedItem?.displayName, "zzz-good")
+    }
+
     /// Regression for B13: a folder holding exactly one image used to leave
     /// `isActive` false, which killed ←/→ and `selectedItem` while the browser
     /// still listed the row.
