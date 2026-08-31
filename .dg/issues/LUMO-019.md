@@ -9,15 +9,17 @@ labels:
   - epic:library
   - phase:3
 created: 2026-08-30T18:30:23.370Z
-updated: 2026-08-31T15:21:33.971Z
+updated: 2026-08-31T16:58:09.622Z
 depends_on:
   - LUMO-018
+  - LUMO-065
 estimate: 5
 order: a0
 board: product
 branch: agent/lumo-019
 commits:
   - f135ef0
+  - "03e5491"
 ---
 
 ## Objective
@@ -82,8 +84,74 @@ Reviewed the full diff in f135ef0 against the acceptance criteria and re-ran all
 
 No blockers found. Verification passes.
 
+### Comment — codex @ 2026-08-31T15:21:34.373Z
+
+Automatic merge into `main` failed: Auto-merging Sources/LumoKit/Models/ImageCollection.swift
+CONFLICT (content): Merge conflict in Sources/LumoKit/Models/ImageCollection.swift
+Auto-merging Sources/LumoKit/Models/ImageMetadata.swift
+CONFLICT (content): Merge conflict in Sources/LumoKit/Models/ImageMetadata.swift
+Automatic merge failed; fix conflicts and then commit the result.
+
+### Comment — claude @ 2026-08-31T15:22:41.769Z
+
+## Verification blocked: merge conflict with main
+
+The independent verification checks above (build/test/release/dg validate) all passed on the branch in isolation. However, `dg issue complete` failed to merge `agent/lumo-019` into `main`:
+
+```
+Auto-merging Sources/LumoKit/Models/ImageCollection.swift
+CONFLICT (content): Merge conflict in Sources/LumoKit/Models/ImageCollection.swift
+Auto-merging Sources/LumoKit/Models/ImageMetadata.swift
+CONFLICT (content): Merge conflict in Sources/LumoKit/Models/ImageMetadata.swift
+```
+
+`main` moved since this branch's merge-base (`c38a431`) to include `2e4707c` (LUMO-018's `PhotoAsset`/`ImageWorkScheduler` rework of `ImageCollection.Item`, itself the resolution of the earlier LUMO-064 conflict). `agent/lumo-019` independently reworked the same struct for incremental scan batching, generation-token cancellation, and deferred metadata loading. Reconciling the two is a real three-way merge of independent feature reworks of the same file — not a mechanical or localized fix within this verification agent's authorized scope (no broad refactors).
+
+Filed **LUMO-065** (urgent, `verification` label, parent LUMO-019) to reconcile the two reworks and land the merge. LUMO-019 now depends on LUMO-065. Moving this issue back to `review` per the unresolved-blocker protocol; the branch itself (f135ef0) is verified-correct in isolation and needs no code changes — only integration.
+
+### Comment — claude @ 2026-08-31T16:58:05.962Z
+
+## Post-integration verification (counterpoint agent, second pass)
+
+LUMO-065's merge resolution (f3aac31, landed via f2408bb) is now on `main`. Re-ran independent
+verification against the merged tree rather than re-trusting the prior isolated-branch report.
+
+**Checks run (all on current `main`, post-merge):**
+- `swift build` — clean.
+- `swift test` — 342 tests, 0 failures, 20 expected skips (full suite).
+- `swift test --filter LibraryScanTests` — 17/17 passed, including all 4 LUMO-019 regression tests
+  (incremental delivery, folder-switch isolation, deferred metadata, unreadable-file isolation).
+- `swift build -c release` — clean.
+- `git diff --check` across the merge range — clean.
+- `dg validate` — OK, only pre-existing warnings (unrelated model name, LUMO-017 context completeness).
+- Grepped for Swift 6 escape hatches (`@unchecked Sendable`, `nonisolated(unsafe)`, `@preconcurrency`)
+  in the merged files — none introduced.
+
+**Reconciliation correctness verified:**
+- `ImageCollection.Item.id` is `PhotoAssetID` (LUMO-018's stable identity), and the LUMO-019
+  `scanGeneration`/`ScanWarning`/deferred-metadata machinery is layered on top without weakening it.
+- `scanGeneration` is checked in both the discovery consumer loop and `applyMetadata`, so folder
+  switching still cannot mix results from two scans.
+- Metadata reads still run in a `Task.detached` consumer over an `AsyncStream`, hopping to
+  `MainActor.run` only to apply results — metadata parsing stays off the main actor.
+- Unreadable/disappearing files still produce a `.failure` outcome that records a warning and
+  removes the item without aborting the rest of the scan.
+- Thumbnail scheduling (`ImageWorkScheduler`, priority lanes, `thumbnailState`) from LUMO-018 is
+  intact and composes with the new batch-driven `enqueueThumbnails()`/`fillThumbnailQueue()` calls.
+
+**Finding fixed in this pass:** `ImageCollection.swift` had a private `scanFolder(_:)` helper (a
+~34-line synchronous folder-walk) left over from the merge reconciliation. Its own comment claimed
+it was "retained for compatibility with focused internal tests," but grep across
+`Sources/LumoKit` and `Tests/LumoKitTests` showed zero call sites — dead code, no test depended on
+it. Removed in 03e5491 (localized deletion, no behavior change); full suite and focused
+`LibraryScanTests` re-verified green afterward.
+
+No other blockers found. All four acceptance criteria hold on `main`. Verification passes.
+
 ## Agent log
 
 <!-- Generated summaries only. Detailed activity lives in events.jsonl. -->
 
 - 2026-08-31T15:21:33.969Z: Independent verification passed: full swift test suite (336/0 failures), release build, git diff --check, and dg validate all clean; diff reviewed against acceptance criteria with no blockers.
+
+- 2026-08-31T16:58:09.620Z: Independent post-merge verification passed on main (build/test/release/dg validate all clean); removed a dead scanFolder helper left by the LUMO-065 merge reconciliation.

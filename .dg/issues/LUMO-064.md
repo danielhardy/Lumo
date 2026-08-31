@@ -7,10 +7,13 @@ priority: urgent
 labels:
   - verification
 created: 2026-08-31T14:47:48.412Z
-updated: 2026-08-31T15:19:15.920Z
+updated: 2026-08-31T15:24:00.616Z
 order: zzh
 board: product
 branch: agent/lumo-064
+commits:
+  - HEAD
+  - f0b55219750f3a80439895dd5df3bcfa64963ab6
 ---
 
 ## Parent
@@ -58,3 +61,9 @@ job-ID/priority fields introduced on `main`?).
 - Full test suite green post-merge.
 - Manually confirm `ImageCollection` still produces stable `PhotoAssetID`s per LUMO-018's acceptance
   criteria *and* still exercises the prioritized-thumbnail scheduler from the sibling work.
+
+## Agent log
+
+- 2026-08-31T15:23:26.002Z: Resolved the PhotoAsset/ImageCollection merge with prioritized thumbnail scheduling; verified debug build, 340 tests (20 expected skips), release build, and dg validate.
+
+- 2026-08-31T15:24:00.614Z: Resolved the PhotoAsset/ImageCollection merge with prioritized thumbnail scheduling; verified debug build, 340 tests (20 expected skips), release build, and dg validate.

@@ -2,14 +2,14 @@
 id: LUMO-020
 title: Create a prioritized thumbnail service using embedded previews when useful
 type: task
-status: ready
+status: done
 priority: high
 labels:
   - mvp
   - epic:library
   - phase:3
 created: 2026-08-30T18:30:23.719Z
-updated: 2026-08-31T14:24:16.161Z
+updated: 2026-08-31T15:32:26.847Z
 depends_on:
   - LUMO-018
   - LUMO-014
@@ -17,6 +17,9 @@ depends_on:
 estimate: 5
 order: t
 board: product
+branch: agent/lumo-020
+commits:
+  - a919f42
 ---
 
 ## Objective
@@ -52,3 +55,5 @@ Part of **Epic 3 — Folder library and rapid culling**. The source product brie
 ## Agent log
 
 <!-- Generated summaries only. Detailed activity lives in events.jsonl. -->
+
+- 2026-08-31T15:32:26.843Z: Implemented prioritized thumbnail generation with embedded-preview-first selection, size-aware full-image fallback, orientation-safe output, cancellation/identity guards, bounded queue recovery, stable failure placeholders, and regression coverage. Verification: swift test (341 passed, 20 skipped), swift build -c release, git diff --check, dg validate.
