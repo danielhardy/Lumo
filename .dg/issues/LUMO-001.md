@@ -2,7 +2,7 @@
 id: LUMO-001
 title: Epic 0 — Product identity and clean baseline
 type: feature
-status: backlog
+status: ready
 priority: urgent
 labels:
   - mvp
@@ -10,12 +10,12 @@ labels:
   - epic:identity
   - phase:0
 created: 2026-08-30T18:25:25.896Z
-updated: 2026-08-30T18:31:54.270Z
+updated: 2026-08-30T18:35:30.434Z
 depends_on:
   - LUMO-002
   - LUMO-003
   - LUMO-004
-order: 0px4bipx
+order: a0
 board: product
 ---
 

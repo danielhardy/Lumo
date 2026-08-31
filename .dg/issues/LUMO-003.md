@@ -2,19 +2,25 @@
 id: LUMO-003
 title: Preserve upstream attribution and rewrite product documentation for Lumo
 type: task
-status: backlog
+status: in_review
 priority: high
+agent: opencode
 labels:
   - mvp
   - epic:identity
   - phase:0
 created: 2026-08-30T18:30:17.974Z
-updated: 2026-08-30T18:30:38.037Z
+updated: 2026-08-30T23:45:14.285Z
 depends_on:
   - LUMO-002
 estimate: 2
-order: 25rcyk5r
+order: t
 board: product
+claim:
+  actor: opencode
+  session: 01MTG6RZBL45OUGZJ0
+  claimed_at: 2026-08-30T19:12:19.857Z
+  expires_at: 2026-08-30T20:12:19.857Z
 ---
 
 ## Objective

@@ -2,19 +2,19 @@
 id: LUMO-004
 title: Establish the post-rename build and regression baseline
 type: task
-status: backlog
+status: ready
 priority: urgent
 labels:
   - mvp
   - epic:identity
   - phase:0
 created: 2026-08-30T18:30:18.315Z
-updated: 2026-08-30T18:30:38.423Z
+updated: 2026-08-30T18:52:59.886Z
 depends_on:
   - LUMO-002
   - LUMO-003
 estimate: 3
-order: 2voha2vo
+order: w
 board: product
 ---
 
