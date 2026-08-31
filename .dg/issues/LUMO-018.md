@@ -2,19 +2,19 @@
 id: LUMO-018
 title: Introduce stable PhotoAsset and library metadata records
 type: task
-status: backlog
+status: verification
 priority: urgent
 labels:
   - mvp
   - epic:library
   - phase:3
 created: 2026-08-30T18:30:23.027Z
-updated: 2026-08-30T18:30:41.173Z
+updated: 2026-08-31T14:33:49.991Z
 depends_on:
   - LUMO-004
   - LUMO-006
 estimate: 5
-order: cyk5rcyi
+order: a0
 board: product
 ---
 
@@ -47,6 +47,10 @@ Part of **Epic 3 — Folder library and rapid culling**. The source product brie
 
 - Content-addressing entire RAW files on every scan.
 - Albums beyond the opened folder.
+
+### Comment — codex @ 2026-08-31T14:33:44.361Z
+
+Implemented in commit 0961319. Added Codable/Sendable PhotoAsset, PhotoAssetID, PhotoAssetSource, bounded PhotoSourceFingerprint, metadata and mutable culling/thumbnail state; replaced ImageCollection's session UUID item IDs with stable asset IDs; documented the Photos data-only SHA-256 identity policy; added stable-ID, collision, moved/replaced-source, Codable, and collection rescan tests. Verification: swift build, swift test (314 executed, 20 expected skips, 0 failures), swift build -c release, dg validate OK (pre-existing warnings only).
 
 ## Agent log
 

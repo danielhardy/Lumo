@@ -2,19 +2,19 @@
 id: LUMO-022
 title: Implement rating, pick/reject, filters, and keyboard culling
 type: task
-status: backlog
+status: ready
 priority: high
 labels:
   - mvp
   - epic:library
   - phase:3
 created: 2026-08-30T18:30:24.444Z
-updated: 2026-08-30T18:30:42.682Z
+updated: 2026-08-31T14:24:19.367Z
 depends_on:
   - LUMO-021
   - LUMO-008
 estimate: 5
-order: fu8n1fu6
+order: y
 board: product
 ---
 

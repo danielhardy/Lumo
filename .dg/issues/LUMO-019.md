@@ -2,18 +2,18 @@
 id: LUMO-019
 title: Build progressive cancellable folder ingestion and metadata loading
 type: task
-status: backlog
+status: ready
 priority: urgent
 labels:
   - mvp
   - epic:library
   - phase:3
 created: 2026-08-30T18:30:23.370Z
-updated: 2026-08-30T18:30:41.382Z
+updated: 2026-08-31T14:24:14.325Z
 depends_on:
   - LUMO-018
 estimate: 5
-order: doha2vof
+order: n
 board: product
 ---
 

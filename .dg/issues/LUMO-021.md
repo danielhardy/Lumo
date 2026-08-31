@@ -2,19 +2,19 @@
 id: LUMO-021
 title: Build a virtualized library grid with multi-selection
 type: task
-status: backlog
+status: ready
 priority: urgent
 labels:
   - mvp
   - epic:library
   - phase:3
 created: 2026-08-30T18:30:24.083Z
-updated: 2026-08-30T18:30:42.282Z
+updated: 2026-08-31T14:24:17.725Z
 depends_on:
   - LUMO-019
   - LUMO-020
 estimate: 5
-order: f4bipx49
+order: w
 board: product
 ---
 

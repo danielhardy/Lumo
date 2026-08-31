@@ -2,7 +2,7 @@
 id: LUMO-017
 title: Epic 3 — Folder library and rapid culling
 type: feature
-status: backlog
+status: ready
 priority: urgent
 labels:
   - mvp
@@ -10,14 +10,14 @@ labels:
   - epic:library
   - phase:3
 created: 2026-08-30T18:30:22.834Z
-updated: 2026-08-30T18:31:54.807Z
+updated: 2026-08-31T14:24:11.249Z
 depends_on:
   - LUMO-018
   - LUMO-019
   - LUMO-020
   - LUMO-021
   - LUMO-022
-order: c8n1fu8l
+order: a0
 board: product
 ---
 

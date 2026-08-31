@@ -2,20 +2,20 @@
 id: LUMO-020
 title: Create a prioritized thumbnail service using embedded previews when useful
 type: task
-status: backlog
+status: ready
 priority: high
 labels:
   - mvp
   - epic:library
   - phase:3
 created: 2026-08-30T18:30:23.719Z
-updated: 2026-08-30T18:30:41.907Z
+updated: 2026-08-31T14:24:16.161Z
 depends_on:
   - LUMO-018
   - LUMO-014
   - LUMO-015
 estimate: 5
-order: eeeeeeec
+order: t
 board: product
 ---
 
