@@ -1,6 +1,7 @@
 import Foundation
 import CoreImage
 import CoreGraphics
+import ImageIO
 
 /// What the app needs from a renderer, so a test can hand it something that is not the GPU.
 ///
@@ -13,35 +14,8 @@ import CoreGraphics
 /// for free; a fake has to earn it.
 protocol RenderEngining: Sendable {
 
-    /// Rasterize `document` over `source` for display.
-    ///
-    /// Returns `sending` rather than a plain `CGImage?` because **`CGImage` is not `Sendable`**
-    /// (verified against the SDK — there is no `@unchecked` conformance to lean on). Region-based
-    /// isolation lets the freshly-created image leave the actor safely: the engine provably holds no
-    /// other reference to it. The alternative — returning raw bytes and rebuilding a `CGImage` on the
-    /// far side — would cost a copy of every preview frame to say the same thing.
-    func makeCGImage(
-        source: ImageSource,
-        document: EditDocument,
-        lut: CubeLUT?,
-        scale: RenderScale,
-        space: WorkingSpace
-    ) async -> sending CGImage?
-
-    /// Encode `document` over `source` to a file format's bytes.
-    ///
-    /// Returns `Data` for the caller to write, rather than taking a URL. File I/O is not the GPU's
-    /// business, and keeping it out means the actor never touches the sandbox, the security-scoped
-    /// bookmark, or a partially-written file.
-    func encode(
-        source: ImageSource,
-        document: EditDocument,
-        lut: CubeLUT?,
-        scale: RenderScale,
-        format: ExportFormat,
-        quality: CGFloat,
-        space: WorkingSpace
-    ) async throws -> Data
+    /// Render one UI-independent request through the deterministic pipeline.
+    func render(_ request: RenderRequest) async throws -> RenderResult
 
     /// Tally `document` over `source` into a 256-bin per-channel histogram.
     ///
@@ -80,17 +54,57 @@ protocol RenderEngining: Sendable {
     func rawCapabilities(for source: ImageSource) async -> RAWCapabilities?
 }
 
+extension RenderEngining {
+    func makeCGImage(
+        source: ImageSource,
+        document: EditDocument,
+        lut: CubeLUT?,
+        scale: RenderScale,
+        space: WorkingSpace = .current
+    ) async -> sending CGImage? {
+        let request = RenderRequest(
+            source: source, document: document, lut: lut,
+            targetSize: scale.targetSize,
+            quality: scale == .full ? .fullResolution : .preview,
+            output: .raster, space: space
+        )
+        guard let result = try? await render(request),
+              let imageSource = CGImageSourceCreateWithData(result.data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil)
+        else { return nil }
+        return image
+    }
+
+    func encode(
+        source: ImageSource,
+        document: EditDocument,
+        lut: CubeLUT?,
+        scale: RenderScale = .full,
+        format: ExportFormat,
+        quality: CGFloat = 0.95,
+        space: WorkingSpace = .current
+    ) async throws -> Data {
+        let request = RenderRequest(
+            source: source, document: document, lut: lut,
+            targetSize: scale.targetSize,
+            quality: scale == .full ? .export : .preview,
+            output: .encoded(format: format, quality: quality), space: space
+        )
+        return try await render(request).data
+    }
+}
+
 /// The one `CIContext`.
 ///
 /// **The GPU is the isolation boundary** (`docs/PHASE2_SPEC.md` §4.5). `CIImage`, `CIFilter` and
-/// `CIContext` are born and die inside this actor; only `Sendable` values cross in — `EditDocument`,
-/// `ImageSource`, `CubeLUT`, `WorkingSpace`, `RenderScale` — and a `sending CGImage?` or a `Data`
-/// crosses out. That is what lets Step 8 turn strict concurrency on without a single `@unchecked`.
+/// `CIContext` are born and die inside this actor; only `Sendable` values cross in — `RenderRequest`,
+/// `ImageSource`, `CubeLUT`, and `WorkingSpace` — and a `RenderResult` crosses out. That is what
+/// lets Step 8 turn strict concurrency on without a single `@unchecked`.
 ///
 /// It deliberately does **not** decide *what* to render. `RenderPipeline.buildImage` is a pure
 /// function that builds the graph; this evaluates it. Preview and export call the same builder and
-/// differ only in `scale`, which is what makes their agreement structural rather than maintained
-/// (§1).
+/// differ only in explicit quality/output policy, which is what makes their agreement structural
+/// rather than maintained (§1).
 ///
 /// Added in Step 4 **alongside** the old `ImageProcessor` path, which Steps 5–7 then cut over leaf by
 /// leaf — preview, export, histogram — until nothing was left of it to delete. As of Step 7 this is
@@ -109,8 +123,11 @@ actor RenderEngine: RenderEngining {
     /// reference state: a `CIFilter` gets its `inputImage` written on every use, so it is only safe
     /// behind this actor's serialization (§4.5).
     private let lutCache = LUTFilterCache()
+    private let previewCache: BoundedLRUCache<PreviewCacheKey, RenderResult>
+    private let developedSourceCache: BoundedLRUCache<DevelopedSourceCacheKey, CIImage>
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
 
-    init() {
+    init(configuration: RenderCacheConfiguration = .default) {
         // Matches `ImageProcessor`: Metal when there is a device, the CPU fallback when there isn't
         // (CI runners included).
         if let device = MTLCreateSystemDefaultDevice() {
@@ -118,69 +135,86 @@ actor RenderEngine: RenderEngining {
         } else {
             self.context = CIContext()
         }
+        self.previewCache = BoundedLRUCache(
+            maxEntries: configuration.previewMaxEntries,
+            maxCostBytes: configuration.previewMaxCostBytes
+        )
+        self.developedSourceCache = BoundedLRUCache(
+            maxEntries: configuration.developedSourceMaxEntries,
+            maxCostBytes: configuration.developedSourceMaxCostBytes
+        )
+        Task { [weak self] in await self?.installMemoryPressureMonitor() }
     }
 
     /// Inject a context — for tests that need to pin the backend rather than take whatever the
     /// machine offers.
-    init(context: CIContext) {
+    init(context: CIContext, configuration: RenderCacheConfiguration = .default) {
         self.context = context
+        self.previewCache = BoundedLRUCache(
+            maxEntries: configuration.previewMaxEntries,
+            maxCostBytes: configuration.previewMaxCostBytes
+        )
+        self.developedSourceCache = BoundedLRUCache(
+            maxEntries: configuration.developedSourceMaxEntries,
+            maxCostBytes: configuration.developedSourceMaxCostBytes
+        )
+        Task { [weak self] in await self?.installMemoryPressureMonitor() }
     }
 
     // MARK: - Rendering
 
-    func makeCGImage(
-        source: ImageSource,
-        document: EditDocument,
-        lut: CubeLUT?,
-        scale: RenderScale,
-        space: WorkingSpace = .current
-    ) -> sending CGImage? {
-        guard let image = buildImage(source, document, lut, scale, space) else { return nil }
+    func render(_ request: RenderRequest) async throws -> RenderResult {
+        let scale = request.renderScale
+        let previewKey = previewCacheKey(for: request, scale: scale)
+        if let previewKey, let cached = previewCache.value(for: previewKey) {
+            return cached
+        }
+        guard let image = buildImage(
+            request.source, request.document, request.lut, scale, request.space
+        ) else {
+            throw ImageError.processingFailed
+        }
         let rect = image.extent.integral
-        guard rect.isRasterizable else { return nil }
+        guard rect.isRasterizable else { throw ImageError.processingFailed }
+        let colorSpace = request.space.cgColorSpace
 
-        // The colour space is passed explicitly — this is the output-encoding half of the seam, and
-        // omitting it is exactly the latent preview/export mismatch Step 1 closed.
-        return context.createCGImage(image, from: rect, format: .RGBA8, colorSpace: space.cgColorSpace)
-    }
-
-    func encode(
-        source: ImageSource,
-        document: EditDocument,
-        lut: CubeLUT?,
-        scale: RenderScale = .full,
-        format: ExportFormat,
-        quality: CGFloat = 0.95,
-        space: WorkingSpace = .current
-    ) throws -> Data {
-        guard let image = buildImage(source, document, lut, scale, space) else {
-            throw ImageError.processingFailed
-        }
-        guard image.extent.isRasterizable else {
-            throw ImageError.processingFailed
-        }
-        let colorSpace = space.cgColorSpace
-
-        switch format {
-        case .tiff:
-            guard let data = context.tiffRepresentation(
-                of: image, format: .RGBA16, colorSpace: colorSpace
-            ) else { throw ImageError.exportFailed }
-            return data
-
-        case .jpeg:
-            guard let data = context.jpegRepresentation(
-                of: image, colorSpace: colorSpace,
-                options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality]
-            ) else { throw ImageError.exportFailed }
-            return data
-
-        case .png:
-            guard let data = context.pngRepresentation(
+        let data: Data
+        switch request.output {
+        case .raster:
+            guard let raster = context.pngRepresentation(
                 of: image, format: .RGBA8, colorSpace: colorSpace
-            ) else { throw ImageError.exportFailed }
-            return data
+            ) else { throw ImageError.processingFailed }
+            data = raster
+
+        case .encoded(let format, let quality):
+            switch format {
+            case .tiff:
+                guard let encoded = context.tiffRepresentation(
+                    of: image, format: .RGBA16, colorSpace: colorSpace
+                ) else { throw ImageError.exportFailed }
+                data = encoded
+            case .jpeg:
+                guard let encoded = context.jpegRepresentation(
+                    of: image, colorSpace: colorSpace,
+                    options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality]
+                ) else { throw ImageError.exportFailed }
+                data = encoded
+            case .png:
+                guard let encoded = context.pngRepresentation(
+                    of: image, format: .RGBA8, colorSpace: colorSpace
+                ) else { throw ImageError.exportFailed }
+                data = encoded
+            }
         }
+
+        let result = RenderResult(
+            data: data, extent: rect.size, colorSpace: request.space,
+            quality: request.quality, output: request.output
+        )
+        if let previewKey {
+            previewCache.insert(result, for: previewKey, cost: data.count)
+        }
+        return result
     }
 
     // MARK: - Histogram
@@ -296,6 +330,29 @@ actor RenderEngine: RenderEngining {
         lutCache.removeAll()
     }
 
+    /// Snapshot cache counters for instrumentation and performance diagnostics.
+    func cacheStatistics() -> RenderCacheStatistics {
+        RenderCacheStatistics(
+            preview: previewCache.statistics,
+            developedSource: developedSourceCache.statistics
+        )
+    }
+
+    /// Release all reusable intermediates. This is also the memory-pressure handler.
+    func evictForMemoryPressure() {
+        previewCache.removeAll(countAsEvictions: true)
+        developedSourceCache.removeAll(countAsEvictions: true)
+        lutCache.removeAll()
+        Thumbnails.evictForMemoryPressure()
+    }
+
+    /// Explicit invalidation for a source-folder refresh or a caller that knows a source changed.
+    func invalidateRenderCaches() {
+        previewCache.removeAll()
+        developedSourceCache.removeAll()
+        Thumbnails.invalidateCache()
+    }
+
     /// How many cube filters are held. Internal for the tests that prove the cache is actually being
     /// used across renders rather than rebuilt each time — there is no other way to observe it from
     /// outside, and a silently-bypassed cache is invisible in the output.
@@ -318,18 +375,9 @@ actor RenderEngine: RenderEngining {
         )
     }
 
-    // MARK: - The developed-source memo
+    // MARK: - The developed-source cache
 
-    private struct DevelopedKey: Equatable {
-        let source: ImageSource
-        let rawDevelop: RAWDevelopSettings
-        let scale: RenderScale
-    }
-
-    private var developedKey: DevelopedKey?
-    private var developedImage: CIImage?
-
-    /// The source stage, memoized for **preview** renders.
+    /// The source stage, cached for **preview** renders.
     ///
     /// This exists for one measured reason. Core Image caches decoded intermediates against the
     /// `CIImage` instance, so handing it a freshly-built source every render means re-decoding the
@@ -347,8 +395,8 @@ actor RenderEngine: RenderEngining {
     /// gain, and holding a full-resolution developed image between exports would pin Core Image's
     /// full-resolution intermediates for as long as the engine lives.
     ///
-    /// A single entry, because the user is looking at one image at a time: changing image, develop
-    /// settings, or preview size replaces it. Nothing is retained once the next image is opened.
+    /// Several entries are retained so stepping back through a folder can hit, but both a count and
+    /// an estimated decoded-byte limit keep a long navigation session bounded.
     private func developedSource(
         _ source: ImageSource,
         _ rawDevelop: RAWDevelopSettings,
@@ -357,22 +405,59 @@ actor RenderEngine: RenderEngining {
         guard case .preview = scale else {
             return RenderPipeline.developedSource(source, rawDevelop: rawDevelop, scale: scale)
         }
-        let key = DevelopedKey(source: source, rawDevelop: rawDevelop, scale: scale)
-        if key == developedKey, let developedImage { return developedImage }
+        let key = DevelopedSourceCacheKey(
+            source: RenderSourceFingerprint(source),
+            developHash: RenderCacheHash.digest(rawDevelop),
+            scale: RenderScaleKey(scale),
+            pipelineVersion: RenderPipeline.cacheVersion
+        )
+        if let image = developedSourceCache.value(for: key) { return image }
 
         guard let image = RenderPipeline.developedSource(
             source, rawDevelop: rawDevelop, scale: scale
         ) else { return nil }
 
-        developedKey = key
-        developedImage = image
+        let extent = image.extent.integral
+        let width = max(0, Int(min(extent.width, CGFloat(Int.max))))
+        let height = max(0, Int(min(extent.height, CGFloat(Int.max))))
+        let pixelCount = width.multipliedReportingOverflow(by: height)
+        let byteCount = pixelCount.overflow
+            ? Int.max
+            : pixelCount.partialValue.multipliedReportingOverflow(by: 4).partialValue
+        developedSourceCache.insert(image, for: key, cost: byteCount)
         return image
     }
 
     /// Drop the developed-source memo. Not needed for correctness — the key covers every input — but
     /// it lets a caller release the intermediates when no image is on screen.
     func invalidateSourceCache() {
-        developedKey = nil
-        developedImage = nil
+        developedSourceCache.removeAll()
+    }
+
+    private func previewCacheKey(for request: RenderRequest, scale: RenderScale) -> PreviewCacheKey? {
+        guard !scale.isFull, request.output == .raster else { return nil }
+        guard request.quality == .thumbnail || request.quality == .interactive || request.quality == .preview else {
+            return nil
+        }
+        return PreviewCacheKey(
+            source: RenderSourceFingerprint(request.source),
+            documentHash: RenderCacheHash.digest(request.document),
+            lutFingerprint: request.lut?.cacheFingerprint ?? "none",
+            targetScale: RenderScaleKey(scale),
+            quality: request.quality,
+            space: request.space,
+            pipelineVersion: RenderPipeline.cacheVersion
+        )
+    }
+
+    private func installMemoryPressureMonitor() {
+        let source = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical], queue: DispatchQueue.global(qos: .utility)
+        )
+        source.setEventHandler(handler: { [weak self] in
+            Task { await self?.evictForMemoryPressure() }
+        })
+        source.resume()
+        memoryPressureSource = source
     }
 }

@@ -16,6 +16,10 @@ import CoreGraphics
 /// one GPU pass when the engine finally renders it.
 enum RenderPipeline {
 
+    /// Increment whenever the pixels produced by the graph can change without a cache-key input
+    /// changing. This makes cache invalidation explicit when the pipeline evolves.
+    static let cacheVersion = 1
+
     /// Build the graph for `document` over `source`.
     ///
     /// - Parameters:
