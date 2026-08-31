@@ -64,7 +64,10 @@ enum RenderCacheHash {
     static func digest<T: Encodable>(_ value: T) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(value) else { return "encoding-failed" }
+        // A fixed fallback would let two different values that both fail to encode (e.g. a
+        // non-conforming Double such as .nan) collide on the same cache key and serve each other's
+        // pixels. A fresh identity per failure guarantees a miss instead — safe, just uncached.
+        guard let data = try? encoder.encode(value) else { return "encoding-failed:\(UUID())" }
         return digest(data)
     }
 }
