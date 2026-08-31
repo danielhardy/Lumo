@@ -19,14 +19,8 @@ final class AppViewModel: ObservableObject {
     /// **The look, as a value.** Phase 2's spine: everything the user has chosen lives here, and the
     /// preview is rebuilt from it rather than from a baked image (`docs/PHASE2_SPEC.md` §3).
     ///
-    /// Kept across image opens rather than reset, per §8.4 — auditioning one look across a folder is
-    /// the common case, and that is what the app already did.
-    ///
-    /// That reasoning covers the LUT and its intensity; it does not cover `rawDevelop`, whose fields
-    /// are per-file decoder defaults, not a portable look. Step 10a is the first thing that writes to
-    /// `rawDevelop`, and carrying it forward means a value set on one RAW silently overrides the next
-    /// RAW's own probed as-shot seed. Known, and deliberately deferred to Step 11 — see §8.4 for the
-    /// worked example and why that step is the right place to settle it.
+    /// Stored in a per-photo session keyed by stable source identity. Navigation restores the active
+    /// photo's Light, other edits, and history without carrying them onto a different frame.
     @Published private(set) var document = EditDocument()
 
     /// How to reproduce the open image. Held instead of a decoded `CIImage` because a RAW has to be
@@ -102,6 +96,10 @@ final class AppViewModel: ObservableObject {
 
     private var capabilitiesTask: Task<Void, Never>?
 
+    private var editSessions: [PhotoAssetID: PhotoEditSession] = [:]
+    private var activeAssetID: PhotoAssetID?
+    private var activeHistory = EditHistory()
+
     /// Source generation prevents delayed work from a previous navigation selection from publishing
     /// into the new image, even if the source values happen to compare equal.
     private var sourceRevision: UInt64 = 0
@@ -148,7 +146,7 @@ final class AppViewModel: ObservableObject {
     /// way the old one did.
     ///
     /// A **develop-only** edit correctly reads `false` — `originalForComparison` keeps `rawDevelop`
-    /// and strips only `adjustments` and the LUT, so both halves would render the same picture.
+    /// and strips Light, adjustments, and the LUT, so both halves would render the same picture.
     ///
     /// `adjustments.isEmpty` would have been a sound stand-in for "no adjustment is active" only
     /// because the array is sparse — `AdjustmentControl.setting(_:in:)` never stores an identity node, a
@@ -159,7 +157,8 @@ final class AppViewModel: ObservableObject {
     /// once Step 11's undo path can restore a document that arrived by decoding rather than by a
     /// slider write.
     var isComparisonAvailable: Bool {
-        !document.adjustments.allSatisfy(\.isIdentity) || !document.lut.isIdentity
+        !document.light.isIdentity ||
+            !document.adjustments.allSatisfy(\.isIdentity) || !document.lut.isIdentity
     }
 
     @Published var previewNSImage: NSImage?
@@ -185,10 +184,11 @@ final class AppViewModel: ObservableObject {
     }
 
     enum InspectorTab: String, CaseIterable, Sendable {
-        case info, develop, adjust
+        case info, light, develop, adjust
         var title: String {
             switch self {
             case .info: return "Info"
+            case .light: return "Light"
             case .develop: return "Develop"
             case .adjust: return "Adjust"
             }
@@ -348,10 +348,8 @@ final class AppViewModel: ObservableObject {
         derivedRegistry.register(saved)
 
         guard let current = document.lut.lutID, current == derive.derivedLUT?.lutID else { return }
-        document.lut.lutID = saved.lutID
-        documentRevision &+= 1
-        originalPreviewTask?.cancel()
-        schedulePreview()
+        endUndoGrouping()
+        updateDocument { $0.lut.lutID = saved.lutID }
     }
 
     /// Open the first image of the source folder once its scan completes.
@@ -379,10 +377,22 @@ final class AppViewModel: ObservableObject {
         load(name: url.lastPathComponent, url: url, data: nil)
     }
 
+    private func openImage(url: URL, assetID: PhotoAssetID) {
+        load(name: url.lastPathComponent, url: url, data: nil, assetID: assetID)
+    }
+
     /// Decode an image **off the main actor**, then publish it and render the
     /// previews. RAW demosaicing is expensive enough (hundreds of ms) that
     /// doing it inline would freeze the window on every ←/→ step.
-    private func load(name: String, url: URL?, data: Data?) {
+    private func load(name: String, url: URL?, data: Data?, assetID: PhotoAssetID? = nil) {
+        let assetID = assetID ?? (url.map(PhotoAssetID.file) ?? data.map(PhotoAssetID.data) ?? .data(Data()))
+        endUndoGrouping()
+        saveActiveDocument()
+        activeAssetID = assetID
+        let session = editSessions[assetID] ?? PhotoEditSession()
+        document = session.document
+        activeHistory = session.history
+
         sourceRevision &+= 1
         previewCoordinator.cancel()
         isPreviewInteractionActive = false
@@ -530,7 +540,7 @@ final class AppViewModel: ObservableObject {
         let item = collection.items[index]
 
         if let url = item.url {
-            openImage(url: url)
+            openImage(url: url, assetID: item.id)
         } else if let data = item.imageData {
             openImage(data: data, name: item.displayName)
         }
@@ -577,7 +587,7 @@ final class AppViewModel: ObservableObject {
         guard let item = collection.selectedItem else { return }
         isLibraryGridPresented = false
         if let url = item.url {
-            openImage(url: url)
+            openImage(url: url, assetID: item.id)
         } else if let data = item.imageData {
             openImage(data: data, name: item.displayName)
         }
@@ -608,10 +618,8 @@ final class AppViewModel: ObservableObject {
         // it rather than replacing the last one: a document made now must still resolve after the
         // user derives again.
         if let lut, lut.lutID.isDerived { derivedRegistry.register(lut) }
-        document.lut.lutID = lut?.lutID
-        documentRevision &+= 1
-        originalPreviewTask?.cancel()
-        applyLUT()
+        endUndoGrouping()
+        updateDocument { $0.lut.lutID = lut?.lutID }
     }
 
     /// Mutate the document and re-render.
@@ -643,7 +651,9 @@ final class AppViewModel: ObservableObject {
         guard updated != document else { return }
 
         let developChanged = updated.rawDevelop != document.rawDevelop
+        activeHistory.recordChange(from: document, to: updated)
         document = updated
+        saveActiveDocument()
         documentRevision &+= 1
         // A supporting baseline from the previous state is no longer useful once the document
         // changes. Cancel it before the new visible request is submitted; a develop edit will queue
@@ -709,7 +719,10 @@ final class AppViewModel: ObservableObject {
     func setLUTIntensity(_ value: Double) {
         let clamped = max(0, min(1, value))
         guard clamped != document.lut.intensity else { return }
+        let oldDocument = document
         document.lut.intensity = clamped
+        activeHistory.recordChange(from: oldDocument, to: document)
+        saveActiveDocument()
         documentRevision &+= 1
         originalPreviewTask?.cancel()
 
@@ -778,6 +791,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func beginPreviewInteraction() {
+        beginUndoGrouping()
         isPreviewInteractionActive = true
         previewCoordinator.beginInteraction()
     }
@@ -787,6 +801,51 @@ final class AppViewModel: ObservableObject {
         previewDebounceTask?.cancel()
         previewDebounceTask = nil
         previewCoordinator.endInteraction()
+        endUndoGrouping()
+    }
+
+    // MARK: - Undo and reset
+
+    /// Start one history entry for a continuous slider gesture.
+    func beginUndoGrouping() {
+        activeHistory.beginGrouping(document: document)
+    }
+
+    /// Finish a continuous gesture. A gesture that did not change the document is not recorded.
+    func endUndoGrouping() {
+        activeHistory.endGrouping(document: document)
+        saveActiveDocument()
+    }
+
+    var canUndo: Bool { activeHistory.canUndo }
+    var canRedo: Bool { activeHistory.canRedo }
+
+    func undo() {
+        endUndoGrouping()
+        guard let restored = activeHistory.undo(current: document) else { return }
+        applyHistoryDocument(restored)
+    }
+
+    func redo() {
+        endUndoGrouping()
+        guard let restored = activeHistory.redo(current: document) else { return }
+        applyHistoryDocument(restored)
+    }
+
+    /// Return every edit on the current photo to its neutral state as one reversible operation.
+    func resetPhoto() {
+        endUndoGrouping()
+        updateDocument { $0 = EditDocument() }
+    }
+
+    private func applyHistoryDocument(_ restored: EditDocument) {
+        let developChanged = restored.rawDevelop != document.rawDevelop
+        document = restored
+        saveActiveDocument()
+        originalPreviewTask?.cancel()
+        pendingDevelopChange = false
+        if developChanged { scheduleOriginalPreview() }
+        schedulePreview()
     }
 
     private func publishPreview(_ publication: PreviewCoordinator.Publication) {
@@ -1030,5 +1089,10 @@ final class AppViewModel: ObservableObject {
         if panel.runModal() == .OK, let url = panel.url {
             library.setFolder(url)
         }
+    }
+
+    private func saveActiveDocument() {
+        guard let activeAssetID else { return }
+        editSessions[activeAssetID] = PhotoEditSession(document: document, history: activeHistory)
     }
 }

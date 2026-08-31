@@ -66,15 +66,14 @@ struct EditDocument: Codable, Sendable, Equatable {
     /// the same photograph without the *look*, not a different rendering of the negative. This
     /// implements that.
     ///
-    /// It is invisible today, because nothing sets `rawDevelop` until the Step 10 inspector exists,
-    /// and a neutral develop is exactly the plain decode. It becomes load-bearing the moment that
-    /// inspector ships, which is why it is decided here rather than then.
+    /// Light is also removed because it is a global edit stage, while `rawDevelop` is retained as
+    /// the camera/decode baseline for the same source.
     ///
     /// Sharing `rawDevelop` with the full document is also what keeps the A/B swap cheap: the
     /// engine's developed-source memo is keyed on it, so both sides of the comparison hit the same
     /// entry instead of re-developing the RAW on every Space press.
     var originalForComparison: EditDocument {
-        EditDocument(version: version, rawDevelop: rawDevelop, adjustments: [], lut: .none)
+        EditDocument(version: version, rawDevelop: rawDevelop, light: .neutral, adjustments: [], lut: .none)
     }
 
     // MARK: - Codable

@@ -185,9 +185,9 @@ final class AdjustInspectorTests: TempDirectoryTestCase {
 
 extension AdjustInspectorTests {
 
-    /// Three tabs, in pipeline order left to right.
-    func testTheInspectorHasThreeTabsInPipelineOrder() {
-        XCTAssertEqual(AppViewModel.InspectorTab.allCases, [.info, .develop, .adjust])
+    /// Four tabs, in pipeline order left to right.
+    func testTheInspectorHasFourTabsInPipelineOrder() {
+        XCTAssertEqual(AppViewModel.InspectorTab.allCases, [.info, .light, .develop, .adjust])
         XCTAssertEqual(AppViewModel.InspectorTab.adjust.title, "Adjust")
     }
 

@@ -94,10 +94,18 @@ final class KeyMonitor {
                 vm.collection.selectAll()
                 return nil
             }
-            if isDown,
-               event.charactersIgnoringModifiers?.lowercased() == "z",
-               vm.undoCullingChange() {
-                return nil
+            if isDown, event.charactersIgnoringModifiers?.lowercased() == "z" {
+                if mods.contains(.shift), vm.canRedo {
+                    vm.redo()
+                    return nil
+                }
+                if vm.canUndo {
+                    vm.undo()
+                    return nil
+                }
+                if vm.undoCullingChange() {
+                    return nil
+                }
             }
             return event
         }

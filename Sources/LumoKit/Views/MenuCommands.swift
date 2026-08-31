@@ -37,6 +37,15 @@ public struct LumoCommands: Commands {
 
             Divider()
 
+            Button("Undo") { post(.undoEdit) }
+                .keyboardShortcut("z", modifiers: [.command])
+            Button("Redo") { post(.redoEdit) }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+            Button("Reset Photo") { post(.resetPhoto) }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+
+            Divider()
+
             Button("Derive LUT from JPG…") { post(.deriveRecipe) }
                 .keyboardShortcut("d")
 
@@ -84,6 +93,15 @@ struct MenuCommandReceivers: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: .refreshSourceFolder)) { _ in
                 viewModel.refreshSource()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .undoEdit)) { _ in
+                viewModel.undo()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .redoEdit)) { _ in
+                viewModel.redo()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .resetPhoto)) { _ in
+                viewModel.resetPhoto()
+            }
             .onReceive(NotificationCenter.default.publisher(for: .deriveRecipe)) { _ in
                 viewModel.presentRecipeExtractor()
             }
@@ -100,5 +118,8 @@ extension Notification.Name {
     static let importFromPhotos = Notification.Name("Lumo.importFromPhotos")
     static let openSourceFolder = Notification.Name("Lumo.openSourceFolder")
     static let refreshSourceFolder = Notification.Name("Lumo.refreshSourceFolder")
+    static let undoEdit = Notification.Name("Lumo.undoEdit")
+    static let redoEdit = Notification.Name("Lumo.redoEdit")
+    static let resetPhoto = Notification.Name("Lumo.resetPhoto")
     static let deriveRecipe = Notification.Name("Lumo.deriveRecipe")
 }

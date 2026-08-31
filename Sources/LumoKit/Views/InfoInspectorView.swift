@@ -20,6 +20,8 @@ struct InfoInspectorView: View {
                 switch viewModel.inspectorTab {
                 case .info:
                     infoContent
+                case .light:
+                    LightInspectorView(viewModel: viewModel)
                 case .develop:
                     DevelopInspectorView(viewModel: viewModel)
                 case .adjust:
@@ -102,7 +104,8 @@ struct InfoInspectorView: View {
 
     private var histogramSourceLabel: String {
         if viewModel.isShowingOriginal { return "Original" }
-        return viewModel.selectedLUT != nil ? "Graded" : "Original"
+        if viewModel.selectedLUT != nil { return "Graded" }
+        return viewModel.isComparisonAvailable ? "Edited" : "Original"
     }
 
     // MARK: - Metadata

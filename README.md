@@ -106,7 +106,7 @@ the *same* document, so what you see is what exports.
 - **Hold `Space`** to flash back to the original — develop applied, look removed.
 
 ### Inspect what you're looking at
-- **Info inspector** (**`⌘I`**) with three tabs: a live RGB / luma histogram of the displayed image plus the file's EXIF, TIFF, and GPS metadata; the **RAW Develop** panel; and the **Adjust** panel.
+- **Info inspector** (**`⌘I`**) with tabs for a live RGB / luma histogram of the displayed image plus the file's EXIF, TIFF, and GPS metadata; the **Light** panel; **RAW Develop**; and **Adjust**.
 
 ### Export at full quality
 - **16-bit TIFF**, **JPEG** (q 0.95), or **PNG** — always at full source resolution, rendered from the original plus your edit.
@@ -130,7 +130,8 @@ the *same* document, so what you see is what exports.
 | Per-photo edit storage, persistence across launches | 🔜 Planned — documents are `Codable` precisely for this |
 | Copy / paste edits between photos | 🔜 Planned (MVP goal) |
 | Ratings, pick/reject culling + filters | 🔜 Planned (MVP goal) |
-| Full Light / Color / Effects panels in the Lightroom sense | 🔜 Planned (MVP goal) |
+| Light panel — photographer-facing tone controls and master RGB curve | ✅ Shipped |
+| Full Color / Effects panels in the Lightroom sense | 🔜 Planned (MVP goal) |
 
 ---
 
