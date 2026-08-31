@@ -127,6 +127,68 @@ final class RenderPipelineTests: TempDirectoryTestCase {
         XCTAssertGreaterThan(abs(shadows[low] - base[low]), abs(shadows[high] - base[high]))
     }
 
+    func testWhitesAndBlacksTargetOppositeEndsWithAUsefulRolloff() throws {
+        let source = try linearRamp()
+        let base = try linearSamples(of: source)
+        let whites = try linearSamples(of: RenderPipeline.applyLight(
+            LightAdjustments(whites: 60), to: source
+        ))
+        let blacks = try linearSamples(of: RenderPipeline.applyLight(
+            LightAdjustments(blacks: 60), to: source
+        ))
+
+        let low = 32
+        let high = 224
+        XCTAssertGreaterThan(abs(whites[high] - base[high]), abs(whites[low] - base[low]),
+                             "Whites should be concentrated in the high end")
+        XCTAssertGreaterThan(abs(blacks[low] - base[low]), abs(blacks[high] - base[high]),
+                             "Blacks should be concentrated in the low end")
+        XCTAssertGreaterThan(whites[high], base[high], "positive Whites should lift the high end")
+        XCTAssertGreaterThan(blacks[low], base[low], "positive Blacks should lift the low end")
+    }
+
+    func testEndpointNeutralValuesAreExactNoOpsAndPreserveExtent() throws {
+        let source = try linearRamp(width: 96)
+        let expected = try Pixels.bytes(of: source)
+
+        for light in [LightAdjustments(whites: 0), LightAdjustments(blacks: 0), .neutral] {
+            let rendered = RenderPipeline.applyLight(light, to: source)
+            XCTAssertEqual(rendered.extent, source.extent)
+            assertPixelsEqual(try Pixels.bytes(of: rendered), expected,
+                              "neutral endpoint controls must be exact no-ops")
+        }
+    }
+
+    func testEndpointExtremesRemainFiniteMonotonicAndClipAtRasterBoundary() throws {
+        let source = try linearRamp()
+        let lifted = try linearSamples(of: RenderPipeline.applyLight(
+            LightAdjustments(whites: 100), to: source
+        ))
+        let crushed = try linearSamples(of: RenderPipeline.applyLight(
+            LightAdjustments(blacks: -100), to: source
+        ))
+
+        for samples in [lifted, crushed] {
+            XCTAssertTrue(samples.allSatisfy(\.isFinite), "endpoint stages must not produce NaN or infinity")
+            for index in 1..<samples.count {
+                XCTAssertGreaterThanOrEqual(samples[index], samples[index - 1] - 0.002,
+                                            "endpoint rolloff must not invert the gradient")
+            }
+        }
+
+        XCTAssertGreaterThan(lifted[224], 0.9, "strong positive Whites should reach the highlight boundary")
+        XCTAssertLessThan(crushed[32], 0.1, "strong negative endpoints should crush the low end")
+
+        let liftedBytes = try Pixels.bytes(of: RenderPipeline.applyLight(
+            LightAdjustments(whites: 100), to: source
+        ))
+        let crushedBytes = try Pixels.bytes(of: RenderPipeline.applyLight(
+            LightAdjustments(blacks: -100), to: source
+        ))
+        XCTAssertEqual(liftedBytes[(224 * 4)], 255, "positive Whites should clip only at output encoding")
+        XCTAssertEqual(crushedBytes[(0 * 4)], 0, "negative Blacks should clip at the black output boundary")
+    }
+
     func testModerateContrastKeepsUsableEndpoints() throws {
         let source = try linearRamp()
         let base = try linearSamples(of: source)

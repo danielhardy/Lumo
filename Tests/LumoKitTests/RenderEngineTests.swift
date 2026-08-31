@@ -48,7 +48,8 @@ final class RenderEngineTests: TempDirectoryTestCase {
         let engine = RenderEngine()
         let lut = TestImages.warmLUT()
         let document = EditDocument(
-            light: LightAdjustments(contrast: 35, highlights: -25, shadows: 40),
+            light: LightAdjustments(contrast: 35, highlights: -25, shadows: 40,
+                                    whites: 30, blacks: -20),
             adjustments: [.exposure(ev: 0.3), .vibrance(amount: 0.4)],
             lut: LUTSettings(lutID: lut.lutID, intensity: 0.8)
         )

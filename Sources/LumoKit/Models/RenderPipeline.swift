@@ -22,8 +22,8 @@ enum RenderPipeline {
     /// plus tonal-curve implementation. v4 clamps the tone curve's interior points to stay
     /// monotonic; some Contrast/Highlights/Shadows combinations previously produced a curve that
     /// inverted tones locally, so affected documents render different pixels even though the
-    /// document schema is unchanged.
-    static let cacheVersion = 4
+    /// document schema is unchanged. v5 adds the Whites and Blacks endpoint stages.
+    static let cacheVersion = 5
 
     /// Build the graph for `document` over `source`.
     ///
@@ -166,8 +166,10 @@ enum RenderPipeline {
     /// inverse shape. `CIToneCurve` is a Core Image node, so this stays in the same GPU-backed graph
     /// as the rest of the pipeline and does not require a CPU per-pixel pass.
     ///
-    /// Whites, Blacks, and the master curve remain model state until their dedicated Light stages
-    /// land; they are intentionally not approximated with this curve.
+    /// Whites and Blacks are separate endpoint stages after the shared tonal curve. Keeping them
+    /// separate gives each control an independent high- or low-end rolloff rather than making them
+    /// aliases for Contrast. The master curve remains model state until its dedicated Light stage
+    /// lands.
     static func applyLight(_ light: LightAdjustments, to image: CIImage) -> CIImage {
         var result = image
 
@@ -178,40 +180,79 @@ enum RenderPipeline {
             result = filter.outputImage ?? result
         }
 
-        guard light.contrast != 0 || light.highlights != 0 || light.shadows != 0 else {
-            return result
+        if light.contrast != 0 || light.highlights != 0 || light.shadows != 0 {
+            let curve = CIFilter.toneCurve()
+            curve.inputImage = result
+
+            let contrast = CGFloat(light.contrast / 100)
+            let highlights = CGFloat(light.highlights / 100)
+            let shadows = CGFloat(light.shadows / 100)
+
+            // Fixed endpoints keep a moderate contrast move from clipping usable blacks and whites.
+            // The slider deltas are deliberately bounded well inside the endpoint interval, and the
+            // interior weights taper toward the opposite tonal region.
+            //
+            // Opposing controls (e.g. negative Contrast with positive Shadows and negative Highlights)
+            // can otherwise push an interior point below its lower neighbor, which makes CIToneCurve's
+            // spline invert tones locally instead of just changing separation. Clamp each interior point
+            // to be no lower than the previous one so the curve stays monotonic for every slider
+            // combination.
+            var output1 = clampedToneValue(0.25 - 0.12 * contrast + 0.15 * shadows)
+            var output2 = clampedToneValue(0.5 + 0.025 * (highlights + shadows))
+            var output3 = clampedToneValue(0.75 + 0.12 * contrast + 0.15 * highlights)
+            output1 = max(output1, 0)
+            output2 = max(output2, output1)
+            output3 = max(output3, output2)
+
+            curve.point0 = toneCurvePoint(input: 0, output: 0)
+            curve.point1 = toneCurvePoint(input: 0.25, output: output1)
+            curve.point2 = toneCurvePoint(input: 0.5, output: output2)
+            curve.point3 = toneCurvePoint(input: 0.75, output: output3)
+            curve.point4 = toneCurvePoint(input: 1, output: 1)
+
+            result = curve.outputImage ?? result
         }
 
+        // Endpoint controls intentionally run in a stable order after the shared tonal curve:
+        // high-end Whites first, low-end Blacks second. Each is a distinct GPU stage, so changing
+        // one endpoint does not silently change the other control's curve.
+        if light.whites != 0 {
+            result = applyWhitePoint(light.whites, to: result)
+        }
+        if light.blacks != 0 {
+            result = applyBlackPoint(light.blacks, to: result)
+        }
+        return result
+    }
+
+    /// Move the white point with a smooth high-end rolloff. The first three control points stay on
+    /// the diagonal, while the upper quarter and endpoint carry the edit. Values above 1 are
+    /// intentional for positive Whites: Core Image clips them at a raster output while retaining
+    /// highlight headroom in the lazy graph.
+    private static func applyWhitePoint(_ value: Double, to image: CIImage) -> CIImage {
+        let amount = CGFloat(value / LightAdjustments.whitesRange.upperBound)
         let curve = CIFilter.toneCurve()
-        curve.inputImage = result
-
-        let contrast = CGFloat(light.contrast / 100)
-        let highlights = CGFloat(light.highlights / 100)
-        let shadows = CGFloat(light.shadows / 100)
-
-        // Fixed endpoints keep a moderate contrast move from clipping usable blacks and whites.
-        // The slider deltas are deliberately bounded well inside the endpoint interval, and the
-        // interior weights taper toward the opposite tonal region.
-        //
-        // Opposing controls (e.g. negative Contrast with positive Shadows and negative Highlights)
-        // can otherwise push an interior point below its lower neighbor, which makes CIToneCurve's
-        // spline invert tones locally instead of just changing separation. Clamp each interior point
-        // to be no lower than the previous one so the curve stays monotonic for every slider
-        // combination.
-        var output1 = clampedToneValue(0.25 - 0.12 * contrast + 0.15 * shadows)
-        var output2 = clampedToneValue(0.5 + 0.025 * (highlights + shadows))
-        var output3 = clampedToneValue(0.75 + 0.12 * contrast + 0.15 * highlights)
-        output1 = max(output1, 0)
-        output2 = max(output2, output1)
-        output3 = max(output3, output2)
-
+        curve.inputImage = image
         curve.point0 = toneCurvePoint(input: 0, output: 0)
-        curve.point1 = toneCurvePoint(input: 0.25, output: output1)
-        curve.point2 = toneCurvePoint(input: 0.5, output: output2)
-        curve.point3 = toneCurvePoint(input: 0.75, output: output3)
-        curve.point4 = toneCurvePoint(input: 1, output: 1)
+        curve.point1 = toneCurvePoint(input: 0.25, output: 0.25)
+        curve.point2 = toneCurvePoint(input: 0.5, output: 0.5)
+        curve.point3 = toneCurvePoint(input: 0.75, output: 0.75 + 0.10 * amount)
+        curve.point4 = toneCurvePoint(input: 1, output: 1 + 0.20 * amount)
+        return curve.outputImage ?? image
+    }
 
-        return curve.outputImage ?? result
+    /// Move the black point with a smooth low-end rolloff. The endpoint receives the strongest
+    /// movement and the quarter-tone point receives a smaller share, leaving the upper half alone.
+    private static func applyBlackPoint(_ value: Double, to image: CIImage) -> CIImage {
+        let amount = CGFloat(value / LightAdjustments.blacksRange.upperBound)
+        let curve = CIFilter.toneCurve()
+        curve.inputImage = image
+        curve.point0 = endpointToneCurvePoint(input: 0, output: 0.16 * amount)
+        curve.point1 = endpointToneCurvePoint(input: 0.25, output: 0.25 + 0.10 * amount)
+        curve.point2 = endpointToneCurvePoint(input: 0.5, output: 0.5)
+        curve.point3 = endpointToneCurvePoint(input: 0.75, output: 0.75)
+        curve.point4 = endpointToneCurvePoint(input: 1, output: 1)
+        return curve.outputImage ?? image
     }
 
     private static func clampedToneValue(_ value: CGFloat) -> CGFloat {
@@ -223,6 +264,13 @@ enum RenderPipeline {
     /// linear ramp as well as for normal encoded photographs.
     private static func toneCurvePoint(input: CGFloat, output: CGFloat) -> CGPoint {
         CGPoint(x: sqrt(input), y: sqrt(output))
+    }
+
+    /// Endpoint controls can intentionally request a negative black point. Core Image clips the
+    /// resulting tone at zero, but the perceptual-coordinate conversion itself must never receive a
+    /// negative value (sqrt would create a NaN before Core Image can do that clipping).
+    private static func endpointToneCurvePoint(input: CGFloat, output: CGFloat) -> CGPoint {
+        CGPoint(x: sqrt(max(input, 0)), y: sqrt(max(output, 0)))
     }
 
     /// Fold the ordered nodes over the image.
