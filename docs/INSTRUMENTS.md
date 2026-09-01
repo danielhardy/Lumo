@@ -3,7 +3,8 @@
 Lumo's render workflow emits Points of Interest signposts under subsystem
 `com.lumo.app`, category `workflow`. The signpost names are stable across builds:
 `Launch`, `Scan`, `Decode`, `Render`, `Cache`, `PhotoSwitch`, `Histogram`, and
-`Export`, and `LiveEdit`. Cache outcomes are events named `CacheHit` and `CacheMiss`; cancelled
+`Export`, and `LiveEdit`, plus the Photos import stages `PhotoTransfer`, `PhotoThumbnail`, and
+`PhotoCollectionInsert`. Cache outcomes are events named `CacheHit` and `CacheMiss`; cancelled
 and coalesced work is counted by `Cancellation` and `Coalesced` events. LiveEdit emits
 `PointerInput`, `RenderStart`, `RenderEnd`, `GPUComplete`, `DrawablePresented`, and
 `StaleRevision`. Each carries a privacy-safe source token, quality, and document revision.

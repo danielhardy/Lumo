@@ -72,17 +72,26 @@ enum ImageDecoder {
 
     /// Load in-memory image data (Photos imports, drag-and-drop payloads) as an
     /// upright CIImage.
-    static func load(from data: Data, name: String) throws -> CIImage {
+    static func load(
+        from data: Data, name: String, traceQuality: String = "open"
+    ) throws -> CIImage {
         var interval = LumoSignpostInterval(
             .decode,
-            context: LumoTraceContext(sourceFingerprint: "data:\(data.count)", quality: "open")
+            context: LumoTraceContext(sourceFingerprint: "data:\(data.count)", quality: traceQuality)
         )
         defer { interval.end() }
 
-        guard let image = CIImage(data: data, options: orientedLoadOptions) else {
-            throw ImageError.cannotLoad(name)
+        if ImageSource.kind(forData: data) == .raw {
+            guard let image = CIRAWFilter(imageData: data, identifierHint: nil)?.outputImage else {
+                throw ImageError.cannotLoad(name)
+            }
+            return image
+        } else {
+            guard let image = CIImage(data: data, options: orientedLoadOptions) else {
+                throw ImageError.cannotLoad(name)
+            }
+            return image
         }
-        return image
     }
 
     /// Decode options that bake a file's EXIF orientation into the returned

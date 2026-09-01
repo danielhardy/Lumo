@@ -9,6 +9,7 @@ import AppKit
 public struct ContentView: View {
     @StateObject private var viewModel: AppViewModel
     @State private var photosSelection: [PhotosPickerItem] = []
+    @State private var photosImportTask: Task<Void, Never>?
 
     public init() {
         _viewModel = StateObject(wrappedValue: AppViewModel())
@@ -61,18 +62,62 @@ public struct ContentView: View {
 
     private func handlePhotosSelection(_ selection: [PhotosPickerItem]) {
         guard !selection.isEmpty else { return }
-        Task {
-            var dataItems: [(name: String, data: Data)] = []
-            for (i, item) in selection.enumerated() {
-                if let data = try? await item.loadTransferable(type: Data.self) {
-                    dataItems.append((name: "Photo \(i + 1)", data: data))
+        photosImportTask?.cancel()
+        viewModel.beginPhotosImport(totalCount: selection.count)
+
+        // Keep only the current transfer in this task. `ImageCollection` owns each successful
+        // original after append, while the picker/provider remains cancellable between items.
+        photosImportTask = Task { @MainActor in
+            var wasCancelled = false
+            for (ordinal, item) in selection.enumerated() {
+                if Task.isCancelled {
+                    wasCancelled = true
+                    break
+                }
+
+                let name = "Photo \(ordinal + 1)"
+                viewModel.updatePhotosImportPhase(.transferring, name: name)
+                var transferInterval = LumoSignpostInterval(
+                    .photoTransfer,
+                    context: LumoTraceContext(
+                        sourceFingerprint: item.itemIdentifier ?? "ordinal:\(ordinal)",
+                        quality: "photosImport"
+                    )
+                )
+                do {
+                    guard let data = try await item.loadTransferable(type: Data.self) else {
+                        transferInterval.end()
+                        viewModel.recordPhotosImportFailure(name: name)
+                        continue
+                    }
+                    transferInterval.end()
+                    guard !Task.isCancelled else {
+                        wasCancelled = true
+                        break
+                    }
+                    let payload = ImageCollection.PhotoImportItem(
+                        name: name, data: data, localIdentifier: item.itemIdentifier
+                    )
+                    viewModel.appendPhotosImport(payload, ordinal: ordinal)
+                } catch is CancellationError {
+                    transferInterval.end()
+                    wasCancelled = true
+                    break
+                } catch {
+                    transferInterval.end()
+                    // A provider failure is local to this item. Continue so already imported
+                    // originals remain usable and later selections still get a chance to arrive.
+                    viewModel.recordPhotosImportFailure(name: name)
                 }
             }
+            wasCancelled = wasCancelled || Task.isCancelled
+            viewModel.finishPhotosImport(cancelled: wasCancelled)
             photosSelection = []
-            if !dataItems.isEmpty {
-                viewModel.importPhotosData(dataItems)
-            }
         }
+    }
+
+    private func cancelPhotosImport() {
+        photosImportTask?.cancel()
     }
 
     private var mainContent: some View {
@@ -94,7 +139,7 @@ public struct ContentView: View {
                         collection: viewModel.collection,
                         onOpen: viewModel.openActiveCollectionImage
                     )
-                    StatusBar(viewModel: viewModel)
+                    StatusBar(viewModel: viewModel, onCancelImport: cancelPhotosImport)
                 }
             } else {
                 HStack(spacing: 0) {
@@ -117,7 +162,7 @@ public struct ContentView: View {
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
 
-                        StatusBar(viewModel: viewModel)
+                            StatusBar(viewModel: viewModel, onCancelImport: cancelPhotosImport)
                     }
                 }
             }
@@ -194,6 +239,12 @@ public struct ContentView: View {
             if !viewModel.collection.items.isEmpty {
                 Button("Refresh Source Folder") {
                     viewModel.refreshSource()
+                }
+            }
+            if viewModel.photosImportProgress != nil {
+                Divider()
+                Button("Cancel Photos Import") {
+                    cancelPhotosImport()
                 }
             }
         } label: {

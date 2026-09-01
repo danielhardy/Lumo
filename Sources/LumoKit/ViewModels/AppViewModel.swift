@@ -5,6 +5,32 @@ import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct PhotosImportProgress: Equatable, Sendable {
+    enum Phase: String, Sendable {
+        case transferring
+        case inserting
+
+        var label: String {
+            switch self {
+            case .transferring: return "Transferring"
+            case .inserting: return "Adding"
+            }
+        }
+    }
+
+    let total: Int
+    var processed: Int
+    var imported: Int
+    var failed: Int
+    var currentName: String?
+    var phase: Phase
+
+    var fraction: Double {
+        guard total > 0 else { return 1 }
+        return min(1, Double(processed) / Double(total))
+    }
+}
+
 /// Central state for the Lumo app.
 @MainActor
 public final class AppViewModel: ObservableObject {
@@ -252,6 +278,10 @@ public final class AppViewModel: ObservableObject {
     @Published var errorMessage: String?
 
     @Published var isPhotosPickerPresented: Bool = false
+    /// Non-nil while the Photos picker task is transferring payloads. The collection itself keeps
+    /// successful originals visible as soon as they arrive; this state only describes the picker
+    /// operation and is cleared once the provider has finished or cancellation was requested.
+    @Published private(set) var photosImportProgress: PhotosImportProgress?
 
     // MARK: - Owned state
 
@@ -444,7 +474,10 @@ public final class AppViewModel: ObservableObject {
     /// Decode an image **off the main actor**, then publish it and render the
     /// previews. RAW demosaicing is expensive enough (hundreds of ms) that
     /// doing it inline would freeze the window on every ←/→ step.
-    private func load(name: String, url: URL?, data: Data?, assetID: PhotoAssetID? = nil) {
+    private func load(
+        name: String, url: URL?, data: Data?, assetID: PhotoAssetID? = nil,
+        traceQuality: String = "open"
+    ) {
         let assetID = assetID ?? (url.map(PhotoAssetID.file) ?? data.map(PhotoAssetID.data) ?? .data(Data()))
         endUndoGrouping()
         saveActiveDocument()
@@ -496,7 +529,9 @@ public final class AppViewModel: ObservableObject {
                         return .success(try ImageDecoder.load(from: url))
                     }
                     if let data {
-                        return .success(try ImageDecoder.load(from: data, name: name))
+                        return .success(try ImageDecoder.load(
+                            from: data, name: name, traceQuality: traceQuality
+                        ))
                     }
                     return .failure(ImageError.cannotLoad(name))
                 } catch {
@@ -576,6 +611,64 @@ public final class AppViewModel: ObservableObject {
 
     func importFromPhotos() {
         isPhotosPickerPresented = true
+    }
+
+    func beginPhotosImport(totalCount: Int) {
+        collection.beginDataImport()
+        photosImportProgress = PhotosImportProgress(
+            total: max(0, totalCount), processed: 0, imported: 0, failed: 0,
+            currentName: nil, phase: .transferring
+        )
+        statusMessage = "Importing Photos 0/\(max(0, totalCount))…"
+    }
+
+    func updatePhotosImportPhase(_ phase: PhotosImportProgress.Phase, name: String) {
+        guard var progress = photosImportProgress else { return }
+        progress.phase = phase
+        progress.currentName = name
+        photosImportProgress = progress
+        statusMessage = "\(phase.label) \(name)  \(progress.processed)/\(progress.total)…"
+    }
+
+    /// Append one transferred item and open the first successful item immediately. The payload is
+    /// moved into the collection's source record; no batch array is retained by this method.
+    func appendPhotosImport(
+        _ item: ImageCollection.PhotoImportItem, ordinal: Int
+    ) {
+        guard var progress = photosImportProgress else { return }
+        updatePhotosImportPhase(.inserting, name: item.name)
+        let assetID = collection.appendDataImport(item, ordinal: ordinal)
+        progress.processed += 1
+        progress.imported += 1
+        progress.currentName = item.name
+        progress.phase = .transferring
+        photosImportProgress = progress
+        statusMessage = "Imported \(progress.processed)/\(progress.total)  \(item.name)…"
+
+        if collection.importedDataCount == 1 {
+            load(name: item.name, url: nil, data: item.data, assetID: assetID,
+                 traceQuality: "photosImport")
+        }
+    }
+
+    func recordPhotosImportFailure(name: String) {
+        guard var progress = photosImportProgress else { return }
+        progress.processed += 1
+        progress.failed += 1
+        progress.currentName = name
+        progress.phase = .transferring
+        photosImportProgress = progress
+        statusMessage = "Skipped \(name)  \(progress.processed)/\(progress.total)…"
+    }
+
+    func finishPhotosImport(cancelled: Bool) {
+        collection.finishDataImport()
+        guard let progress = photosImportProgress else { return }
+        let suffix = progress.failed == 0 ? "" : ", \(progress.failed) skipped"
+        statusMessage = cancelled
+            ? "Photos import cancelled — \(progress.imported) imported\(suffix)"
+            : "Photos import complete — \(progress.imported) imported\(suffix)"
+        photosImportProgress = nil
     }
 
     func importPhotosData(_ items: [(name: String, data: Data)]) {

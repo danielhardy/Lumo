@@ -64,6 +64,11 @@ enum Thumbnails {
 
     /// Generate a thumbnail from in-memory data (Photos imports).
     static func generate(from data: Data, maxPixelSize: Int = defaultMaxPixelSize) -> NSImage? {
+        var interval = LumoSignpostInterval(
+            .photoThumbnail,
+            context: LumoTraceContext(sourceFingerprint: "data:" + String(data.count), quality: "thumbnail")
+        )
+        defer { interval.end() }
         guard maxPixelSize > 0 else { return nil }
         let sourceIdentity = ImageSource(data: data, nativeExtent: .zero)
         let key = cacheKey(source: RenderSourceFingerprint(sourceIdentity).value, maxPixelSize: maxPixelSize)

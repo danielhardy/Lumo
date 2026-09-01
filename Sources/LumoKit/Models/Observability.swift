@@ -17,6 +17,9 @@ enum LumoWorkflowStage: CaseIterable {
     case histogram
     case export
     case liveEdit
+    case photoTransfer
+    case photoThumbnail
+    case photoCollectionInsert
 
     var name: StaticString {
         switch self {
@@ -29,6 +32,9 @@ enum LumoWorkflowStage: CaseIterable {
         case .histogram: return "Histogram"
         case .export: return "Export"
         case .liveEdit: return "LiveEdit"
+        case .photoTransfer: return "PhotoTransfer"
+        case .photoThumbnail: return "PhotoThumbnail"
+        case .photoCollectionInsert: return "PhotoCollectionInsert"
         }
     }
 }

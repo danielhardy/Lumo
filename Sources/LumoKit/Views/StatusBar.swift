@@ -5,14 +5,30 @@ import SwiftUI
 
 struct StatusBar: View {
     @ObservedObject var viewModel: AppViewModel
+    var onCancelImport: () -> Void = {}
 
     var body: some View {
         HStack(spacing: 0) {
             // Status message
-            Text(viewModel.statusMessage)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
+            if let progress = viewModel.photosImportProgress {
+                ProgressView(value: progress.fraction)
+                    .frame(width: 110)
+                    .controlSize(.small)
+                Text("\(progress.phase.label) \(progress.processed)/\(progress.total)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .padding(.leading, 8)
+                Button("Cancel") { onCancelImport() }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .padding(.leading, 8)
+            } else {
+                Text(viewModel.statusMessage)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
 
             Spacer()
 

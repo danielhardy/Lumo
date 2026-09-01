@@ -5,6 +5,21 @@ import AppKit
 @MainActor
 final class ImageCollection: ObservableObject {
 
+    /// A Photos picker payload. The local identifier is preferred for durable edit identity; the
+    /// ordinal fallback keeps two picker items with identical bytes distinct when the provider does
+    /// not expose an identifier.
+    struct PhotoImportItem: Sendable, Equatable {
+        let name: String
+        let data: Data
+        let localIdentifier: String?
+
+        init(name: String, data: Data, localIdentifier: String? = nil) {
+            self.name = name
+            self.data = data
+            self.localIdentifier = localIdentifier
+        }
+    }
+
     struct Item: Identifiable {
         var asset: PhotoAsset
         var thumbnail: NSImage?
@@ -550,8 +565,20 @@ final class ImageCollection: ObservableObject {
     /// its thumbnails inline and is easy to miss when the thumbnail path moves — which is why
     /// `docs/PHASE2_SPEC.md` §6 names both explicitly. Step 7 pointed both at `Thumbnails`.
     func addFromData(_ dataItems: [(name: String, data: Data)]) {
+        beginDataImport()
+        for (ordinal, item) in dataItems.enumerated() {
+            appendDataImport(
+                PhotoImportItem(name: item.name, data: item.data), ordinal: ordinal
+            )
+        }
+        finishDataImport()
+    }
+
+    /// Start a streamed Photos import. Items are published as they arrive instead of waiting for
+    /// the picker to transfer the entire selection, so the first asset can be opened immediately
+    /// and one failed/cancelled transfer does not discard earlier successes.
+    func beginDataImport() {
         scanGeneration &+= 1
-        let generation = scanGeneration
         cancelThumbnailWork()
         scanTask?.cancel()
         scanTask = nil
@@ -565,33 +592,44 @@ final class ImageCollection: ObservableObject {
         isScanning = false
         scanWarnings = []
         startMetadataLoading()
+    }
 
-        var newItems: [Item] = []
-        for (ordinal, item) in dataItems.enumerated() {
-            // A Photos import is a collection of distinct assets even when two assets contain
-            // identical bytes. Content-addressed IDs are correct for a one-off data source, but
-            // would collapse two selected Photos items into one edit destination here.
-            let source = PhotoAssetSource(
-                data: item.data,
-                id: .imported(data: item.data, name: item.name, ordinal: ordinal)
-            )
-            newItems.append(Item(
-                asset: restoredCullingState(for: PhotoAsset(
-                    source: source,
-                    filename: item.name,
-                    fileType: URL(fileURLWithPath: item.name).pathExtension
-                )),
-                metadata: nil
-            ))
-        }
-        self.items = newItems
+    /// Append one full-fidelity Photos payload to the live collection. The Data is retained as the
+    /// original source bytes; thumbnails are generated separately from the embedded preview and
+    /// never replace the source.
+    @discardableResult
+    func appendDataImport(_ item: PhotoImportItem, ordinal: Int) -> PhotoAssetID {
+        let identifier = item.localIdentifier.map(PhotoAssetID.photos)
+            ?? .imported(data: item.data, name: item.name, ordinal: ordinal)
+        let source = PhotoAssetSource(data: item.data, id: identifier)
+        let asset = restoredCullingState(for: PhotoAsset(
+            source: source,
+            filename: item.name,
+            fileType: URL(fileURLWithPath: item.name).pathExtension
+        ))
+        var interval = LumoSignpostInterval(
+            .photoCollectionInsert,
+            context: LumoTraceContext(sourceFingerprint: identifier.raw, quality: "photosImport")
+        )
+        items.append(Item(asset: asset, metadata: nil))
         reconcileSelection()
-        self.isActive = !items.isEmpty
-        for item in newItems { enqueueMetadata(for: item, generation: generation) }
+        isActive = true
+        enqueueMetadata(for: items[items.count - 1], generation: scanGeneration)
+        enqueueThumbnails()
+        interval.end()
+        return identifier
+    }
+
+    /// Finish a streamed import after the picker task has transferred all items it can. Deferred
+    /// metadata still drains the values already queued before its stream is closed.
+    func finishDataImport() {
         metadataContinuation?.finish()
         metadataContinuation = nil
         enqueueThumbnails()
     }
+
+    /// Number of source items currently retained by a streamed import.
+    var importedDataCount: Int { items.count }
 
     // MARK: - Navigation
 
