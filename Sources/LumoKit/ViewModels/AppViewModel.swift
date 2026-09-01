@@ -286,6 +286,10 @@ public final class AppViewModel: ObservableObject {
     let previewSurface = PreviewSurface()
     let originalPreviewSurface = PreviewSurface()
 
+    /// Transient canvas presentation state. It is intentionally separate from `document`: zoom,
+    /// pan, fit, and fill are how the editor is viewed, never edits that should reach export.
+    @Published private(set) var canvasNavigation = CanvasNavigation()
+
     /// Inspector visibility. Computing the histogram is gated on this — plus on the Info tab being
     /// the one on screen — so we don't tally pixels for a panel nobody's looking at.
     @Published var isInspectorPresented: Bool = false {
@@ -614,6 +618,7 @@ public final class AppViewModel: ObservableObject {
         previewCoordinator.cancel()
         previewSurface.clear()
         originalPreviewSurface.clear()
+        canvasNavigation.reset()
         // Do not let the previous surface briefly show the photo we are leaving while the new
         // source is being decoded.
         sourceImage = nil
@@ -1217,6 +1222,20 @@ public final class AppViewModel: ObservableObject {
     private var previewBackingSize = CGSize(width: 1600, height: 1200)
     private static let intensityDebounceMs = 60
 
+    /// Request enough source detail for the current display scale while leaving the final
+    /// placement to `PreviewSurfaceView`. The coalescing coordinator keeps a zoom gesture from
+    /// building a queue of obsolete high-resolution renders.
+    private var previewRenderTargetSize: CGSize {
+        guard let imageSource else { return previewBackingSize }
+        let multiplier = canvasNavigation.renderResolutionMultiplier(
+            imageExtent: imageSource.nativeExtent, viewportSize: previewBackingSize
+        )
+        return CGSize(
+            width: previewBackingSize.width * multiplier,
+            height: previewBackingSize.height * multiplier
+        )
+    }
+
     /// What the main preview panel should currently show, as a render request.
     ///
     /// While Space is held that is the **comparison baseline** — the same document with the look
@@ -1245,7 +1264,7 @@ public final class AppViewModel: ObservableObject {
         let (requested, look) = displayRequest
         previewCoordinator.submit(RenderRequest(
                 source: imageSource, document: requested, lut: look,
-                targetSize: previewBackingSize, quality: .preview, output: .raster, space: .current
+                targetSize: previewRenderTargetSize, quality: .preview, output: .raster, space: .current
             ), phase: .settled)
     }
 
@@ -1256,7 +1275,7 @@ public final class AppViewModel: ObservableObject {
         let (requested, lut) = displayRequest
         previewCoordinator.submit(RenderRequest(
             source: imageSource, document: requested, lut: lut,
-            targetSize: previewBackingSize, quality: .interactive, output: .raster, space: .current
+            targetSize: previewRenderTargetSize, quality: .interactive, output: .raster, space: .current
         ), phase: .interactive)
     }
 
@@ -1299,6 +1318,58 @@ public final class AppViewModel: ObservableObject {
         previewDebounceTask = nil
         previewCoordinator.endInteraction()
         endUndoGrouping()
+    }
+
+    // MARK: - Canvas navigation
+
+    func fitCanvas() {
+        canvasNavigation.fit()
+        schedulePreview()
+    }
+
+    func fillCanvas() {
+        canvasNavigation.fill()
+        schedulePreview()
+    }
+
+    func resetCanvas() {
+        canvasNavigation.reset()
+        schedulePreview()
+    }
+
+    func setCanvasZoom(_ value: CGFloat) {
+        let oldValue = canvasNavigation.zoom
+        canvasNavigation.setZoom(value)
+        guard canvasNavigation.zoom != oldValue else { return }
+        if isPreviewInteractionActive {
+            scheduleInteractivePreview()
+        } else {
+            scheduleSettledPreviewAfterDebounce()
+        }
+    }
+
+    func zoomCanvas(by factor: CGFloat) {
+        guard factor.isFinite, factor > 0 else { return }
+        setCanvasZoom(canvasNavigation.zoom * factor)
+    }
+
+    func beginCanvasInteraction() {
+        beginPreviewInteraction()
+    }
+
+    func endCanvasInteraction() {
+        endPreviewInteraction()
+    }
+
+    /// Pan is a presentation-only operation. It updates the Metal transform immediately and does
+    /// not wait for a new render; zoom is the operation that asks the coordinator for more detail.
+    func panCanvas(by delta: CGSize, viewportSize: CGSize) {
+        guard let imageSource else { return }
+        canvasNavigation.pan(
+            by: CGSize(width: delta.width, height: -delta.height),
+            imageExtent: CGRect(origin: .zero, size: imageSource.nativeExtent),
+            viewportSize: viewportSize
+        )
     }
 
     /// Read-only seam for controls implemented in extensions. Keeping the stored interaction flag
@@ -1397,7 +1468,7 @@ public final class AppViewModel: ObservableObject {
             return
         }
         let baseline = document.originalForComparison
-        let box = previewBackingSize
+        let box = previewRenderTargetSize
         let sourceRevision = self.sourceRevision
         let documentRevision = self.documentRevision
 

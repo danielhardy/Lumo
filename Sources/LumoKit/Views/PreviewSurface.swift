@@ -87,10 +87,14 @@ final class PreviewSurface: ObservableObject {
 /// Persistent CAMetalLayer/MTKView destination for Core Image output.
 struct PreviewSurfaceView: NSViewRepresentable {
     @ObservedObject var surface: PreviewSurface
+    var navigation: CanvasNavigation = CanvasNavigation()
+    var onScrollZoom: ((CGFloat) -> Void)?
 
     func makeNSView(context: Context) -> MTKView {
         let view = PreviewMTKView(frame: .zero, device: context.coordinator.device)
         context.coordinator.surface = surface
+        context.coordinator.navigation = navigation
+        view.onScrollZoom = onScrollZoom
         view.delegate = context.coordinator
         view.enableSetNeedsDisplay = true
         view.isPaused = true
@@ -102,6 +106,8 @@ struct PreviewSurfaceView: NSViewRepresentable {
 
     func updateNSView(_ view: MTKView, context: Context) {
         context.coordinator.surface = surface
+        context.coordinator.navigation = navigation
+        if let view = view as? PreviewMTKView { view.onScrollZoom = onScrollZoom }
         // SwiftUI may call updateNSView before the MTKView has a drawable (notably while a
         // NavigationSplitView is replacing the selected image). The delegate will retry when the
         // view is laid out and when it receives its next drawable instead of losing this revision.
@@ -116,6 +122,7 @@ struct PreviewSurfaceView: NSViewRepresentable {
         let commandQueue: MTLCommandQueue = RenderEngine.presentationDevice.makeCommandQueue()!
         weak var surface: PreviewSurface?
         weak var view: MTKView?
+        var navigation = CanvasNavigation()
         private var lastDrawnRevision: UInt64?
         private var lastDrawableSize: (width: Int, height: Int)?
         /// `makeCIImage` builds a lazy Core Image graph, so its completion is not the same thing
@@ -148,26 +155,19 @@ struct PreviewSurfaceView: NSViewRepresentable {
                   image.extent.width > 0, image.extent.height > 0,
                   image.extent.width.isFinite, image.extent.height.isFinite else { return }
 
-            // Render into the drawable's actual pixel dimensions. The request is based on the
-            // whole preview canvas, while side-by-side panels have only half that width; using the
-            // image extent directly can therefore clip or leave a partially updated texture.
+            // Render into the drawable's actual pixel dimensions. The display transform is applied
+            // here, after the requested render has been produced, so fit/fill/zoom/pan never alter
+            // the source or export pipeline.
             let extent = image.extent
-            let scale = min(destination.width / extent.width, destination.height / extent.height)
-            let fittedWidth = extent.width * scale
-            let fittedHeight = extent.height * scale
-            let transform = CGAffineTransform(
-                a: scale, b: 0, c: 0, d: scale,
-                tx: (destination.width - fittedWidth) / 2 - extent.minX * scale,
-                ty: (destination.height - fittedHeight) / 2 - extent.minY * scale
-            )
-            let fitted = image.transformed(by: transform)
+            let transform = navigation.transform(imageExtent: extent, viewportSize: destination.size)
+            let displayed = image.transformed(by: transform.affineTransform(for: extent))
             // Deliberately dark image-presentation letterbox. This is scoped to the Metal
             // drawable so an image's surrounding SwiftUI shell can follow light/dark mode;
             // changing it would alter rendered presentation pixels rather than window chrome.
             let background = CIImage(
                 color: CIColor(red: 0.07, green: 0.07, blue: 0.08, alpha: 1)
             ).cropped(to: destination)
-            let output = fitted.composited(over: background)
+            let output = displayed.composited(over: background)
             let presentationRevision = surface.pendingPresentationRevision()
             isDrawing = true
             context.render(output, to: drawable.texture, commandBuffer: commandBuffer,
@@ -222,6 +222,17 @@ struct PreviewSurfaceView: NSViewRepresentable {
 /// A paused MTKView still needs a display request after it first enters a window. This subclass
 /// covers the case where SwiftUI's update arrived before the view had a drawable.
 private final class PreviewMTKView: MTKView {
+    var onScrollZoom: ((CGFloat) -> Void)?
+
+    override func scrollWheel(with event: NSEvent) {
+        let delta = event.scrollingDeltaY
+        if delta.isFinite, abs(delta) > 0.001 {
+            onScrollZoom?(pow(1.01, delta))
+        } else {
+            super.scrollWheel(with: event)
+        }
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         setNeedsDisplay(bounds)

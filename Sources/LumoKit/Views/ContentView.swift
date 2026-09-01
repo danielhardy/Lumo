@@ -212,6 +212,22 @@ public struct ContentView: View {
         }
         .help("Toggle side-by-side comparison (V)")
 
+        // Canvas navigation is presentation-only; these controls never touch the edit document.
+        Menu {
+            Button("Fit") { viewModel.fitCanvas() }
+            Button("Fill") { viewModel.fillCanvas() }
+            Divider()
+            ForEach([0.25, 0.5, 1.0, 2.0, 4.0, 8.0], id: \.self) { zoom in
+                Button("\(Int(zoom * 100))%") { viewModel.setCanvasZoom(CGFloat(zoom)) }
+            }
+            Divider()
+            Button("Reset View") { viewModel.resetCanvas() }
+        } label: {
+            Label("\(viewModel.canvasNavigation.zoomPercent)%", systemImage: "magnifyingglass")
+        }
+        .help("Canvas zoom: fit, fill, or explicit zoom")
+        .disabled(viewModel.sourceImage == nil)
+
         // Source folder browser
         Button {
             viewModel.toggleSourceBrowser()

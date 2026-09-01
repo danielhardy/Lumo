@@ -4,6 +4,10 @@ import SwiftUI
 /// and single-image mode. Hold Space to flash original in single mode.
 struct PreviewView: View {
     @ObservedObject var viewModel: AppViewModel
+    @State private var dragTranslation: CGSize = .zero
+    @State private var magnification: CGFloat = 1
+    @State private var isDraggingCanvas = false
+    @State private var isMagnifyingCanvas = false
 
     /// The shell around the Metal image surface follows the window appearance. The Metal
     /// surface's letterbox remains intentionally dark because it is part of image presentation,
@@ -74,56 +78,110 @@ struct PreviewView: View {
         ZStack(alignment: labelSide == .leading ? .topLeading : .topTrailing) {
             bgColor
 
-            if surface.image != nil {
-                PreviewSurfaceView(surface: surface)
-                    .aspectRatio(surface.image?.extent.size ?? CGSize(width: 1, height: 1),
-                                 contentMode: .fit)
-                    .frame(maxWidth: width, maxHeight: .infinity)
-            }
+            if surface.image != nil { canvasSurface(surface) }
 
             ComparisonBadge(text: label)
                 .padding(12)
         }
+        .frame(width: width)
         .clipped()
     }
 
     // MARK: - Single image
 
     private var singleView: some View {
-        ZStack {
-            if viewModel.previewSurface.image != nil {
-                PreviewSurfaceView(surface: viewModel.previewSurface)
-                    .aspectRatio(viewModel.previewSurface.image?.extent.size ?? CGSize(width: 1, height: 1),
-                                 contentMode: .fit)
-                    .padding(8)
-            }
-
-            if viewModel.previewSurface.image != nil {
-                // Comparison badge
-                if viewModel.isShowingOriginal && viewModel.isComparisonAvailable {
-                    VStack {
-                        HStack {
-                            ComparisonBadge(text: "Original")
-                            Spacer()
-                        }
-                        Spacer()
-                    }
-                    .padding(20)
+        GeometryReader { geometry in
+            ZStack {
+                if viewModel.previewSurface.image != nil {
+                    canvasSurface(viewModel.previewSurface)
+                        .padding(8)
                 }
 
-                // Look name badge
-                if !viewModel.isShowingOriginal, let look = viewModel.selectedLook {
-                    VStack {
-                        HStack {
+                if viewModel.previewSurface.image != nil {
+                    // Comparison badge
+                    if viewModel.isShowingOriginal && viewModel.isComparisonAvailable {
+                        VStack {
+                            HStack {
+                                ComparisonBadge(text: "Original")
+                                Spacer()
+                            }
                             Spacer()
-                            ComparisonBadge(text: look.name)
                         }
-                        Spacer()
+                        .padding(20)
                     }
-                    .padding(20)
+
+                    // Look name badge
+                    if !viewModel.isShowingOriginal, let look = viewModel.selectedLook {
+                        VStack {
+                            HStack {
+                                Spacer()
+                                ComparisonBadge(text: look.name)
+                            }
+                            Spacer()
+                        }
+                        .padding(20)
+                    }
                 }
             }
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
+    }
+
+    /// A full-panel surface with presentation-only mouse and trackpad navigation. The same
+    /// navigation value is passed to both comparison panels, so before/after remains registered.
+    private func canvasSurface(_ surface: PreviewSurface) -> some View {
+        GeometryReader { geometry in
+            PreviewSurfaceView(
+                surface: surface,
+                navigation: viewModel.canvasNavigation,
+                onScrollZoom: { factor in viewModel.zoomCanvas(by: factor) }
+            )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .gesture(dragGesture(viewportSize: geometry.size))
+                .simultaneousGesture(magnificationGesture(viewportSize: geometry.size))
+        }
+    }
+
+    private func dragGesture(viewportSize: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 2)
+            .onChanged { value in
+                if !isDraggingCanvas {
+                    isDraggingCanvas = true
+                    dragTranslation = .zero
+                }
+                let delta = CGSize(
+                    width: value.translation.width - dragTranslation.width,
+                    height: value.translation.height - dragTranslation.height
+                )
+                dragTranslation = value.translation
+                viewModel.panCanvas(by: delta, viewportSize: viewportSize)
+            }
+            .onEnded { _ in
+                guard isDraggingCanvas else { return }
+                isDraggingCanvas = false
+                dragTranslation = .zero
+            }
+    }
+
+    private func magnificationGesture(viewportSize: CGSize) -> some Gesture {
+        MagnificationGesture()
+            .onChanged { value in
+                if !isMagnifyingCanvas {
+                    isMagnifyingCanvas = true
+                    magnification = 1
+                    viewModel.beginCanvasInteraction()
+                }
+                guard value.isFinite, value > 0 else { return }
+                viewModel.zoomCanvas(by: value / magnification)
+                magnification = value
+            }
+            .onEnded { _ in
+                guard isMagnifyingCanvas else { return }
+                isMagnifyingCanvas = false
+                magnification = 1
+                viewModel.endCanvasInteraction()
+            }
     }
 
     private func reportBackingSize(_ points: CGSize) {
