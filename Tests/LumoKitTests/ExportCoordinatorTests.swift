@@ -71,7 +71,7 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
 
         let destination = tempDirectory.appendingPathComponent("out.jpg")
         coordinator.performExport(
-            source: try makeSource(), document: EditDocument(), lut: nil, to: destination
+            source: try makeSource(), document: EditDocument(), lut: nil, format: .jpeg, to: destination
         )
 
         try await waitUntil { !coordinator.isExporting }
@@ -90,7 +90,7 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
             .appendingPathComponent("no-such-folder")
             .appendingPathComponent("out.jpg")
         coordinator.performExport(
-            source: try makeSource(), document: EditDocument(), lut: nil, to: destination
+            source: try makeSource(), document: EditDocument(), lut: nil, format: .jpeg, to: destination
         )
 
         try await waitUntil { !coordinator.isExporting }
@@ -115,7 +115,7 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
 
         let destination = tempDirectory.appendingPathComponent("out.jpg")
         coordinator.performExport(
-            source: try makeSource(), document: EditDocument(), lut: nil, to: destination
+            source: try makeSource(), document: EditDocument(), lut: nil, format: .jpeg, to: destination
         )
 
         try await waitUntil { !coordinator.isExporting }
@@ -129,13 +129,14 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
 
     func testBatchExportWritesEveryImage() async throws {
         let coordinator = ExportCoordinator()
-        coordinator.format = .png
         coordinator.onError = { XCTFail("unexpected error: \($0)") }
 
         let items = try makeSources(["a", "b", "c"])
         let folder = try destinationFolder()
 
-        let outcome = await coordinator.performBatchExport(items, document: EditDocument(), lut: nil, to: folder)
+        let outcome = await coordinator.performBatchExport(
+            items, document: EditDocument(), lut: nil, format: .png, to: folder
+        )
 
         XCTAssertEqual(outcome, .init(exported: 3, failed: 0, total: 3))
         for name in ["a", "b", "c"] {
@@ -150,7 +151,6 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
 
     func testBatchExportAppliesTheLUTToTheFilenames() async throws {
         let coordinator = ExportCoordinator()
-        coordinator.format = .jpeg
         let lutURL = try Fixtures.writeCube(
             Fixtures.identityCubeText(size: 2), named: "My Look.cube", in: tempDirectory
         )
@@ -158,7 +158,9 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
 
         let items = try makeSources(["shot"])
         let folder = try destinationFolder()
-        _ = await coordinator.performBatchExport(items, document: EditDocument(), lut: lut, to: folder)
+        _ = await coordinator.performBatchExport(
+            items, document: EditDocument(), lut: lut, format: .jpeg, to: folder
+        )
 
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: folder.appendingPathComponent("shot_My_Look.jpg").path),
@@ -179,7 +181,9 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
         items.insert(ExportCoordinator.BatchItem(url: broken, data: nil, name: "broken"), at: 1)
 
         let folder = try destinationFolder()
-        let outcome = await coordinator.performBatchExport(items, document: EditDocument(), lut: nil, to: folder)
+        let outcome = await coordinator.performBatchExport(
+            items, document: EditDocument(), lut: nil, format: .jpeg, to: folder
+        )
 
         XCTAssertEqual(outcome, .init(exported: 2, failed: 1, total: 3))
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("good1.jpg").path))
@@ -206,7 +210,9 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
         ]
 
         let folder = try destinationFolder()
-        let outcome = await coordinator.performBatchExport(items, document: EditDocument(), lut: nil, to: folder)
+        let outcome = await coordinator.performBatchExport(
+            items, document: EditDocument(), lut: nil, format: .jpeg, to: folder
+        )
 
         XCTAssertEqual(outcome.exported, 2)
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("DSC001.jpg").path))
@@ -223,7 +229,9 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
 
         let items = try makeSources(["a", "b"])
         let folder = try destinationFolder()
-        _ = await coordinator.performBatchExport(items, document: EditDocument(), lut: nil, to: folder)
+        _ = await coordinator.performBatchExport(
+            items, document: EditDocument(), lut: nil, format: .jpeg, to: folder
+        )
 
         XCTAssertTrue(statuses.contains("Exporting 0 of 2…"), "\(statuses)")
         XCTAssertTrue(statuses.contains("Exporting 2 of 2…"), "\(statuses)")
@@ -239,10 +247,9 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
 
         func exportSum(intensity: Double, named name: String) async throws -> CGFloat {
             let coordinator = ExportCoordinator()
-            coordinator.format = .png
             let document = EditDocument(lut: LUTSettings(lutID: lut.lutID, intensity: intensity))
             _ = await coordinator.performBatchExport(
-                try makeSources([name]), document: document, lut: lut, to: folder
+                try makeSources([name]), document: document, lut: lut, format: .png, to: folder
             )
             let exported = folder.appendingPathComponent("\(name)_toBlack.png")
             let image = try XCTUnwrap(CIImage(contentsOf: exported))

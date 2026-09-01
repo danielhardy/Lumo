@@ -67,14 +67,14 @@ final class ExportNamingTests: TempDirectoryTestCase {
         }
     }
 
-    /// The promotion contract, pinned in Step 7 when `ExportFormat` moved out of `ImageProcessor`.
+    /// The export-flow contract, pinned in Step 7 when `ExportFormat` moved out of `ImageProcessor`.
     ///
     /// `docs/PHASE2_SPEC.md` §7 flagged this move as a risk because everything it depends on fails
     /// *quietly*: a `Picker` whose rows share an `id` still compiles and still draws, it just stops
     /// tracking the selection, and a changed raw value only shows up as a wrong label. Nothing else
     /// in the suite would notice either.
-    func testTheToolbarPickerContractSurvivedThePromotion() {
-        // The order and labels the toolbar segmented control shows.
+    func testTheExportFormatPickerContractSurvivedThePromotion() {
+        // The order and labels the export-flow format control shows.
         XCTAssertEqual(ExportFormat.allCases.map(\.rawValue), ["TIFF", "JPEG", "PNG"])
 
         // What the Picker keys its rows by. Duplicates break selection silently.

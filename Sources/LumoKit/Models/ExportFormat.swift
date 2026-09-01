@@ -4,12 +4,11 @@ import UniformTypeIdentifiers
 /// The file formats Lumo writes.
 ///
 /// Promoted out of `ImageProcessor` in Step 7, when that type dissolved. `docs/PHASE2_SPEC.md` §7
-/// flagged the promotion as a risk worth carrying deliberately: the toolbar `Picker` iterates
-/// `allCases` and keys rows by `id`, and `NSSavePanel` seeds its filename from `rawValue` via
+/// flagged the promotion as a risk worth carrying deliberately: the export flow presents
+/// `allCases` and keys format choices by `id`, while `NSSavePanel` seeds its filename from
 /// `fileExtension`. Dropping `Identifiable` or changing the raw values would break both — quietly,
-/// because a `Picker` with duplicate or missing IDs still compiles. So `CaseIterable`,
-/// `Identifiable`, `Sendable` and the exact raw strings all come across unchanged, and the move
-/// happens in one commit with every reference updated.
+/// because a picker with duplicate or missing IDs still compiles. So `CaseIterable`, `Identifiable`,
+/// `Sendable` and the exact raw strings all remain part of the export-format contract.
 enum ExportFormat: String, CaseIterable, Identifiable, Sendable {
     case tiff = "TIFF"
     case jpeg = "JPEG"

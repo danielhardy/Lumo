@@ -421,10 +421,6 @@ public final class AppViewModel: ObservableObject {
     // Convenience passthroughs so views and the menu don't have to know which
     // collaborator owns a given piece of state.
     var isExporting: Bool { export.isExporting }
-    var exportFormat: ExportFormat {
-        get { export.format }
-        set { export.format = newValue }
-    }
 
     /// The renderer. An `any RenderEngining` rather than the concrete actor so a test can drive the
     /// preview flow without a GPU — the reason Step 4 introduced the protocol.

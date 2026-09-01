@@ -109,9 +109,6 @@ final class ExportCutoverTests: TempDirectoryTestCase {
     func testTheDocumentReachesTheEncoderAtFullResolution() async throws {
         let fake = FakeRenderEngine()
         let coordinator = ExportCoordinator(engine: fake)
-        // Not the default format: `.jpeg` is what a coordinator starts with, so asserting `.jpeg`
-        // would pass against an encoder that ignored the picker entirely.
-        coordinator.format = .tiff
         coordinator.onError = { XCTFail("unexpected error: \($0)") }
 
         let lut = TestImages.warmLUT()
@@ -119,6 +116,7 @@ final class ExportCutoverTests: TempDirectoryTestCase {
         let source = try makeSource()
         coordinator.performExport(
             source: source, document: document, lut: lut,
+            format: .tiff,
             to: tempDirectory.appendingPathComponent("out.tif")
         )
         try await waitUntil("the export to finish") { !coordinator.isExporting }
@@ -144,7 +142,6 @@ final class ExportCutoverTests: TempDirectoryTestCase {
     func testBatchExportEncodesEveryItemFromTheSameDocument() async throws {
         let fake = FakeRenderEngine()
         let coordinator = ExportCoordinator(engine: fake)
-        coordinator.format = .png
         coordinator.onError = { XCTFail("unexpected error: \($0)") }
 
         let lut = TestImages.warmLUT()
@@ -155,7 +152,7 @@ final class ExportCutoverTests: TempDirectoryTestCase {
         }
 
         let outcome = await coordinator.performBatchExport(
-            items, document: document, lut: lut, to: try destinationFolder()
+            items, document: document, lut: lut, format: .png, to: try destinationFolder()
         )
         XCTAssertEqual(outcome, .init(exported: 3, failed: 0, total: 3))
 
@@ -187,7 +184,6 @@ final class ExportCutoverTests: TempDirectoryTestCase {
     /// catch both halves being wrong together — the failure mode `docs/CODE_REVIEW.md` §5 names.
     func testExportedFileIsTheDocumentAtFullResolution() async throws {
         let coordinator = ExportCoordinator(engine: RenderEngine())
-        coordinator.format = .png   // lossless: a JPEG comparison would be measuring the encoder
         coordinator.onError = { XCTFail("unexpected error: \($0)") }
 
         let lut = TestImages.warmLUT()
@@ -195,7 +191,9 @@ final class ExportCutoverTests: TempDirectoryTestCase {
         let source = try makeSource()
         let destination = tempDirectory.appendingPathComponent("graded.png")
 
-        coordinator.performExport(source: source, document: document, lut: lut, to: destination)
+        coordinator.performExport(
+            source: source, document: document, lut: lut, format: .png, to: destination
+        )
         try await waitUntil("the export to finish") { !coordinator.isExporting }
 
         let written = try Pixels.decode(try Data(contentsOf: destination))
@@ -220,10 +218,11 @@ final class ExportCutoverTests: TempDirectoryTestCase {
 
         func export(_ document: EditDocument, lut: CubeLUT?, named name: String) async throws -> [UInt8] {
             let coordinator = ExportCoordinator(engine: engine)
-            coordinator.format = .png
             coordinator.onError = { XCTFail("unexpected error: \($0)") }
             let destination = tempDirectory.appendingPathComponent(name)
-            coordinator.performExport(source: source, document: document, lut: lut, to: destination)
+            coordinator.performExport(
+                source: source, document: document, lut: lut, format: .png, to: destination
+            )
             try await waitUntil("\(name) to be written") { !coordinator.isExporting }
             return try bytes(ofFileAt: destination)
         }
@@ -259,21 +258,23 @@ final class ExportCutoverTests: TempDirectoryTestCase {
 
         // Single.
         let single = ExportCoordinator(engine: engine)
-        single.format = .png
         single.onError = { XCTFail("unexpected error: \($0)") }
         let singleURL = tempDirectory.appendingPathComponent("single.png")
-        single.performExport(source: source, document: document, lut: lut, to: singleURL)
+        single.performExport(
+            source: source, document: document, lut: lut, format: .png, to: singleURL
+        )
         try await waitUntil("the single export") { !single.isExporting }
 
         // Batch, same document, and again with an empty one so "the document reached it" is
         // separable from "both paths agree".
         let batch = ExportCoordinator(engine: engine)
-        batch.format = .png
         batch.onError = { XCTFail("unexpected error: \($0)") }
         let folder = try destinationFolder("batch")
         let items = [ExportCoordinator.BatchItem(url: url, data: nil, name: "subject")]
-        _ = await batch.performBatchExport(items, document: document, lut: lut, to: folder)
-        _ = await batch.performBatchExport(items, document: EditDocument(), lut: nil, to: folder)
+        _ = await batch.performBatchExport(items, document: document, lut: lut, format: .png, to: folder)
+        _ = await batch.performBatchExport(
+            items, document: EditDocument(), lut: nil, format: .png, to: folder
+        )
 
         let batchGraded = try bytes(ofFileAt: folder.appendingPathComponent("subject_warm.png"))
         let batchPlain = try bytes(ofFileAt: folder.appendingPathComponent("subject.png"))

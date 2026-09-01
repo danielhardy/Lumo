@@ -27,7 +27,6 @@ import AppKit
 @MainActor
 final class ExportCoordinator: ObservableObject {
 
-    @Published var format: ExportFormat = .jpeg
     @Published private(set) var isExporting: Bool = false
     /// Progress (0...1) during a multi-image "Export All" run.
     @Published private(set) var batchProgress: Double = 0
@@ -47,6 +46,7 @@ final class ExportCoordinator: ObservableObject {
     /// Quality for the lossy encoders. Hardcoded as it always was; a UI for it is Step 12's
     /// export descriptor.
     private static let exportQuality: CGFloat = 0.95
+    private static let defaultFormat: ExportFormat = .jpeg
 
     // MARK: - Types
 
@@ -101,12 +101,20 @@ final class ExportCoordinator: ObservableObject {
         suggestedBaseName: String
     ) {
         let panel = NSSavePanel()
+        let formatPicker = ExportFormatAccessoryView(selectedFormat: Self.defaultFormat)
         panel.title = "Export"
-        panel.nameFieldStringValue = suggestedBaseName + "." + format.fileExtension
-        panel.allowedContentTypes = [format.utType]
+        panel.nameFieldStringValue = suggestedBaseName + "." + formatPicker.selectedFormat.fileExtension
+        panel.allowedContentTypes = [formatPicker.selectedFormat.utType]
+        formatPicker.onSelectionChanged = { [weak panel] format in
+            panel?.nameFieldStringValue = suggestedBaseName + "." + format.fileExtension
+            panel?.allowedContentTypes = [format.utType]
+        }
+        panel.accessoryView = formatPicker
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        performExport(source: source, document: document, lut: lut, to: url)
+        performExport(
+            source: source, document: document, lut: lut, format: formatPicker.selectedFormat, to: url
+        )
     }
 
     /// Encode `document` over `source` at full resolution and write it to `url`.
@@ -119,6 +127,7 @@ final class ExportCoordinator: ObservableObject {
         source: ImageSource,
         document: EditDocument,
         lut: CubeLUT?,
+        format: ExportFormat,
         to url: URL
     ) {
         isExporting = true
@@ -161,9 +170,12 @@ final class ExportCoordinator: ObservableObject {
         panel.canChooseDirectories = true
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
+        panel.accessoryView = ExportFormatAccessoryView(selectedFormat: Self.defaultFormat)
         guard panel.runModal() == .OK, let folder = panel.url else { return }
 
-        Task { await performBatchExport(items, document: document, lut: lut, to: folder) }
+        let format = (panel.accessoryView as? ExportFormatAccessoryView)?.selectedFormat
+            ?? Self.defaultFormat
+        Task { await performBatchExport(items, document: document, lut: lut, format: format, to: folder) }
     }
 
     /// The batch core. Renders each item through the engine with progress; an
@@ -182,6 +194,7 @@ final class ExportCoordinator: ObservableObject {
         _ items: [BatchItem],
         document: EditDocument,
         lut: CubeLUT?,
+        format: ExportFormat,
         to folder: URL
     ) async -> BatchOutcome {
         isExporting = true
@@ -189,21 +202,20 @@ final class ExportCoordinator: ObservableObject {
         let total = items.count
         onStatus?("Exporting 0 of \(total)…")
 
-        let fmt = format
         var exported = 0
         var failed = 0
 
         for (index, item) in items.enumerated() {
             if let source = Self.source(for: item) {
                 let base = Self.exportBaseName(source: item.name, lut: lut)
-                let dest = uniqueExportURL(in: folder, base: base, ext: fmt.fileExtension)
+                let dest = uniqueExportURL(in: folder, base: base, ext: format.fileExtension)
                 do {
                     var interval = LumoObservability.begin(.export, source: source, quality: .export)
                     defer { interval.end() }
                     let data = try await engine.render(RenderRequest(
                         source: source, document: document, lut: lut,
                         quality: .export,
-                        output: .encoded(format: fmt, quality: Self.exportQuality),
+                        output: .encoded(format: format, quality: Self.exportQuality),
                         space: .current
                     )).data
                     try await Self.write(data, to: dest)
@@ -258,6 +270,68 @@ final class ExportCoordinator: ObservableObject {
             return "Exported \(outcome.exported) image\(plural) to \(destination)"
         }
         return "Exported \(outcome.exported) of \(outcome.total) (\(outcome.failed) failed) to \(destination)"
+    }
+}
+
+// MARK: - Export format control
+
+/// The format choice belongs to the export flow, alongside the destination, rather than in the
+/// editor toolbar. Keeping this as an AppKit accessory also lets the Save panel update its filename
+/// extension and content-type filter as the user changes the explicit export choice.
+@MainActor
+private final class ExportFormatAccessoryView: NSView {
+    private let picker: NSSegmentedControl
+    var onSelectionChanged: ((ExportFormat) -> Void)?
+
+    init(selectedFormat: ExportFormat) {
+        picker = NSSegmentedControl(
+            labels: ExportFormat.allCases.map(\.rawValue),
+            trackingMode: .selectOne,
+            target: nil,
+            action: nil
+        )
+        super.init(frame: .zero)
+
+        let label = NSTextField(labelWithString: "Export format:")
+        label.setContentHuggingPriority(.required, for: .horizontal)
+
+        picker.translatesAutoresizingMaskIntoConstraints = false
+        picker.target = self
+        picker.action = #selector(selectionChanged)
+        picker.selectedSegment = ExportFormat.allCases.firstIndex(of: selectedFormat) ?? 0
+        picker.setAccessibilityLabel("Export format")
+        picker.setAccessibilityHelp("Choose TIFF, JPEG, or PNG for the exported image")
+
+        let stack = NSStackView(views: [label, picker])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 300, height: 28)
+    }
+
+    var selectedFormat: ExportFormat {
+        let index = picker.selectedSegment
+        guard ExportFormat.allCases.indices.contains(index) else { return .jpeg }
+        return ExportFormat.allCases[index]
+    }
+
+    @objc private func selectionChanged() {
+        onSelectionChanged?(selectedFormat)
     }
 }
 

@@ -440,15 +440,6 @@ final class AppViewModelTests: TempDirectoryTestCase {
 
     // MARK: - Passthroughs
 
-    func testExportFormatPassesThroughToTheCoordinator() {
-        let viewModel = AppViewModel()
-        XCTAssertEqual(viewModel.exportFormat, viewModel.export.format)
-
-        viewModel.exportFormat = .tiff
-        XCTAssertEqual(viewModel.export.format, .tiff,
-                       "the toolbar picker writes through to the coordinator")
-    }
-
     func testIsExportingReflectsTheCoordinator() {
         let viewModel = AppViewModel()
         XCTAssertFalse(viewModel.isExporting)

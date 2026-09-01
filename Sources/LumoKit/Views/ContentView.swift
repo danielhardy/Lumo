@@ -190,17 +190,6 @@ public struct ContentView: View {
 
         Divider()
 
-        // Format picker
-        Picker("Format", selection: $viewModel.exportFormat) {
-            ForEach(ExportFormat.allCases) { fmt in
-                Text(fmt.rawValue).tag(fmt)
-            }
-        }
-        .pickerStyle(.segmented)
-        .frame(width: 180)
-
-        Divider()
-
         // Crop is a committed edit, but its in-progress rectangle stays transient until Apply.
         Button {
             viewModel.toggleCropTool()
