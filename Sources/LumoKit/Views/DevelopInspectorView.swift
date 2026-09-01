@@ -12,7 +12,7 @@ import SwiftUI
 /// `if let capabilities = viewModel.rawCapabilities { … } else { notRAW }`, which read the probe's
 /// in-flight `nil` as "this file has no develop stage" and said exactly that, out loud, about a RAW —
 /// for the 25–170 ms the probe takes, on every ←/→ step through a folder of them, since
-/// `inspectorTab` is not reset on open. The distinction is drawn in the view model
+/// The active tab is repaired when a new source makes Develop unavailable. The distinction is drawn in the view model
 /// (`AppViewModel.DevelopPanelState`) rather than here: this repo has no SwiftUI view tests, so a
 /// state that exists only inside a `ViewBuilder` cannot be asserted.
 struct DevelopInspectorView: View {
@@ -35,6 +35,8 @@ struct DevelopInspectorView: View {
                 probing
             case .noDevelopStage:
                 notRAW
+            case .noSupportedControls:
+                noSupportedControls
             }
         }
     }
@@ -85,6 +87,22 @@ struct DevelopInspectorView: View {
             Text("No develop stage")
                 .font(.headline)
             Text("Develop controls come from the RAW decoder. This image is already rendered.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var noSupportedControls: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "camera.aperture")
+                .font(.largeTitle)
+                .foregroundStyle(.tertiary)
+            Text("No supported develop controls")
+                .font(.headline)
+            Text("This RAW decoder does not expose controls Lumo can edit.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

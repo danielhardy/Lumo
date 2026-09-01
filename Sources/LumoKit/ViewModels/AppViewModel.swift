@@ -73,14 +73,19 @@ public final class AppViewModel: ObservableObject {
     /// an image, at the cost of another cache whose invalidation nobody will remember.
     @Published private(set) var rawCapabilities: RAWCapabilities?
 
-    /// What the develop panel should be showing right now. **Three states, not two.**
+    /// Whether the capability answer belongs to the currently selected source. This is separate
+    /// from `rawCapabilities == nil`: a RAW can still be probing, or its decoder can answer that it
+    /// has no actionable develop controls.
+    @Published private(set) var capabilitiesProbeCompleted = false
+
+    /// What the develop panel should be showing right now. The probe state is distinct from a
+    /// completed answer that offers no usable controls.
     ///
-    /// `rawCapabilities` is `nil` in two situations that mean opposite things, and the panel used to
-    /// treat them as one. `refreshCapabilities()` clears it **synchronously** on every open and
-    /// refills it 25–170 ms later, so a RAW opened with the Develop tab already showing spent the
-    /// whole probe reading "No develop stage — Develop controls come from the RAW decoder. This image
-    /// is already rendered." That is a false statement about the file, and because `inspectorTab` is
-    /// not reset on open it was shown again on every ←/→ step through a folder of RAWs.
+    /// `rawCapabilities` is nil while probing and can also be nil after a decoder answers that it
+    /// has no actionable controls. `refreshCapabilities()` clears it synchronously on every open
+    /// and refills it 25–170 ms later, so a RAW opened with the Develop tab already showing retains an
+    /// honest loading state instead of briefly claiming "No develop stage". When a new source makes
+    /// the active tab unavailable, navigation repairs the selection to Info.
     ///
     /// Deriving the state here rather than in the view is what makes it testable: this repo has no
     /// SwiftUI view tests, so a distinction that lives only in a `ViewBuilder` cannot be asserted.
@@ -90,7 +95,12 @@ public final class AppViewModel: ObservableObject {
     /// source: not the backing bytes, not the native extent, only whether a develop stage exists at
     /// all. See `sourceIsRAW` for the widening that does happen, and why it is a `Bool`.
     var developPanelState: DevelopPanelState {
-        DevelopPanelState(sourceIsRAW: sourceIsRAW, capabilities: rawCapabilities)
+        guard sourceImage != nil, sourceIsRAW else { return .noDevelopStage }
+        return DevelopPanelState(
+            sourceIsRAW: sourceIsRAW,
+            capabilities: rawCapabilities,
+            probeCompleted: capabilitiesProbeCompleted
+        )
     }
 
     /// Whether the open image goes through the RAW decoder at all.
@@ -107,7 +117,7 @@ public final class AppViewModel: ObservableObject {
     /// view model is already being invalidated when it moves.
     var sourceIsRAW: Bool { imageSource?.kind == .raw }
 
-    /// The three states of the develop panel. See `AppViewModel.developPanelState`.
+    /// The states of the develop panel. See `AppViewModel.developPanelState`.
     enum DevelopPanelState: Equatable, Sendable {
         /// Not a RAW (or nothing open): there is no develop stage to offer, and saying so is honest.
         case noDevelopStage
@@ -117,10 +127,22 @@ public final class AppViewModel: ObservableObject {
         /// A RAW, probed. The panel draws `capabilities.availableControls`.
         case ready(RAWCapabilities)
 
-        /// **The mapping, in one place, as a pure function of two inputs.** Written as an
-        /// initializer rather than inlined into the computed property so the whole table — two
-        /// inputs, three outcomes — can be asserted on any machine, including CI, which has no RAW
-        /// to open (`DevelopInspectorTests.testThePanelStateMappingCoversAllThreeStates`).
+        /// A RAW decoder answered, but did not offer anything this panel can edit.
+        case noSupportedControls
+
+        var offersDevelopTab: Bool {
+            switch self {
+            case .probing:
+                return true
+            case .ready(let capabilities):
+                return !capabilities.availableControls.isEmpty
+            case .noDevelopStage, .noSupportedControls:
+                return false
+            }
+        }
+
+        /// Preserve the original two-input mapping for callers that use it as a pure pre-probe
+        /// state table. Production uses the overload below once it has an explicit completion bit.
         init(sourceIsRAW: Bool, capabilities: RAWCapabilities?) {
             if let capabilities {
                 self = .ready(capabilities)
@@ -128,6 +150,36 @@ public final class AppViewModel: ObservableObject {
                 self = sourceIsRAW ? .probing : .noDevelopStage
             }
         }
+
+        /// **The mapping, in one place, as a pure function.** A completed RAW answer of `nil` is
+        /// not allowed to remain in `.probing`.
+        init(sourceIsRAW: Bool, capabilities: RAWCapabilities?, probeCompleted: Bool) {
+            if !sourceIsRAW {
+                self = .noDevelopStage
+                return
+            }
+            guard probeCompleted || capabilities != nil else {
+                self = .probing
+                return
+            }
+            guard let capabilities else {
+                self = .noSupportedControls
+                return
+            }
+            self = capabilities.availableControls.isEmpty
+                ? .noSupportedControls
+                : .ready(capabilities)
+        }
+    }
+
+    /// Tabs for the current image. Develop remains visible during a RAW capability probe so the
+    /// picker can honestly expose the loading state, but it disappears for standard images and for
+    /// RAW decoders with no actionable controls.
+    var availableInspectorTabs: [InspectorTab] {
+        InspectorTab.availableTabs(
+            hasImage: sourceImage != nil,
+            developPanelState: developPanelState
+        )
     }
 
     private var capabilitiesTask: Task<Void, Never>?
@@ -263,6 +315,16 @@ public final class AppViewModel: ObservableObject {
             case .adjust: return "Adjust"
             case .effects: return "Effects"
             case .look: return "Look"
+            }
+        }
+
+        static func availableTabs(
+            hasImage: Bool,
+            developPanelState: DevelopPanelState
+        ) -> [InspectorTab] {
+            guard hasImage else { return [] }
+            return allCases.filter { tab in
+                tab != .develop || developPanelState.offersDevelopTab
             }
         }
     }
@@ -506,6 +568,9 @@ public final class AppViewModel: ObservableObject {
         // Do not let the previous surface briefly show the photo we are leaving while the new
         // source is being decoded.
         sourceImage = nil
+        // The old source must not describe the empty/loading state or gate the new image's
+        // inspector while its pixels are being decoded.
+        imageSource = nil
         sourceURL = nil
         sourceSize = .zero
         isPreviewInteractionActive = false
@@ -515,10 +580,13 @@ public final class AppViewModel: ObservableObject {
         originalPreviewTask?.cancel()
         previewDebounceTask?.cancel()
         capabilitiesTask?.cancel()
+        rawCapabilities = nil
+        capabilitiesProbeCompleted = false
         // A pending develop flag describes the image being left; it must not survive onto whatever
         // opens next, or an unrelated first edit on the new image would render a comparison baseline
         // for develop settings that were never actually touched on it.
         pendingDevelopChange = false
+        keepInspectorTabValid()
 
         isLoading = true
         statusMessage = "Loading \(name)..."
@@ -572,10 +640,6 @@ public final class AppViewModel: ObservableObject {
                 } else {
                     self.editStoreStatus = nil
                 }
-                self.sourceImage = ci
-                self.sourceURL = url
-                self.sourceName = name
-                self.sourceSize = ci.extent.size
                 // The renderer works from the file, not the decoded image, so a RAW can be
                 // re-developed per render. `nativeExtent` comes from the decode we just did.
                 if let url {
@@ -585,8 +649,15 @@ public final class AppViewModel: ObservableObject {
                 } else {
                     self.imageSource = nil
                 }
+                // Install the source before publishing pixels. A view update must never see the
+                // new image paired with the previous image's RAW classification or capabilities.
+                self.sourceImage = ci
+                self.sourceURL = url
+                self.sourceName = name
+                self.sourceSize = ci.extent.size
                 self.statusMessage = "\(name)  \(Int(ci.extent.width))\u{00D7}\(Int(ci.extent.height))"
                 self.isLoading = false
+                self.keepInspectorTabValid()
 
                 self.schedulePreview()
                 // The visible render is submitted first. The coordinator starts it before this
@@ -1359,8 +1430,13 @@ public final class AppViewModel: ObservableObject {
     private func refreshCapabilities() {
         capabilitiesTask?.cancel()
         rawCapabilities = nil
+        capabilitiesProbeCompleted = false
 
-        guard let imageSource else { return }
+        guard let imageSource else {
+            capabilitiesProbeCompleted = true
+            keepInspectorTabValid()
+            return
+        }
         let revision = sourceRevision
         capabilitiesTask = Task { [engine] in
             let capabilities = await engine.rawCapabilities(for: imageSource)
@@ -1368,6 +1444,21 @@ public final class AppViewModel: ObservableObject {
                   revision == self.sourceRevision,
                   self.imageSource == imageSource else { return }
             self.rawCapabilities = capabilities
+            self.capabilitiesProbeCompleted = true
+            self.keepInspectorTabValid()
+        }
+    }
+
+    /// Keep the Picker selection valid as source publication and capability probing change which
+    /// tabs exist. The base Info tab is always available for a loaded image.
+    private func keepInspectorTabValid() {
+        let tabs = availableInspectorTabs
+        guard let fallback = tabs.first else {
+            if inspectorTab != .info { inspectorTab = .info }
+            return
+        }
+        if !tabs.contains(inspectorTab) {
+            inspectorTab = fallback
         }
     }
 

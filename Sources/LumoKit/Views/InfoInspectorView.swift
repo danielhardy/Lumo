@@ -39,7 +39,7 @@ struct InfoInspectorView: View {
 
     private var tabSwitcher: some View {
         Picker("", selection: $viewModel.inspectorTab) {
-            ForEach(AppViewModel.InspectorTab.allCases, id: \.self) { tab in
+            ForEach(viewModel.availableInspectorTabs, id: \.self) { tab in
                 Text(tab.title).tag(tab)
             }
         }

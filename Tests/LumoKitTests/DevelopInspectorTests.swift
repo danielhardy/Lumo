@@ -134,6 +134,64 @@ final class DevelopInspectorTests: TempDirectoryTestCase {
         XCTAssertEqual(State(sourceIsRAW: false, capabilities: caps), .ready(caps))
     }
 
+    func testInspectorTabAvailabilityCoversNoImageStandardProbingSupportedAndEmptyRAW() {
+        typealias State = AppViewModel.DevelopPanelState
+        let supported = RAWCapabilities.distinctivelySeeded
+        let standardTabs = AppViewModel.InspectorTab.allCases.filter { $0 != .develop }
+
+        XCTAssertEqual(
+            AppViewModel.InspectorTab.availableTabs(
+                hasImage: false, developPanelState: .noDevelopStage
+            ),
+            [],
+            "no image has no inspector switcher"
+        )
+        XCTAssertEqual(
+            AppViewModel.InspectorTab.availableTabs(
+                hasImage: true, developPanelState: .noDevelopStage
+            ),
+            standardTabs,
+            "a standard image must not offer Develop"
+        )
+        XCTAssertTrue(
+            AppViewModel.InspectorTab.availableTabs(
+                hasImage: true, developPanelState: .probing
+            ).contains(.develop),
+            "a RAW stays reachable while its capabilities are being read"
+        )
+        XCTAssertTrue(
+            AppViewModel.InspectorTab.availableTabs(
+                hasImage: true, developPanelState: .ready(supported)
+            ).contains(.develop),
+            "a RAW with supported controls offers Develop"
+        )
+
+        let emptyRAW = State(
+            sourceIsRAW: true, capabilities: nil, probeCompleted: true
+        )
+        XCTAssertEqual(emptyRAW, .noSupportedControls)
+        XCTAssertFalse(
+            AppViewModel.InspectorTab.availableTabs(
+                hasImage: true, developPanelState: emptyRAW
+            ).contains(.develop),
+            "a completed RAW probe with no actionable answer must hide Develop"
+        )
+    }
+
+    func testOpeningAStandardImageFallsBackFromUnavailableDevelopTab() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        viewModel.inspectorTab = .develop
+
+        XCTAssertEqual(viewModel.availableInspectorTabs, [])
+
+        try await openStandardImage(viewModel)
+
+        XCTAssertFalse(viewModel.availableInspectorTabs.contains(.develop))
+        XCTAssertEqual(viewModel.inspectorTab, .info)
+        XCTAssertEqual(viewModel.developPanelState, .noDevelopStage)
+    }
+
     /// The wiring on the CI-reachable side: a standard image is `.noDevelopStage` once the probe has
     /// answered, and `sourceIsRAW` is what says so.
     func testAStandardImageEndsOnNoDevelopStage() async throws {
@@ -150,17 +208,15 @@ final class DevelopInspectorTests: TempDirectoryTestCase {
         XCTAssertEqual(viewModel.developPanelState, .noDevelopStage)
     }
 
-    /// And the `.ready` side, end to end: the engine's answer becomes the panel's state.
-    func testAProbedImageEndsOnReadyCarryingTheProbedCapabilities() async throws {
+    /// And the `.ready` side: a completed RAW probe with controls becomes the panel's state.
+    func testAProbedRAWStateEndsOnReadyCarryingTheProbedCapabilities() {
         let caps = RAWCapabilities.distinctivelySeeded
-        let fake = FakeRenderEngine()
-        await fake.setStubbedCapabilities(caps)
-        let viewModel = AppViewModel(engine: fake)
-
-        try await openStandardImage(viewModel)
-        try await waitUntil("capabilities") { viewModel.rawCapabilities != nil }
-
-        XCTAssertEqual(viewModel.developPanelState, .ready(caps))
+        XCTAssertEqual(
+            AppViewModel.DevelopPanelState(
+                sourceIsRAW: true, capabilities: caps, probeCompleted: true
+            ),
+            .ready(caps)
+        )
     }
 
     /// **The state the defect was actually about, end to end on a real RAW.**
