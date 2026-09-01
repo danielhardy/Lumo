@@ -35,18 +35,20 @@ final class LUTWorkflowTests: TempDirectoryTestCase {
         return (first, second)
     }
 
-    func testLookNavigationOpensTheSingleAuthoritativeInspectorSurface() {
-        let viewModel = AppViewModel(engine: FakeRenderEngine())
-
-        viewModel.showLookInspector()
-
-        XCTAssertTrue(viewModel.isInspectorPresented)
-        XCTAssertEqual(viewModel.inspectorTab, .look)
-        XCTAssertEqual(
-            AppViewModel.InspectorTab.allCases.filter { $0 == .look }.count,
-            1,
-            "toolbar Look navigation must land on one shared inspector tab"
+    func testLookIsDiscoverableThroughOneAccessibleInspectorTab() {
+        let availableTabs = AppViewModel.InspectorTab.availableTabs(
+            hasImage: true,
+            developPanelState: .noDevelopStage
         )
+
+        XCTAssertEqual(
+            availableTabs.filter { $0 == .look },
+            [.look],
+            "the inspector must expose exactly one Look entry point"
+        )
+        XCTAssertEqual(AppViewModel.InspectorTab.look.title, "Look")
+        XCTAssertEqual(AppViewModel.InspectorTab.look.iconName, "wand.and.stars")
+        XCTAssertEqual(AppViewModel.InspectorTab.look.purpose, "Browse and apply a Look")
     }
 
     func testLUTSurvivesNavigationAndRelaunchForItsPhoto() async throws {

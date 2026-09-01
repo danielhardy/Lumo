@@ -1674,13 +1674,6 @@ public final class AppViewModel: ObservableObject {
         isInspectorPresented.toggle()
     }
 
-    /// Open the existing inspector on the one authoritative Look browser. This is a navigation
-    /// action, not a second Look surface, so toolbar access and the inspector tab share all state.
-    func showLookInspector() {
-        inspectorTab = .look
-        isInspectorPresented = true
-    }
-
     /// Recompute the histogram for the currently displayed image. No-op unless the Info tab of an
     /// open inspector is on screen. Cancellable, so dragging the intensity slider stays smooth.
     ///

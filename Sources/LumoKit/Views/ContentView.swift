@@ -257,14 +257,6 @@ public struct ContentView: View {
         .keyboardShortcut("i", modifiers: .command)
         .disabled(viewModel.sourceImage == nil)
 
-        Button {
-            viewModel.showLookInspector()
-        } label: {
-            Label("Look", systemImage: "wand.and.stars")
-        }
-        .help("Show the Look browser")
-        .disabled(viewModel.sourceImage == nil)
-
         // Keep reset scopes together and visible: the panel reset affects only the current stage,
         // while Reset Photo clears every edit on the active source. The File menu retains the
         // keyboard shortcut for the latter.
