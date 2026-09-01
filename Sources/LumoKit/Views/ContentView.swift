@@ -188,8 +188,6 @@ public struct ContentView: View {
         .frame(width: 142)
         .help("Library (G) or Edit (E)")
 
-        Divider()
-
         // Crop is a committed edit, but its in-progress rectangle stays transient until Apply.
         Button {
             viewModel.toggleCropTool()
@@ -276,8 +274,6 @@ public struct ContentView: View {
         }
         .help("Reset the current adjustment section or the whole photo")
         .disabled(viewModel.sourceImage == nil)
-
-        Divider()
 
         // Import menu
         Menu {
