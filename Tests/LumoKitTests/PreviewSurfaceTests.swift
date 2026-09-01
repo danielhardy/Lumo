@@ -24,4 +24,35 @@ final class PreviewSurfaceTests: XCTestCase {
         XCTAssertNil(surface.image)
         XCTAssertEqual(surface.space, .current)
     }
+
+    func testAFailedReplacementKeepsTheLastValidFrame() throws {
+        let surface = PreviewSurface()
+        let first = CIImage(color: .red)
+        let replacement = CIImage(color: .blue)
+
+        surface.present(first)
+        let firstRevision = try XCTUnwrap(surface.pendingDisplayRevision())
+        surface.markPresentationSucceeded(displayRevision: firstRevision)
+
+        surface.present(replacement)
+        let replacementRevision = try XCTUnwrap(surface.pendingDisplayRevision())
+        surface.rejectPresentation(displayRevision: replacementRevision)
+
+        XCTAssertTrue(surface.image === first)
+        XCTAssertNil(surface.pendingDisplayRevision())
+    }
+
+    func testAStalePresentationCompletionCannotCommitOverANewerFrame() throws {
+        let surface = PreviewSurface()
+        let first = CIImage(color: .red)
+        let second = CIImage(color: .green)
+
+        surface.present(first)
+        let firstRevision = try XCTUnwrap(surface.pendingDisplayRevision())
+        surface.present(second)
+        surface.markPresentationSucceeded(displayRevision: firstRevision)
+
+        XCTAssertTrue(surface.image === second)
+        XCTAssertNotNil(surface.pendingDisplayRevision())
+    }
 }

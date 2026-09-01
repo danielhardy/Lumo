@@ -441,6 +441,18 @@ public final class AppViewModel: ObservableObject {
         self.export = ExportCoordinator(engine: engine)
         self.previewCoordinator = PreviewCoordinator(engine: engine)
 
+        // A Core Image graph is lazy: a publication can be accepted while its drawable command
+        // buffer is still able to fail. Keep the previous surface image in that case and surface a
+        // useful status instead of leaving the user with a permanent black canvas.
+        previewSurface.onPresentationFailure = { [weak self] in
+            guard let self, self.sourceImage != nil else { return }
+            self.statusMessage = "Could not display \(self.sourceName). Try Fit or reload the photo."
+        }
+        originalPreviewSurface.onPresentationFailure = { [weak self] in
+            guard let self, self.sourceImage != nil else { return }
+            self.statusMessage = "Could not display the comparison preview. Try Fit or reload the photo."
+        }
+
         // Forward nested ObservableObject changes so SwiftUI views update.
         for child in [
             library.objectWillChange.eraseToAnyPublisher(),

@@ -38,6 +38,19 @@ final class AppViewModelTests: TempDirectoryTestCase {
         XCTAssertEqual(viewModel.errorMessage, "Derive failed: bad pair")
     }
 
+    func testPreviewPresentationFailureLeavesAnActionableStatus() {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        viewModel.sourceImage = CIImage(color: .gray)
+        viewModel.sourceName = "photo.png"
+
+        viewModel.previewSurface.onPresentationFailure?()
+
+        XCTAssertEqual(
+            viewModel.statusMessage,
+            "Could not display photo.png. Try Fit or reload the photo."
+        )
+    }
+
     /// Build a derived LUT **the way `DeriveCoordinator` does**, scratch file and all.
     ///
     /// Going through `makeDerivedLUT` is the point. The version of this suite that used

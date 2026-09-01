@@ -9,6 +9,12 @@ final class PreviewSurface: ObservableObject {
     @Published private(set) var revision: UInt64 = 0
     private(set) var image: CIImage?
     private(set) var space: WorkingSpace = .current
+    /// The last image known to have made it through the presentation command buffer. A newly
+    /// published Core Image graph is lazy, so the fact that `present` accepted it is not enough to
+    /// replace a frame that is already on screen.
+    private var lastValidImage: CIImage?
+    private var lastValidSpace: WorkingSpace = .current
+    private var pendingDisplayID: UInt64?
     private var pendingGPURevision: UInt64?
     private struct PendingTelemetry {
         let telemetry: LiveEditTelemetry
@@ -17,6 +23,7 @@ final class PreviewSurface: ObservableObject {
     }
     private var telemetryByRevision: [UInt64: PendingTelemetry] = [:]
     private var submittedTelemetryRevisions: Set<UInt64> = []
+    var onPresentationFailure: (() -> Void)?
 
     func present(_ image: CIImage?, space: WorkingSpace = .current, revision: UInt64? = nil,
                  telemetry: LiveEditTelemetry? = nil, source: ImageSource? = nil,
@@ -24,6 +31,7 @@ final class PreviewSurface: ObservableObject {
         self.image = image
         self.space = space
         self.revision &+= 1
+        pendingDisplayID = self.revision
         if let revision, let telemetry {
             // A pending value that has not reached a drawable is obsolete once a newer value is
             // presented. Submitted values remain until Metal reports their completion/display.
@@ -39,6 +47,23 @@ final class PreviewSurface: ObservableObject {
         }
     }
     fileprivate func pendingPresentationRevision() -> UInt64? { pendingGPURevision }
+    func pendingDisplayRevision() -> UInt64? { pendingDisplayID }
+
+    func markPresentationSucceeded(displayRevision: UInt64) {
+        guard pendingDisplayID == displayRevision else { return }
+        lastValidImage = image
+        lastValidSpace = space
+        pendingDisplayID = nil
+    }
+
+    func rejectPresentation(displayRevision: UInt64) {
+        guard pendingDisplayID == displayRevision else { return }
+        pendingDisplayID = nil
+        image = lastValidImage
+        space = lastValidSpace
+        revision &+= 1
+        onPresentationFailure?()
+    }
 
     fileprivate func markPresentationSubmitted(revision: UInt64) {
         guard telemetryByRevision[revision] != nil else { return }
@@ -75,7 +100,10 @@ final class PreviewSurface: ObservableObject {
     func clear() {
         image = nil
         space = .current
+        lastValidImage = nil
+        lastValidSpace = .current
         revision &+= 1
+        pendingDisplayID = nil
         // A source switch invalidates any telemetry attached to the previous drawable. Its
         // command buffer may still complete, but it must not be attributed to the next source.
         pendingGPURevision = nil
@@ -175,6 +203,9 @@ struct PreviewSurfaceView: NSViewRepresentable {
             ).cropped(to: destination)
             let output = displayed.composited(over: background)
             let presentationRevision = surface.pendingPresentationRevision()
+            let displayRevision = surface.pendingDisplayRevision()
+            let drawRevision = surface.revision
+            let drawNavigation = navigation
             isDrawing = true
             context.render(output, to: drawable.texture, commandBuffer: commandBuffer,
                            bounds: destination, colorSpace: surface.space.cgColorSpace)
@@ -184,15 +215,27 @@ struct PreviewSurfaceView: NSViewRepresentable {
             // encoded, so a new frame cannot expose Core Image's intermediate tiles.
             commandBuffer.present(drawable)
             commandBuffer.addCompletedHandler { [weak self, weak surface] commandBuffer in
-                if let revision = presentationRevision {
-                    let gpuCompletion = commandBuffer.gpuEndTime > 0
-                        ? commandBuffer.gpuEndTime : LiveEditTelemetryClock.now
-                    Task { @MainActor in
-                        surface?.markGPUCompletion(revision: revision, time: gpuCompletion)
-                        self?.drawingFinished()
+                let succeeded = commandBuffer.status == .completed
+                let gpuCompletion = commandBuffer.gpuEndTime > 0
+                    ? commandBuffer.gpuEndTime : LiveEditTelemetryClock.now
+                Task { @MainActor in
+                    if let surface {
+                        if succeeded, let displayRevision {
+                            surface.markPresentationSucceeded(displayRevision: displayRevision)
+                        } else if let displayRevision {
+                            // A failed Core Image command buffer must not poison the drawable's
+                            // last valid frame. Reject only the candidate this draw attempted;
+                            // a newer publication may already be waiting behind it.
+                            surface.rejectPresentation(displayRevision: displayRevision)
+                        }
+                        if let revision = presentationRevision {
+                            surface.markGPUCompletion(revision: revision, time: gpuCompletion)
+                        }
                     }
-                } else {
-                    Task { @MainActor in self?.drawingFinished() }
+                    self?.drawingFinished(
+                        drawRevision: drawRevision, navigation: drawNavigation,
+                        drawableSize: drawableSize, succeeded: succeeded
+                    )
                 }
             }
             if let revision = presentationRevision {
@@ -207,13 +250,25 @@ struct PreviewSurfaceView: NSViewRepresentable {
             if let revision = presentationRevision {
                 surface.markPresentationSubmitted(revision: revision)
             }
-            lastDrawnRevision = surface.revision
-            lastDrawnNavigation = navigation
-            lastDrawableSize = drawableSize
         }
 
-        private func drawingFinished() {
+        private func drawingFinished(
+            drawRevision: UInt64, navigation: CanvasNavigation,
+            drawableSize: (width: Int, height: Int), succeeded: Bool
+        ) {
             isDrawing = false
+            // Do not record a draw as complete until its command buffer completed successfully.
+            // The surface may also have advanced while the buffer evaluated; in that case this
+            // completion only frees the pacer and the newest revision is redrawn below.
+            if succeeded, let surface, surface.revision == drawRevision, surface.image != nil {
+                lastDrawnRevision = drawRevision
+                lastDrawnNavigation = navigation
+                lastDrawableSize = drawableSize
+            } else {
+                lastDrawnRevision = nil
+                lastDrawnNavigation = nil
+                lastDrawableSize = nil
+            }
             // The surface may have advanced while this buffer evaluated. One redraw now consumes
             // that latest revision rather than replaying every superseded pointer update.
             if let view { view.setNeedsDisplay(view.bounds) }

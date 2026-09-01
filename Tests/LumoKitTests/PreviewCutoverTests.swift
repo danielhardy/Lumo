@@ -99,6 +99,39 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
         }
     }
 
+    /// Navigation changes must remain a display concern while still driving a fresh render when
+    /// more source detail is useful. The surface is intentionally asserted too: a request-only
+    /// regression can look correct in the coordinator while leaving the visible canvas unchanged.
+    func testFitFillAndExplicitZoomPublishNonBlankSurfaceFrames() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openImage(viewModel)
+        try await waitUntil("the opening surface") { viewModel.previewSurface.image != nil }
+
+        for action in [
+            { viewModel.fitCanvas() },
+            { viewModel.fillCanvas() },
+            { viewModel.setCanvasZoom(4) },
+        ] {
+            let before = viewModel.previewSurface.revision
+            action()
+            try await waitUntil("the navigation render") {
+                viewModel.previewSurface.revision > before && viewModel.previewSurface.image != nil
+            }
+        }
+
+        let requests = await fake.previewRequests
+        XCTAssertTrue(
+            requests.contains {
+                if case .preview(let size) = $0.scale {
+                    return size == CGSize(width: 6_400, height: 4_800)
+                }
+                return false
+            },
+            "explicit zoom must request enough detail for the presentation transform"
+        )
+    }
+
     /// Develop, adjustments and intensity each reach the engine as part of the document. This is the
     /// step's gate, asserted at the request level.
     func testDevelopAdjustmentsAndIntensityAllReachTheEngine() async throws {
