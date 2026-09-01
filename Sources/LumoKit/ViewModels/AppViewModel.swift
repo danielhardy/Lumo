@@ -274,6 +274,13 @@ public final class AppViewModel: ObservableObject {
     /// pan, fit, and fill are how the editor is viewed, never edits that should reach export.
     @Published private(set) var canvasNavigation = CanvasNavigation()
 
+    /// Crop interaction state is deliberately transient. Only `document.crop` is committed,
+    /// persisted, copied, and placed in history; an abandoned drag can never leak into export.
+    @Published private(set) var isCropToolActive = false
+    @Published private(set) var cropDraft: CGRect?
+
+    var hasCropAdjustments: Bool { !document.crop.isIdentity }
+
     /// Inspector visibility. Computing the histogram is gated on this — plus on the Info tab being
     /// the one on screen — so we don't tally pixels for a panel nobody's looking at.
     @Published var isInspectorPresented: Bool = false {
@@ -1368,6 +1375,67 @@ public final class AppViewModel: ObservableObject {
         previewDebounceTask = nil
         previewCoordinator.endInteraction()
         endUndoGrouping()
+    }
+
+    // MARK: - Crop
+
+    /// Enter the freeform crop tool. The first draft is the committed crop, or the full image when
+    /// this is a new crop. Crop interaction uses a fit canvas so screen coordinates map directly to
+    /// the oriented source image and are not confused with presentation zoom/pan.
+    func beginCrop() {
+        guard sourceImage != nil else {
+            statusMessage = "Open an image first"
+            return
+        }
+        guard !isCropToolActive else { return }
+        endUndoGrouping()
+        isShowingOriginal = false
+        canvasNavigation.fit()
+        isCropToolActive = true
+        cropDraft = document.crop.normalizedRect ?? CropAdjustments.unitRect
+        statusMessage = "Adjust crop, then Apply"
+    }
+
+    func toggleCropTool() {
+        if isCropToolActive { cancelCrop() } else { beginCrop() }
+    }
+
+    /// Update only the transient framing rectangle. The model clamps it to image bounds and rejects
+    /// invalid/degenerate values, so every pointer update remains safe to display.
+    func updateCropDraft(_ normalizedRect: CGRect) {
+        guard isCropToolActive else { return }
+        cropDraft = CropAdjustments(normalizedRect: normalizedRect).normalizedRect
+    }
+
+    /// Commit the current draft as one ordinary document mutation, giving it persistence, undo,
+    /// copy/paste, cache invalidation, and preview/export parity automatically.
+    func commitCrop() {
+        guard isCropToolActive else { return }
+        let committed = cropDraft ?? CropAdjustments.unitRect
+        isCropToolActive = false
+        cropDraft = nil
+        updateDocument { $0.crop = CropAdjustments(normalizedRect: committed) }
+        statusMessage = "Crop applied"
+    }
+
+    /// Abandon the draft and restore the committed framing without adding an undo entry.
+    func cancelCrop() {
+        guard isCropToolActive else { return }
+        isCropToolActive = false
+        cropDraft = nil
+        statusMessage = hasCropAdjustments ? "Crop unchanged" : "Crop cancelled"
+    }
+
+    /// While editing, Reset returns the draft to the full image. Outside the tool it clears the
+    /// committed crop through the normal history/persistence path.
+    func resetCrop() {
+        if isCropToolActive {
+            cropDraft = CropAdjustments.unitRect
+            statusMessage = "Crop reset"
+        } else {
+            endUndoGrouping()
+            updateDocument { $0.crop = .neutral }
+        }
     }
 
     // MARK: - Canvas navigation

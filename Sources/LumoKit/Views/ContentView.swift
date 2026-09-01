@@ -201,6 +201,20 @@ public struct ContentView: View {
 
         Divider()
 
+        // Crop is a committed edit, but its in-progress rectangle stays transient until Apply.
+        Button {
+            viewModel.toggleCropTool()
+        } label: {
+            Label(
+                viewModel.isCropToolActive ? "Cancel Crop" : "Crop",
+                systemImage: viewModel.isCropToolActive ? "xmark" : "crop"
+            )
+        }
+        .help(viewModel.isCropToolActive
+              ? "Cancel the current crop"
+              : "Crop the photo with a freeform frame")
+        .disabled(viewModel.sourceImage == nil)
+
         // Side-by-side is only meaningful when the LUMO-047 comparison gate has something to show.
         // Removing the control in the unsupported state keeps every visible view affordance
         // actionable and keeps its label aligned with the rendered mode.

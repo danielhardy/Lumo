@@ -31,15 +31,18 @@ struct EditDocument: Codable, Sendable, Equatable {
     /// Photographer-facing global Effects controls. Missing from an older document means neutral.
     var effects: EffectsAdjustments = .neutral
 
+    /// Non-destructive framing in normalized, oriented-image coordinates.
+    var crop: CropAdjustments = .neutral
+
     /// Ordered tone/colour stages. Order matters and duplicates are allowed — see `AdjustmentNode`.
     var adjustments: [AdjustmentNode] = []
 
     /// Which LUT, at what strength.
     var lut: LUTSettings = .none
 
-    /// Adding `light`, `color`, and `effects` are additive v1 migrations: older documents have no
-    /// key and retain their original ordered adjustment nodes. A schema bump is reserved for a
-    /// format that requires rewriting those nodes, which could change a user's existing look.
+    /// Adding `light`, `color`, `effects`, and `crop` are additive v1 migrations: older documents
+    /// have no key and retain their original ordered adjustment nodes. A schema bump is reserved
+    /// for a format that requires rewriting those nodes, which could change a user's existing look.
     static let currentVersion = 1
 
     init(
@@ -48,6 +51,7 @@ struct EditDocument: Codable, Sendable, Equatable {
         light: LightAdjustments = .neutral,
         color: ColorAdjustments = .neutral,
         effects: EffectsAdjustments = .neutral,
+        crop: CropAdjustments = .neutral,
         adjustments: [AdjustmentNode] = [],
         lut: LUTSettings = .none
     ) {
@@ -56,13 +60,14 @@ struct EditDocument: Codable, Sendable, Equatable {
         self.light = light
         self.color = color
         self.effects = effects
+        self.crop = crop
         self.adjustments = adjustments
         self.lut = lut
     }
 
     /// True when this document would leave the source untouched.
     var isIdentity: Bool {
-        rawDevelop.isNeutral && light.isIdentity && color.isIdentity && effects.isIdentity &&
+        rawDevelop.isNeutral && light.isIdentity && color.isIdentity && effects.isIdentity && crop.isIdentity &&
             adjustments.allSatisfy(\.isIdentity) && lut.isIdentity
     }
 
@@ -70,7 +75,7 @@ struct EditDocument: Codable, Sendable, Equatable {
     /// RAW develop settings intentionally do not count: the comparison baseline keeps the
     /// developed source, so a develop-only comparison would show identical pixels.
     var hasVisibleLookEdits: Bool {
-        !light.isIdentity || !color.isIdentity || !effects.isIdentity ||
+        !light.isIdentity || !color.isIdentity || !effects.isIdentity || !crop.isIdentity ||
             !adjustments.allSatisfy(\.isIdentity) || !lut.isIdentity
     }
 
@@ -94,7 +99,7 @@ struct EditDocument: Codable, Sendable, Equatable {
     var originalForComparison: EditDocument {
         EditDocument(
             version: version, rawDevelop: rawDevelop, light: .neutral, color: .neutral,
-            effects: .neutral,
+            effects: .neutral, crop: crop,
             adjustments: [], lut: .none
         )
     }
@@ -105,7 +110,7 @@ struct EditDocument: Codable, Sendable, Equatable {
     // MARK: - Codable
 
     enum CodingKeys: String, CodingKey {
-        case version, rawDevelop, light, color, effects, adjustments, lut
+        case version, rawDevelop, light, color, effects, crop, adjustments, lut
     }
 
     /// Decoded field by field rather than by synthesis, for two reasons.
@@ -132,6 +137,7 @@ struct EditDocument: Codable, Sendable, Equatable {
         self.light = try container.decodeIfPresent(LightAdjustments.self, forKey: .light) ?? .neutral
         self.color = try container.decodeIfPresent(ColorAdjustments.self, forKey: .color) ?? .neutral
         self.effects = try container.decodeIfPresent(EffectsAdjustments.self, forKey: .effects) ?? .neutral
+        self.crop = try container.decodeIfPresent(CropAdjustments.self, forKey: .crop) ?? .neutral
         self.adjustments = try container.decodeIfPresent([AdjustmentNode].self, forKey: .adjustments) ?? []
         self.lut = try container.decodeIfPresent(LUTSettings.self, forKey: .lut) ?? .none
     }

@@ -19,7 +19,9 @@ struct PreviewView: View {
             bgColor
 
             if viewModel.sourceImage != nil {
-                if viewModel.isSideBySideVisible {
+                if viewModel.isCropToolActive {
+                    singleView
+                } else if viewModel.isSideBySideVisible {
                     sideBySideView
                 } else {
                     singleView
@@ -97,6 +99,18 @@ struct PreviewView: View {
                         .padding(8)
                 }
 
+                if viewModel.isCropToolActive, viewModel.sourceSize != .zero {
+                    CropOverlayView(
+                        normalizedRect: viewModel.cropDraft ?? CropAdjustments.unitRect,
+                        imageSize: viewModel.sourceSize,
+                        onChange: viewModel.updateCropDraft,
+                        onApply: viewModel.commitCrop,
+                        onReset: viewModel.resetCrop,
+                        onCancel: viewModel.cancelCrop
+                    )
+                    .padding(8)
+                }
+
                 if viewModel.previewSurface.image != nil {
                     // Comparison badge
                     if viewModel.isShowingOriginal && viewModel.isComparisonAvailable {
@@ -137,6 +151,7 @@ struct PreviewView: View {
                 onScrollZoom: { factor in viewModel.zoomCanvas(by: factor) }
             )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(!viewModel.isCropToolActive)
                 .contentShape(Rectangle())
                 .gesture(dragGesture(viewportSize: geometry.size))
                 .simultaneousGesture(magnificationGesture(viewportSize: geometry.size))

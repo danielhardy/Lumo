@@ -25,7 +25,7 @@ struct EditClipboardPayload: Codable, Sendable, Equatable {
         var adjustments: [AdjustmentNode] = []
     }
 
-    /// Reserved for the crop stage, which is not rendered by this version of Lumo yet.
+    /// The crop stage copied as a normalized, non-destructive framing value.
     struct CropCategory: Codable, Sendable, Equatable {
         var normalizedRect: CGRect?
         var angle: Double
@@ -135,6 +135,7 @@ struct EditClipboardPayload: Codable, Sendable, Equatable {
         self.lightAdjustments = document.light
         self.colorAdjustments = document.color
         self.effectAdjustments = document.effects
+        self.crop = CropCategory(normalizedRect: document.crop.normalizedRect)
     }
 
     /// Build a destination document from the selected categories. This API is deliberately present
@@ -164,6 +165,9 @@ struct EditClipboardPayload: Codable, Sendable, Equatable {
         }
         if categories.contains(.effects) {
             result.effects = effectAdjustments
+        }
+        if categories.contains(.crop) {
+            result.crop = CropAdjustments(normalizedRect: crop.normalizedRect)
         }
         if categories.contains(.lut) {
             result.lut = lut

@@ -28,8 +28,8 @@ enum RenderPipeline {
     /// 1D Core Image kernel while preserving the piecewise-linear transfer function. v11 adds the
     /// GPU-backed Texture, Clarity, and Dehaze Effects stage. v12 adds the post-LUT vignette stage.
     /// v13 adds deterministic, resolution-aware post-LUT grain. v14 preserves the grain seed's
-    /// full 32-bit entropy when passing it to the GPU kernel.
-    static let cacheVersion = 14
+    /// full 32-bit entropy when passing it to the GPU kernel. v15 adds the post-LUT crop stage.
+    static let cacheVersion = 15
 
     /// Build the graph for `document` over `source`.
     ///
@@ -99,8 +99,31 @@ enum RenderPipeline {
             : document.adjustments.filter { $0.slot != .temperatureTint }
         let adjusted = applyAdjustments(adjustmentNodes, to: effectsAdjusted)
         let lutAdjusted = applyLUT(document.lut, lut: lut, to: adjusted, space: space, cache: lutCache)
-        let vignetted = applyVignette(document.effects.vignette, to: lutAdjusted)
+        // Crop is a composition stage: all look work above is evaluated over the source, while
+        // vignette and grain below describe the final cropped frame. This also keeps preview,
+        // comparison, and full-resolution export on one extent-changing path.
+        let cropped = applyCrop(document.crop, to: lutAdjusted)
+        let vignetted = applyVignette(document.effects.vignette, to: cropped)
         return applyGrain(document.effects.grain, to: vignetted, seed: grainSeed)
+    }
+
+    /// Apply a normalized freeform crop without rasterizing. The rectangle is bottom-left based,
+    /// like Core Image; the editor converts its top-left screen coordinates before committing it.
+    static func applyCrop(_ crop: CropAdjustments, to image: CIImage) -> CIImage {
+        guard let normalizedRect = crop.normalizedRect,
+              !crop.isIdentity,
+              image.extent.width.isFinite, image.extent.height.isFinite,
+              image.extent.width > 0, image.extent.height > 0
+        else { return image }
+
+        let extent = image.extent
+        let cropRect = CGRect(
+            x: extent.minX + normalizedRect.minX * extent.width,
+            y: extent.minY + normalizedRect.minY * extent.height,
+            width: normalizedRect.width * extent.width,
+            height: normalizedRect.height * extent.height
+        )
+        return image.cropped(to: cropRect)
     }
 
     // MARK: - Source
