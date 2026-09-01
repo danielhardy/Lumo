@@ -403,6 +403,14 @@ final class AppViewModel: ObservableObject {
         previewCoordinator.cancel()
         previewSurface.clear()
         originalPreviewSurface.clear()
+        // Do not let the raster fallback briefly show the photo we are leaving while the new
+        // source is being decoded. The persistent GPU surface is intentionally cleared first, so
+        // these legacy values must be cleared in the same source-generation turn.
+        sourceImage = nil
+        sourceURL = nil
+        sourceSize = .zero
+        previewNSImage = nil
+        originalPreviewNSImage = nil
         isPreviewInteractionActive = false
         loadTask?.cancel()
         metadataTask?.cancel()

@@ -75,7 +75,8 @@ struct PreviewView: View {
 
             if surface.image != nil {
                 PreviewSurfaceView(surface: surface)
-                    .aspectRatio(contentMode: .fit)
+                    .aspectRatio(surface.image?.extent.size ?? CGSize(width: 1, height: 1),
+                                 contentMode: .fit)
                     .frame(maxWidth: width, maxHeight: .infinity)
             } else if let nsImage = image {
                 Image(nsImage: nsImage)
@@ -96,7 +97,8 @@ struct PreviewView: View {
         ZStack {
             if viewModel.previewSurface.image != nil {
                 PreviewSurfaceView(surface: viewModel.previewSurface)
-                    .aspectRatio(contentMode: .fit)
+                    .aspectRatio(viewModel.previewSurface.image?.extent.size ?? CGSize(width: 1, height: 1),
+                                 contentMode: .fit)
                     .padding(8)
             } else if let nsImage = viewModel.previewNSImage {
                 Image(nsImage: nsImage)
