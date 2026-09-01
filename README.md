@@ -181,6 +181,11 @@ rescanned.
 
 | Key | Action |
 |---|---|
+| `P` | Pick the focused photo and advance |
+| `X` | Reject the focused photo and advance |
+| `0`–`5` | Clear or set the focused photo's star rating |
+| `G` | Switch to the Library grid |
+| `E` | Switch to the Edit workspace |
 | `↑` / `↓` | Previous / next Look |
 | `←` / `→` (or `[` / `]`) | Previous / next image (when a set is loaded) |
 | `Space` (hold) | Show original — develop applied, look removed |
@@ -197,7 +202,7 @@ rescanned.
 | `⌘S` | Export |
 | `⌘⇧E` | Export all |
 
-> Arrow/letter shortcuts are handled by a window-level `NSEvent` monitor (SwiftUI's `.onKeyPress` doesn't fire reliably inside a `NavigationSplitView`); `⌘`-shortcuts flow through the standard menu bar.
+> Arrow/letter shortcuts are handled by a window-level `NSEvent` monitor (SwiftUI's `.onKeyPress` doesn't fire reliably inside a `NavigationSplitView`). They pause while a text field, slider, button, or picker owns focus; `⌘`-shortcuts flow through the standard menu bar.
 
 ---
 

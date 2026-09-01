@@ -18,8 +18,11 @@ struct AdjustInspectorView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header
-                ForEach(viewModel.visibleAdjustmentControls, id: \.self) { control in
-                    controlRow(control)
+                ForEach(Array(viewModel.visibleAdjustmentControls.enumerated()), id: \.element) { offset, control in
+                    controlRow(
+                        control,
+                        sortPriority: Double(viewModel.visibleAdjustmentControls.count - offset)
+                    )
                 }
             }
             .padding(16)
@@ -37,7 +40,7 @@ struct AdjustInspectorView: View {
     }
 
     @ViewBuilder
-    private func controlRow(_ control: AdjustmentControl) -> some View {
+    private func controlRow(_ control: AdjustmentControl, sortPriority: Double) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 ResettableAdjustmentLabel(
@@ -48,6 +51,7 @@ struct AdjustInspectorView: View {
                 Text(readout(for: control))
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
             }
 
             Slider(
@@ -61,6 +65,9 @@ struct AdjustInspectorView: View {
                     }
                 }
             )
+            .accessibilityLabel(control.title)
+            .accessibilityValue(readout(for: control))
+            .accessibilitySortPriority(sortPriority)
             .accessibilityAction(named: Text("Reset to neutral")) {
                 viewModel.resetAdjustment(control)
             }

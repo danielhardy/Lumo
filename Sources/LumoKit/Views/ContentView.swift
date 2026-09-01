@@ -256,6 +256,26 @@ public struct ContentView: View {
         .help("Show the Look browser")
         .disabled(viewModel.sourceImage == nil)
 
+        // Keep reset scopes together and visible: the panel reset affects only the current stage,
+        // while Reset Photo clears every edit on the active source. The File menu retains the
+        // keyboard shortcut for the latter.
+        Menu {
+            Button("Reset " + viewModel.inspectorTab.title) {
+                viewModel.resetInspectorSection()
+            }
+            .disabled(viewModel.inspectorTab == .info)
+
+            Divider()
+
+            Button("Reset Photo") {
+                viewModel.resetPhoto()
+            }
+        } label: {
+            Label("Reset", systemImage: "arrow.counterclockwise")
+        }
+        .help("Reset the current adjustment section or the whole photo")
+        .disabled(viewModel.sourceImage == nil)
+
         Divider()
 
         // Import menu

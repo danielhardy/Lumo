@@ -35,6 +35,18 @@ enum KeyMonitorPolicy {
         responder is NSText
     }
 
+    /// Native controls have their own keyboard contract. In particular, a focused slider must
+    /// keep arrow keys for value changes, a text field must keep letters/digits for editing, and a
+    /// focused button or picker must keep Space/Return for activation. The global monitor should
+    /// only route keys when the canvas or library itself owns focus.
+    static func controlOwnsKeyboard(_ responder: NSResponder?) -> Bool {
+        textInputOwnsKeyboard(responder) || responder is NSControl
+    }
+
+    static func globalShortcutsOwnKeyboard(_ responder: NSResponder?) -> Bool {
+        !controlOwnsKeyboard(responder)
+    }
+
     static func isPlainSpace(modifiers: NSEvent.ModifierFlags) -> Bool {
         modifiers.intersection(.deviceIndependentFlagsMask).isEmpty
     }
@@ -97,7 +109,7 @@ final class KeyMonitor {
         // Don't hijack keys while editing text (the search field, etc.) — a
         // focused SwiftUI TextField makes the window's field editor (an NSText)
         // the first responder.
-        if KeyMonitorPolicy.textInputOwnsKeyboard(NSApp.keyWindow?.firstResponder) {
+        if !KeyMonitorPolicy.globalShortcutsOwnKeyboard(NSApp.keyWindow?.firstResponder) {
             return event
         }
 
@@ -183,6 +195,9 @@ final class KeyMonitor {
         if let command = LibraryCullingCommand.parse(
             characters: chars, hasModifiers: !mods.isEmpty
         ) {
+            // Culling belongs to a browsable collection. A one-off image opened outside the
+            // library should not swallow P/X/rating keys when there is no focused asset to edit.
+            guard vm.collection.isActive else { return event }
             switch command {
             case .pick:
                 vm.setFocusedFlag(.pick, advance: true)

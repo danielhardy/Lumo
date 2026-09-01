@@ -89,4 +89,44 @@ final class ResettableInspectorTests: XCTestCase {
         viewModel.undo()
         XCTAssertEqual(viewModel.adjustmentValue(for: .exposure), 0.5)
     }
+
+    func testInspectorSectionResetDoesNotCrossStageBoundariesAndIsUndoable() {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        viewModel.updateDocument {
+            $0.light.exposure = 1
+            $0.effects.texture = 25
+        }
+
+        viewModel.inspectorTab = .effects
+        viewModel.resetInspectorSection()
+
+        XCTAssertTrue(viewModel.document.effects.isIdentity)
+        XCTAssertEqual(viewModel.document.light.exposure, 1)
+
+        viewModel.undo()
+        XCTAssertEqual(viewModel.document.effects.texture, 25)
+        XCTAssertEqual(viewModel.document.light.exposure, 1)
+    }
+
+    func testResetPhotoClearsEveryStageAsOneUndoableOperation() {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        viewModel.updateDocument {
+            $0.rawDevelop.exposure = 1
+            $0.light.exposure = 1
+            $0.adjustments = [.exposure(ev: 0.5)]
+            $0.effects.texture = 25
+            $0.lut.lutID = LUTID(raw: "look.cube")
+        }
+
+        viewModel.resetPhoto()
+
+        XCTAssertEqual(viewModel.document, EditDocument())
+        XCTAssertEqual(viewModel.undoDepth, 2)
+
+        viewModel.undo()
+        XCTAssertEqual(viewModel.document.rawDevelop.exposure, 1)
+        XCTAssertEqual(viewModel.document.light.exposure, 1)
+        XCTAssertEqual(viewModel.document.effects.texture, 25)
+        XCTAssertEqual(viewModel.document.lut.lutID, LUTID(raw: "look.cube"))
+    }
 }

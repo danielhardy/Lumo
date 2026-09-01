@@ -167,6 +167,7 @@ private struct EffectsValueRow: View {
                     .multilineTextAlignment(.trailing)
                     .accessibilityLabel(title)
                     .accessibilityValue(readout(value))
+                    .accessibilitySortPriority(1)
             }
 
             Slider(
@@ -179,6 +180,7 @@ private struct EffectsValueRow: View {
             )
             .accessibilityLabel(title)
             .accessibilityValue(readout(value))
+            .accessibilitySortPriority(0)
             .accessibilityAction(named: Text("Reset to neutral"), reset)
         }
     }

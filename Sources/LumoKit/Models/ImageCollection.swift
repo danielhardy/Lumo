@@ -122,6 +122,9 @@ final class ImageCollection: ObservableObject {
     private var isThumbnailDemandDriven = false
     private var thumbnailDemandIDs: Set<PhotoAssetID> = []
     private var thumbnailDemandPriorities: [PhotoAssetID: ImageWorkScheduler.Priority] = [:]
+    /// The selected filmstrip item and its small neighborhood stay warm even when SwiftUI has not
+    /// materialized those cells yet. This keeps ←/→ stepping from waiting on a cold thumbnail.
+    private var preparedThumbnailIDs: Set<PhotoAssetID> = []
     /// Folder whose security scope we hold open, released when we move on.
     private var scopedURL: URL?
 
@@ -322,6 +325,7 @@ final class ImageCollection: ObservableObject {
         selection.clear()
         thumbnailDemandIDs.removeAll()
         thumbnailDemandPriorities.removeAll()
+        preparedThumbnailIDs.removeAll()
         isActive = false
         isScanning = true
         scanWarnings = []
@@ -589,6 +593,7 @@ final class ImageCollection: ObservableObject {
         isThumbnailDemandDriven = false
         thumbnailDemandIDs.removeAll()
         thumbnailDemandPriorities.removeAll()
+        preparedThumbnailIDs.removeAll()
         isScanning = false
         scanWarnings = []
         startMetadataLoading()
@@ -640,6 +645,7 @@ final class ImageCollection: ObservableObject {
         guard !isThumbnailDemandDriven else { return }
         isThumbnailDemandDriven = true
         cancelThumbnailWork()
+        prepareAdjacentThumbnails(around: selectedIndex)
         fillThumbnailQueue()
     }
 
@@ -670,6 +676,7 @@ final class ImageCollection: ObservableObject {
         guard isThumbnailDemandDriven else { return }
         thumbnailDemandIDs.remove(id)
         thumbnailDemandPriorities.removeValue(forKey: id)
+        guard !preparedThumbnailIDs.contains(id) else { return }
         guard let index = items.firstIndex(where: { $0.id == id }), items[index].thumbnail == nil else {
             return
         }
@@ -684,6 +691,7 @@ final class ImageCollection: ObservableObject {
         next.selectAll(in: filteredItems.map(\.id))
         selection = next
         syncSelectedIndex()
+        prepareAdjacentThumbnails(around: selectedIndex)
         reprioritizeThumbnails()
     }
 
@@ -695,6 +703,7 @@ final class ImageCollection: ObservableObject {
         next.click(items[index].id, in: filteredItems.map(\.id), modifiers: modifiers)
         selection = next
         syncSelectedIndex()
+        prepareAdjacentThumbnails(around: selectedIndex)
         reprioritizeThumbnails()
     }
 
@@ -736,6 +745,7 @@ final class ImageCollection: ObservableObject {
         isThumbnailDemandDriven = false
         thumbnailDemandIDs.removeAll()
         thumbnailDemandPriorities.removeAll()
+        preparedThumbnailIDs.removeAll()
         isActive = false
         isScanning = false
         scanWarnings = []
@@ -772,7 +782,7 @@ final class ImageCollection: ObservableObject {
         let keep: Set<ImageWorkScheduler.JobID>
         if isThumbnailDemandDriven {
             keep = Set(items.compactMap { item in
-                thumbnailDemandIDs.contains(item.id) && item.thumbnail == nil
+                isThumbnailDemanded(item.id) && item.thumbnail == nil
                     ? thumbnailJobID(for: item) : nil
             })
         } else {
@@ -851,7 +861,7 @@ final class ImageCollection: ObservableObject {
         let candidates = items.indices
             .filter {
                 items[$0].thumbnail == nil
-                    && (!isThumbnailDemandDriven || thumbnailDemandIDs.contains(items[$0].id))
+                    && (!isThumbnailDemandDriven || isThumbnailDemanded(items[$0].id))
             }
             .sorted {
                 let lhs = priority(for: $0)
@@ -876,6 +886,31 @@ final class ImageCollection: ObservableObject {
         thumbnailGeneration &+= 1
         scheduler.cancel(ids: thumbnailJobIDs)
         thumbnailJobIDs.removeAll()
+    }
+
+    /// Keep the selected photo and up to two visible neighbors eligible for thumbnail work. The
+    /// IDs are tracked separately from viewport demand so a cell disappearing from the lazy stack
+    /// cannot cancel a photo that keyboard navigation is about to use.
+    private func prepareAdjacentThumbnails(around index: Int) {
+        guard isThumbnailDemandDriven else { return }
+        let prepared = Set(items.indices.filter { abs($0 - index) <= 2 }.map { items[$0].id })
+        let obsolete = preparedThumbnailIDs.subtracting(prepared)
+        preparedThumbnailIDs = prepared
+        thumbnailDemandPriorities = thumbnailDemandPriorities.filter { id, _ in
+            thumbnailDemandIDs.contains(id) || prepared.contains(id)
+        }
+        for id in prepared {
+            thumbnailDemandPriorities[id] = .adjacentFilmstrip
+        }
+        for id in obsolete where !thumbnailDemandIDs.contains(id) {
+            guard let item = items.first(where: { $0.id == id }), item.thumbnail == nil else { continue }
+            scheduler.cancel(id: thumbnailJobID(for: item))
+            thumbnailJobIDs.remove(thumbnailJobID(for: item))
+        }
+    }
+
+    private func isThumbnailDemanded(_ id: PhotoAssetID) -> Bool {
+        thumbnailDemandIDs.contains(id) || preparedThumbnailIDs.contains(id)
     }
 
     private func reconcileSelection() {

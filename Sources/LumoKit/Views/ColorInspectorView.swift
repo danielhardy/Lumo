@@ -308,6 +308,7 @@ private struct ColorValueRow: View {
                     .multilineTextAlignment(.trailing)
                     .accessibilityLabel(title)
                     .accessibilityValue(readout(value))
+                    .accessibilitySortPriority(1)
             }
 
             Slider(
@@ -320,6 +321,7 @@ private struct ColorValueRow: View {
             )
             .accessibilityLabel(title)
             .accessibilityValue(readout(value))
+            .accessibilitySortPriority(0)
             .accessibilityAction(named: Text(resetActionTitle), reset)
         }
     }

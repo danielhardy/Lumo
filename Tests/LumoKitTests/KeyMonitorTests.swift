@@ -76,6 +76,14 @@ final class KeyMonitorTests: XCTestCase {
         XCTAssertTrue(KeyMonitorPolicy.textInputOwnsKeyboard(NSText()))
         XCTAssertFalse(KeyMonitorPolicy.textInputOwnsKeyboard(NSView()))
 
+        XCTAssertFalse(KeyMonitorPolicy.globalShortcutsOwnKeyboard(NSText()))
+        XCTAssertFalse(KeyMonitorPolicy.globalShortcutsOwnKeyboard(NSTextField()))
+        XCTAssertFalse(KeyMonitorPolicy.globalShortcutsOwnKeyboard(NSSlider()))
+        XCTAssertFalse(KeyMonitorPolicy.globalShortcutsOwnKeyboard(NSButton()))
+        XCTAssertFalse(KeyMonitorPolicy.globalShortcutsOwnKeyboard(NSSegmentedControl()))
+        XCTAssertTrue(KeyMonitorPolicy.globalShortcutsOwnKeyboard(NSView()))
+        XCTAssertTrue(KeyMonitorPolicy.globalShortcutsOwnKeyboard(nil))
+
         XCTAssertTrue(KeyMonitorPolicy.isPlainSpace(modifiers: []))
         XCTAssertFalse(KeyMonitorPolicy.isPlainSpace(modifiers: .shift))
         XCTAssertFalse(KeyMonitorPolicy.isPlainSpace(modifiers: .option))

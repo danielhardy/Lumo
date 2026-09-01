@@ -12,12 +12,21 @@ struct FilmstripView: View {
                 LazyHStack(spacing: 8) {
                     ForEach(collection.filteredIndices, id: \.self) { index in
                         let item = collection.items[index]
-                        FilmstripThumbnail(
-                            item: item,
-                            isSelected: collection.selection.selectedIDs.contains(item.id)
-                        )
+                        Button {
+                            let modifiers = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                            onSelect(index, modifiers.contains(.command))
+                        } label: {
+                            FilmstripThumbnail(
+                                item: item,
+                                isSelected: collection.selection.selectedIDs.contains(item.id)
+                            )
+                        }
+                        .buttonStyle(.plain)
                         .id(item.id)
                         .onAppear {
+                            // Child appearance can precede the scroll view's callback, so opt into
+                            // demand-driven work here as well as on the container.
+                            collection.beginThumbnailDemand()
                             collection.requestThumbnail(
                                 for: item.id, priority: .adjacentFilmstrip
                             )
@@ -25,16 +34,13 @@ struct FilmstripView: View {
                         .onDisappear {
                             collection.releaseThumbnail(for: item.id)
                         }
-                        .onTapGesture {
-                            let modifiers = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                            onSelect(index, modifiers.contains(.command))
-                        }
                     }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
             .background(.bar)
+            .onAppear { collection.beginThumbnailDemand() }
             .onChange(of: collection.selectedIndex) { _, newIndex in
                 guard collection.items.indices.contains(newIndex) else { return }
                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -80,5 +86,9 @@ struct FilmstripThumbnail: View {
                 .lineLimit(1)
                 .frame(width: 72)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(item.displayName)
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }

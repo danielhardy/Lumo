@@ -26,8 +26,12 @@ struct DevelopInspectorView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         header
-                        ForEach(DevelopControl.allCases, id: \.self) { control in
-                            controlRow(control, enabled: capabilities.supports(control))
+                        ForEach(Array(DevelopControl.allCases.enumerated()), id: \.element) { offset, control in
+                            controlRow(
+                                control,
+                                enabled: capabilities.supports(control),
+                                sortPriority: Double(DevelopControl.allCases.count - offset)
+                            )
                         }
                     }
                     .padding(16)
@@ -113,7 +117,9 @@ struct DevelopInspectorView: View {
     }
 
     @ViewBuilder
-    private func controlRow(_ control: DevelopControl, enabled: Bool) -> some View {
+    private func controlRow(
+        _ control: DevelopControl, enabled: Bool, sortPriority: Double
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 ResettableAdjustmentLabel(
@@ -133,6 +139,7 @@ struct DevelopInspectorView: View {
                     Text(String(format: "%.2f", viewModel.developValue(for: control)))
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
                 }
             }
 
@@ -142,6 +149,9 @@ struct DevelopInspectorView: View {
                     set: { viewModel.developBinding(for: control).wrappedValue = $0 ? 1 : 0 }
                 ))
                 .labelsHidden()
+                .accessibilityLabel(control.title)
+                .accessibilityValue(viewModel.developValue(for: control) != 0 ? "On" : "Off")
+                .accessibilitySortPriority(sortPriority)
             } else {
                 Slider(
                     value: viewModel.developBinding(for: control),
@@ -154,6 +164,9 @@ struct DevelopInspectorView: View {
                         }
                     }
                 )
+                .accessibilityLabel(control == .whiteBalance ? "White Balance Temperature" : control.title)
+                .accessibilityValue(String(format: "%.2f", viewModel.developValue(for: control)))
+                .accessibilitySortPriority(sortPriority)
                 .accessibilityAction(named: Text(
                     control == .whiteBalance ? "Reset to As Shot" : "Reset to decoder default"
                 )) {
@@ -184,6 +197,9 @@ struct DevelopInspectorView: View {
                                 }
                             }
                         )
+                        .accessibilityLabel("White Balance Tint")
+                        .accessibilityValue(String(format: "%.2f", viewModel.developTintBinding().wrappedValue))
+                        .accessibilitySortPriority(sortPriority - 0.5)
                     }
                 }
             }

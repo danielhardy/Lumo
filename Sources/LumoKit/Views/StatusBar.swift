@@ -34,6 +34,7 @@ struct StatusBar: View {
 
             // Hints
             HStack(spacing: 12) {
+                KeyHint(key: "G/E", label: "library/edit")
                 KeyHint(key: "↑↓", label: "audition Looks")
                 if viewModel.collection.isActive {
                     KeyHint(key: "←→", label: "cycle images")

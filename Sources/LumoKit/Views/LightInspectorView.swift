@@ -17,8 +17,11 @@ struct LightInspectorView: View {
 
                 InspectorDisclosure("Tone", isExpanded: $toneSectionExpanded) {
                     VStack(alignment: .leading, spacing: 14) {
-                        ForEach(LightControl.allCases, id: \.self) { control in
-                            controlRow(control)
+                        ForEach(Array(LightControl.allCases.enumerated()), id: \.element) { offset, control in
+                            controlRow(
+                                control,
+                                sortPriority: Double(LightControl.allCases.count - offset)
+                            )
                         }
                     }
                     .padding(.top, 10)
@@ -46,7 +49,7 @@ struct LightInspectorView: View {
         }
     }
 
-    private func controlRow(_ control: LightControl) -> some View {
+    private func controlRow(_ control: LightControl, sortPriority: Double) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 ResettableAdjustmentLabel(
@@ -57,8 +60,7 @@ struct LightInspectorView: View {
                 Text(readout(for: control))
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
-                    .accessibilityLabel(control.title)
-                    .accessibilityValue(readout(for: control))
+                    .accessibilityHidden(true)
             }
 
             Slider(
@@ -71,6 +73,7 @@ struct LightInspectorView: View {
             )
             .accessibilityLabel(control.title)
             .accessibilityValue(readout(for: control))
+            .accessibilitySortPriority(sortPriority)
             .accessibilityAction(named: Text("Reset to neutral")) {
                 viewModel.resetLight(control)
             }

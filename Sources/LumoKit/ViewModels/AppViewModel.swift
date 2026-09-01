@@ -1424,6 +1424,26 @@ public final class AppViewModel: ObservableObject {
         updateDocument { $0 = EditDocument() }
     }
 
+    /// Reset the currently visible inspector stage without crossing into another stage. The
+    /// toolbar uses this alongside each panel's local reset links so the scope is explicit before
+    /// the action is taken; every branch still records through the stage's existing undo path.
+    func resetInspectorSection() {
+        switch inspectorTab {
+        case .info:
+            statusMessage = "Info has no adjustments to reset"
+        case .light:
+            resetAllLight()
+        case .develop:
+            resetAllDevelop()
+        case .adjust:
+            resetAllAdjustments()
+        case .effects:
+            resetAllEffects()
+        case .look:
+            resetLook()
+        }
+    }
+
     private func applyHistoryDocument(_ restored: EditDocument) {
         let developChanged = restored.rawDevelop != document.rawDevelop
         displayRevision &+= 1
