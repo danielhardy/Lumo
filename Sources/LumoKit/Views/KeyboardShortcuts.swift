@@ -111,7 +111,7 @@ final class KeyMonitor {
         }
 
         // Hardware key codes (US layout independent for arrows/space).
-        // ↑/↓ cycle LUTs; ←/→ step through the source files.
+        // ↑/↓ audition looks; ←/→ step through the source files.
         switch event.keyCode {
         case 49:  // Space — hold to compare original
             vm.showOriginal(isDown)

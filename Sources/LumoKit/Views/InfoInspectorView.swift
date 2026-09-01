@@ -28,6 +28,8 @@ struct InfoInspectorView: View {
                     ColorInspectorView(viewModel: viewModel)
                 case .effects:
                     EffectsInspectorView(viewModel: viewModel)
+                case .look:
+                    LookInspectorView(viewModel: viewModel)
                 }
             }
         }

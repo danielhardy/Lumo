@@ -93,6 +93,53 @@ final class AppViewModelTests: TempDirectoryTestCase {
                       "the derived LUT must carry a derived:// identity, not a temp-file path")
     }
 
+    func testLookResetIsScopedAndUndoable() {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        let lut = TestImages.warmLUT()
+
+        viewModel.updateDocument { document in
+            document.adjustments = [.exposure(ev: 0.75)]
+        }
+        viewModel.selectLUT(lut)
+        viewModel.setLUTIntensity(0.4)
+
+        viewModel.resetLook()
+
+        XCTAssertTrue(viewModel.isLookNoneSelected)
+        XCTAssertEqual(viewModel.document.lut, .none)
+        XCTAssertEqual(viewModel.document.adjustments, [.exposure(ev: 0.75)],
+                       "resetting Look must not reset an unrelated panel")
+
+        viewModel.undo()
+        XCTAssertEqual(viewModel.document.lut.lutID, lut.lutID,
+                       "a Look reset should be one reversible operation")
+        XCTAssertEqual(viewModel.document.lut.intensity, 0.4)
+        XCTAssertEqual(viewModel.document.adjustments, [.exposure(ev: 0.75)])
+    }
+
+    func testLookSelectionAndIntensityStayWithTheirPhoto() throws {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        let first = try Fixtures.writeGradientPNG(
+            width: 8, height: 8, named: "first.png", in: tempDirectory
+        )
+        let second = try Fixtures.writeGradientPNG(
+            width: 8, height: 8, named: "second.png", in: tempDirectory
+        )
+        let lut = TestImages.warmLUT()
+
+        viewModel.openImage(url: first)
+        viewModel.selectLUT(lut)
+        viewModel.setLUTIntensity(0.35)
+
+        viewModel.openImage(url: second)
+        XCTAssertTrue(viewModel.isLookNoneSelected,
+                      "a new photo must start without the previous photo's Look")
+
+        viewModel.openImage(url: first)
+        XCTAssertEqual(viewModel.selectedLUT, lut)
+        XCTAssertEqual(viewModel.lutIntensity, 0.35)
+    }
+
     func testDeriveSavePanelDefaultsToTheLUTFolder() async throws {
         let viewModel = AppViewModel()
         XCTAssertNil(viewModel.derive.libraryFolder?(), "no folder configured yet")

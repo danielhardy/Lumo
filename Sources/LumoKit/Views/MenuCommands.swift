@@ -21,7 +21,7 @@ public struct LumoCommands: Commands {
             Button("Open Image...") { post(.openImage) }
                 .keyboardShortcut("o")
 
-            Button("Choose LUT Folder...") { post(.chooseLUTFolder) }
+            Button("Choose Look Folder...") { post(.chooseLUTFolder) }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
 
             Divider()

@@ -185,11 +185,15 @@ final class AdjustInspectorTests: TempDirectoryTestCase {
 
 extension AdjustInspectorTests {
 
-    /// Five tabs, in pipeline order left to right.
-    func testTheInspectorHasFiveTabsInPipelineOrder() {
-        XCTAssertEqual(AppViewModel.InspectorTab.allCases, [.info, .light, .develop, .adjust, .effects])
+    /// Look joins the existing inspector tabs without changing their order.
+    func testTheInspectorHasSixTabsInPipelineOrder() {
+        XCTAssertEqual(
+            AppViewModel.InspectorTab.allCases,
+            [.info, .light, .develop, .adjust, .effects, .look]
+        )
         XCTAssertEqual(AppViewModel.InspectorTab.adjust.title, "Adjust")
         XCTAssertEqual(AppViewModel.InspectorTab.effects.title, "Effects")
+        XCTAssertEqual(AppViewModel.InspectorTab.look.title, "Look")
     }
 
     /// The histogram is gated on the Info tab being on screen. Adjust is as much "a panel nobody is

@@ -68,9 +68,7 @@ public struct ContentView: View {
     }
 
     private var mainContent: some View {
-        NavigationSplitView {
-            LUTSidebar(viewModel: viewModel)
-        } detail: {
+        NavigationStack {
             detailContent
         }
         .inspector(isPresented: $viewModel.isInspectorPresented) {
@@ -172,36 +170,6 @@ public struct ContentView: View {
 
         Divider()
 
-        // LUT intensity
-        HStack(spacing: 6) {
-            Text("Intensity")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Slider(
-                value: Binding(
-                    get: { viewModel.lutIntensity },
-                    set: { viewModel.setLUTIntensity($0) }
-                ),
-                in: 0...1,
-                onEditingChanged: { editing in
-                    if editing {
-                        viewModel.beginPreviewInteraction()
-                    } else {
-                        viewModel.endPreviewInteraction()
-                    }
-                }
-            )
-            .frame(width: 100)
-            Text("\(Int((viewModel.lutIntensity * 100).rounded()))%")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: 36, alignment: .trailing)
-        }
-        .help("LUT intensity (0–100%)")
-        .disabled(viewModel.selectedLUT == nil)
-
-        Divider()
-
         // Import menu
         Menu {
             Button("Open Image...") {
@@ -221,13 +189,6 @@ public struct ContentView: View {
             }
         } label: {
             Label("Import", systemImage: "photo.on.rectangle")
-        }
-
-        // LUT folder
-        Button {
-            viewModel.chooseLUTFolder()
-        } label: {
-            Label("LUT Folder", systemImage: "folder")
         }
 
         // Export

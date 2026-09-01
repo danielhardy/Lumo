@@ -128,6 +128,19 @@ final class AppViewModel: ObservableObject {
     /// **Shim.** Reads through to the document so the toolbar slider keeps working unchanged.
     var lutIntensity: Double { document.lut.intensity }
 
+    /// The document-level identity used by the Look inspector's selection binding. This remains
+    /// separate from `selectedLUT`: an unresolved reference must not look like the explicit None
+    /// choice in the browser.
+    var selectedLookID: LUTID? { document.lut.lutID }
+
+    /// True only for the explicit no-look state. A missing file keeps its stored ID and therefore
+    /// stays visibly distinct from None until the user chooses to clear it.
+    var isLookNoneSelected: Bool { document.lut.lutID == nil }
+
+    /// Whether the Look stage has state worth resetting, including an unresolved stored reference
+    /// and an intensity changed while no LUT was selected.
+    var hasLookAdjustments: Bool { document.lut != .none }
+
     /// A missing LUT never prevents the source image from rendering. Keep the warning separate from
     /// the transient image status so the stored `LUTID` remains visible to callers and recoverable.
     @Published private(set) var lutResolutionStatus: String?
@@ -195,6 +208,7 @@ final class AppViewModel: ObservableObject {
     enum InspectorTab: String, CaseIterable, Sendable {
         case info, light, develop, adjust
         case effects
+        case look
         var title: String {
             switch self {
             case .info: return "Info"
@@ -202,6 +216,7 @@ final class AppViewModel: ObservableObject {
             case .develop: return "Develop"
             case .adjust: return "Adjust"
             case .effects: return "Effects"
+            case .look: return "Look"
             }
         }
     }
@@ -656,6 +671,17 @@ final class AppViewModel: ObservableObject {
         refreshLUTResolutionStatus()
     }
 
+    /// Select a Look by its stable document ID. The browser binds to IDs rather than resolved LUT
+    /// values so the explicit None row and a missing file remain distinct selections.
+    func selectLUT(id: LUTID?) {
+        guard let id else {
+            selectLUT(nil)
+            return
+        }
+        guard let lut = resolvedLUT(id) else { return }
+        selectLUT(lut)
+    }
+
     /// Mutate the document and re-render.
     ///
     /// The only way to reach `rawDevelop` and `adjustments` today. The inspector that will drive them
@@ -760,6 +786,19 @@ final class AppViewModel: ObservableObject {
         guard let idx = library.allLUTs.firstIndex(of: current),
               idx < library.allLUTs.count - 1 else { return }
         selectLUT(library.allLUTs[idx + 1])
+    }
+
+    /// Reset only the Look stage. Other inspector panels remain untouched, and the operation is one
+    /// reversible history entry for the active photo.
+    func resetLook() {
+        endUndoGrouping()
+        updateDocument { $0.lut = .none }
+    }
+
+    /// LUT terminology remains available to callers that have not adopted the user-facing Look
+    /// name yet.
+    func resetLUT() {
+        resetLook()
     }
 
     // MARK: - LUT application
