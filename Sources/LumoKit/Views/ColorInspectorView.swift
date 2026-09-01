@@ -67,6 +67,7 @@ struct ColorInspectorView: View {
                             : AdjustmentControl.temperature.range,
                         readout: temperatureReadout,
                         reset: { viewModel.resetWhiteBalance(.temperature) },
+                        resetActionTitle: viewModel.sourceIsRAW ? "Reset to As Shot" : "Reset to neutral",
                         disabled: viewModel.sourceIsRAW && viewModel.rawCapabilities == nil
                     )
                     valueRow(
@@ -77,6 +78,7 @@ struct ColorInspectorView: View {
                             : AdjustmentControl.tint.range,
                         readout: tintReadout,
                         reset: { viewModel.resetWhiteBalance(.tint) },
+                        resetActionTitle: viewModel.sourceIsRAW ? "Reset to As Shot" : "Reset to neutral",
                         disabled: viewModel.sourceIsRAW && viewModel.rawCapabilities == nil
                     )
                 }
@@ -214,6 +216,7 @@ struct ColorInspectorView: View {
         range: ClosedRange<Double>,
         readout: @escaping (Double) -> String,
         reset: @escaping () -> Void,
+        resetActionTitle: String = "Reset to neutral",
         disabled: Bool = false
     ) -> some View {
         ColorValueRow(
@@ -222,6 +225,7 @@ struct ColorInspectorView: View {
             range: range,
             readout: readout,
             reset: reset,
+            resetActionTitle: resetActionTitle,
             beginInteraction: viewModel.beginPreviewInteraction,
             endInteraction: viewModel.endPreviewInteraction
         )
@@ -277,15 +281,18 @@ private struct ColorValueRow: View {
     let range: ClosedRange<Double>
     let readout: (Double) -> String
     let reset: () -> Void
+    let resetActionTitle: String
     let beginInteraction: () -> Void
     let endInteraction: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Text(title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                ResettableAdjustmentLabel(
+                    title: title,
+                    reset: reset,
+                    resetActionTitle: resetActionTitle
+                )
                 Spacer()
                 TextField(title, value: $value, format: .number)
                     .textFieldStyle(.roundedBorder)
@@ -294,13 +301,6 @@ private struct ColorValueRow: View {
                     .multilineTextAlignment(.trailing)
                     .accessibilityLabel(title)
                     .accessibilityValue(readout(value))
-                Button(action: reset) {
-                    Image(systemName: "arrow.uturn.backward")
-                }
-                .buttonStyle(.borderless)
-                .controlSize(.mini)
-                .help("Reset \(title)")
-                .accessibilityLabel("Reset \(title)")
             }
 
             Slider(

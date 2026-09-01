@@ -40,19 +40,14 @@ struct AdjustInspectorView: View {
     private func controlRow(_ control: AdjustmentControl) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(control.title).font(.caption).foregroundStyle(.secondary)
+                ResettableAdjustmentLabel(
+                    title: control.title,
+                    reset: { viewModel.resetAdjustment(control) }
+                )
                 Spacer()
                 Text(readout(for: control))
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
-                Button {
-                    viewModel.resetAdjustment(control)
-                } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                }
-                .buttonStyle(.borderless)
-                .controlSize(.mini)
-                .help("Reset to neutral")
             }
 
             Slider(
@@ -66,6 +61,9 @@ struct AdjustInspectorView: View {
                     }
                 }
             )
+            .accessibilityAction(named: Text("Reset to neutral")) {
+                viewModel.resetAdjustment(control)
+            }
         }
     }
 

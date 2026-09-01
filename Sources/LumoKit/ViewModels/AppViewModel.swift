@@ -1050,6 +1050,8 @@ public final class AppViewModel: ObservableObject {
         pendingDevelopChange = pendingDevelopChange || developChanged
 
         guard debounced else {
+            previewDebounceTask?.cancel()
+            previewDebounceTask = nil
             schedulePreview()
             return
         }

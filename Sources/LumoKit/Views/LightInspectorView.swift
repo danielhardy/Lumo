@@ -49,26 +49,16 @@ struct LightInspectorView: View {
     private func controlRow(_ control: LightControl) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(control.title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .onTapGesture(count: 2) { viewModel.resetLight(control) }
+                ResettableAdjustmentLabel(
+                    title: control.title,
+                    reset: { viewModel.resetLight(control) }
+                )
                 Spacer()
                 Text(readout(for: control))
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
-                    .onTapGesture(count: 2) { viewModel.resetLight(control) }
                     .accessibilityLabel(control.title)
                     .accessibilityValue(readout(for: control))
-                Button {
-                    viewModel.resetLight(control)
-                } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                }
-                .buttonStyle(.borderless)
-                .controlSize(.mini)
-                .help("Reset (control.title)")
-                .accessibilityLabel("Reset (control.title)")
             }
 
             Slider(
@@ -81,6 +71,9 @@ struct LightInspectorView: View {
             )
             .accessibilityLabel(control.title)
             .accessibilityValue(readout(for: control))
+            .accessibilityAction(named: Text("Reset to neutral")) {
+                viewModel.resetLight(control)
+            }
         }
     }
 

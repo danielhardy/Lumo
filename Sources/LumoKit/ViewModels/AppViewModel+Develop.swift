@@ -122,6 +122,7 @@ extension AppViewModel {
 
     /// Return one control to "decoder default" — `nil`, not zero.
     func resetDevelop(_ control: DevelopControl) {
+        endUndoGrouping()
         updateDocument { document in
             switch control {
             case .exposure: document.rawDevelop.exposure = nil
@@ -175,6 +176,7 @@ extension AppViewModel {
 
     /// Return every develop control to the decoder's defaults.
     func resetAllDevelop() {
+        endUndoGrouping()
         updateDocument { $0.rawDevelop = .neutral }
     }
 }

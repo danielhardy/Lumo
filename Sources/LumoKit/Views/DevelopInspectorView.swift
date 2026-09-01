@@ -116,27 +116,24 @@ struct DevelopInspectorView: View {
     private func controlRow(_ control: DevelopControl, enabled: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(control.title).font(.caption).foregroundStyle(.secondary)
+                ResettableAdjustmentLabel(
+                    title: control.title,
+                    reset: {
+                        if control == .whiteBalance {
+                            viewModel.resetWhiteBalance()
+                        } else {
+                            viewModel.resetDevelop(control)
+                        }
+                    },
+                    resetActionTitle: control == .whiteBalance
+                        ? "Reset to As Shot" : "Reset to decoder default"
+                )
                 Spacer()
                 if !control.isToggle {
                     Text(String(format: "%.2f", viewModel.developValue(for: control)))
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
-                Button {
-                    if control == .whiteBalance {
-                        viewModel.resetWhiteBalance()
-                    } else {
-                        viewModel.resetDevelop(control)
-                    }
-                } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                }
-                .buttonStyle(.borderless)
-                .controlSize(.mini)
-                .help(control == .whiteBalance
-                    ? "Use the file's As Shot white balance"
-                    : "Reset to the decoder's default")
             }
 
             if control.isToggle {
@@ -157,12 +154,25 @@ struct DevelopInspectorView: View {
                         }
                     }
                 )
+                .accessibilityAction(named: Text(
+                    control == .whiteBalance ? "Reset to As Shot" : "Reset to decoder default"
+                )) {
+                    if control == .whiteBalance {
+                        viewModel.resetWhiteBalance()
+                    } else {
+                        viewModel.resetDevelop(control)
+                    }
+                }
                 if control == .whiteBalance {
                     HStack {
                         Button("As Shot") { viewModel.resetWhiteBalance() }
                             .buttonStyle(.link)
                             .help("Restore this file's decoder white balance")
-                        Text("Tint").font(.caption2).foregroundStyle(.secondary)
+                        ResettableAdjustmentLabel(
+                            title: "Tint",
+                            reset: { viewModel.resetWhiteBalance(.tint) },
+                            resetActionTitle: "Reset to As Shot"
+                        )
                         Slider(
                             value: viewModel.developTintBinding(),
                             in: DevelopControl.tintRange,

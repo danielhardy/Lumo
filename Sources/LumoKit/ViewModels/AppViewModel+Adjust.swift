@@ -45,6 +45,7 @@ extension AppViewModel {
     /// Return one row to its neutral. Undebounced — `updateDocument(debounced:)`'s contract is that
     /// discrete controls fire immediately.
     func resetAdjustment(_ control: AdjustmentControl) {
+        endUndoGrouping()
         updateDocument { document in
             document.adjustments = control.setting(control.neutral, in: document.adjustments)
         }
@@ -55,6 +56,7 @@ extension AppViewModel {
     /// Clears `adjustments` and nothing else: `rawDevelop` and the LUT belong to other panels, and a
     /// Reset button that reached across panel boundaries would be a trap.
     func resetAllAdjustments() {
+        endUndoGrouping()
         updateDocument { $0.adjustments = [] }
     }
 

@@ -158,9 +158,7 @@ private struct EffectsValueRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Text(title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                ResettableAdjustmentLabel(title: title, reset: reset)
                 Spacer()
                 TextField(title, value: $value, format: .number)
                     .textFieldStyle(.roundedBorder)
@@ -169,13 +167,6 @@ private struct EffectsValueRow: View {
                     .multilineTextAlignment(.trailing)
                     .accessibilityLabel(title)
                     .accessibilityValue(readout(value))
-                Button(action: reset) {
-                    Image(systemName: "arrow.uturn.backward")
-                }
-                .buttonStyle(.borderless)
-                .controlSize(.mini)
-                .help("Reset \(title)")
-                .accessibilityLabel("Reset \(title)")
             }
 
             Slider(
@@ -188,6 +179,7 @@ private struct EffectsValueRow: View {
             )
             .accessibilityLabel(title)
             .accessibilityValue(readout(value))
+            .accessibilityAction(named: Text("Reset to neutral"), reset)
         }
     }
 }
