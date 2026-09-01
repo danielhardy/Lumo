@@ -164,8 +164,6 @@ final class AppViewModel: ObservableObject {
             !document.adjustments.allSatisfy(\.isIdentity) || !document.lut.isIdentity
     }
 
-    @Published var previewNSImage: NSImage?
-    @Published var originalPreviewNSImage: NSImage?
     @Published var isShowingOriginal: Bool = false
     @Published var isSideBySide: Bool = true
 
@@ -404,14 +402,11 @@ final class AppViewModel: ObservableObject {
         previewCoordinator.cancel()
         previewSurface.clear()
         originalPreviewSurface.clear()
-        // Do not let the raster fallback briefly show the photo we are leaving while the new
-        // source is being decoded. The persistent GPU surface is intentionally cleared first, so
-        // these legacy values must be cleared in the same source-generation turn.
+        // Do not let the previous surface briefly show the photo we are leaving while the new
+        // source is being decoded.
         sourceImage = nil
         sourceURL = nil
         sourceSize = .zero
-        previewNSImage = nil
-        originalPreviewNSImage = nil
         isPreviewInteractionActive = false
         loadTask?.cancel()
         metadataTask?.cancel()
@@ -778,7 +773,6 @@ final class AppViewModel: ObservableObject {
     /// `RenderEngine` to evaluate the graph inside its actor.
     private func schedulePreview() {
         guard let imageSource else {
-            previewNSImage = nil
             previewSurface.clear()
             return
         }
@@ -899,27 +893,22 @@ final class AppViewModel: ObservableObject {
                                    telemetry: previewCoordinator.telemetry,
                                    source: publication.request.source,
                                    quality: publication.request.quality)
+        } else if let cgImage = publication.image {
+            // Non-GPU conformers retain a raster compatibility seam, but it terminates at the
+            // same persistent surface. Production RenderEngine publishes `gpuImage`, so this does
+            // not allocate or publish an NSImage on the normal preview path.
+            previewSurface.present(CIImage(cgImage: cgImage), space: publication.request.space,
+                                   revision: publication.revision,
+                                   telemetry: previewCoordinator.telemetry,
+                                   source: publication.request.source,
+                                   quality: publication.request.quality)
         }
-        guard let cgImage = publication.image else {
+        guard publication.gpuImage != nil || publication.image != nil else {
             if publication.phase == .settled {
-                if publication.gpuImage == nil {
-                    statusMessage = "Could not render \(sourceName)"
-                } else {
-                    if pendingDevelopChange {
-                        pendingDevelopChange = false
-                        scheduleOriginalPreview()
-                    }
-                    updateHistogram()
-                }
+                statusMessage = "Could not render \(sourceName)"
             }
             return
         }
-
-        let image = NSImage(
-            cgImage: cgImage,
-            size: NSSize(width: cgImage.width, height: cgImage.height)
-        )
-        previewNSImage = image
 
         // The comparison baseline is supporting work. Queue it only after the visible settled
         // result has published so a navigation/edit burst cannot put it ahead of the main image.
@@ -937,7 +926,6 @@ final class AppViewModel: ObservableObject {
     private func scheduleOriginalPreview() {
         guard let imageSource else {
             originalPreviewTask?.cancel()
-            originalPreviewNSImage = nil
             originalPreviewSurface.clear()
             return
         }
@@ -966,11 +954,7 @@ final class AppViewModel: ObservableObject {
                   documentRevision == self.documentRevision,
                   self.imageSource == imageSource,
                   let cgImage else { return }
-            let image = NSImage(
-                cgImage: cgImage,
-                size: NSSize(width: cgImage.width, height: cgImage.height)
-            )
-            self.originalPreviewNSImage = image
+            self.originalPreviewSurface.present(CIImage(cgImage: cgImage), space: request.space)
         }
     }
 

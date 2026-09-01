@@ -44,7 +44,6 @@ struct PreviewView: View {
             HStack(spacing: 2) {
                 // Original
                 panelView(
-                    image: viewModel.originalPreviewNSImage,
                     surface: viewModel.originalPreviewSurface,
                     label: "Original",
                     labelSide: .leading,
@@ -58,7 +57,6 @@ struct PreviewView: View {
 
                 // LUT applied
                 panelView(
-                    image: viewModel.previewNSImage,
                     surface: viewModel.previewSurface,
                     label: viewModel.selectedLUT?.name ?? "Adjusted",
                     labelSide: .trailing,
@@ -69,7 +67,7 @@ struct PreviewView: View {
         .padding(8)
     }
 
-    private func panelView(image: NSImage?, surface: PreviewSurface, label: String, labelSide: HorizontalAlignment, width: CGFloat) -> some View {
+    private func panelView(surface: PreviewSurface, label: String, labelSide: HorizontalAlignment, width: CGFloat) -> some View {
         ZStack(alignment: labelSide == .leading ? .topLeading : .topTrailing) {
             bgColor
 
@@ -77,11 +75,6 @@ struct PreviewView: View {
                 PreviewSurfaceView(surface: surface)
                     .aspectRatio(surface.image?.extent.size ?? CGSize(width: 1, height: 1),
                                  contentMode: .fit)
-                    .frame(maxWidth: width, maxHeight: .infinity)
-            } else if let nsImage = image {
-                Image(nsImage: nsImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
                     .frame(maxWidth: width, maxHeight: .infinity)
             }
 
@@ -100,14 +93,9 @@ struct PreviewView: View {
                     .aspectRatio(viewModel.previewSurface.image?.extent.size ?? CGSize(width: 1, height: 1),
                                  contentMode: .fit)
                     .padding(8)
-            } else if let nsImage = viewModel.previewNSImage {
-                Image(nsImage: nsImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .padding(8)
             }
 
-            if viewModel.previewSurface.image != nil || viewModel.previewNSImage != nil {
+            if viewModel.previewSurface.image != nil {
                 // Comparison badge
                 if viewModel.isShowingOriginal && viewModel.isComparisonAvailable {
                     VStack {

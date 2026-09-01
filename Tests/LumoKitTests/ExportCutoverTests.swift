@@ -386,7 +386,7 @@ final class ExportCutoverTests: TempDirectoryTestCase {
         let fake = FakeRenderEngine()
         let viewModel = AppViewModel(engine: fake)
         viewModel.openImage(url: try makeImageFile())
-        try await waitUntil("the first preview") { viewModel.previewNSImage != nil }
+        try await waitUntil("the first preview") { viewModel.previewSurface.image != nil }
         viewModel.updateDocument { $0.adjustments = [.exposure(ev: 0.9)] }
         // Wait for the render the edit triggered, then give the histogram every chance to fire.
         _ = try await awaitPreviewRequest(fake, "the adjusted render") {
