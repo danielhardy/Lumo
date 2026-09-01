@@ -2,8 +2,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
 
-/// Modal sheet for deriving a .cube LUT from a (RAW, JPG) pair.
-/// Scratch-mode: the derived LUT lives in `coordinator.derivedLUT` until the
+/// Modal sheet for deriving a `.cube` Look from a (RAW, JPG) pair.
+/// Scratch-mode: the derived Look lives in `coordinator.derivedLUT` until the
 /// user clicks Save. Observes `DeriveCoordinator` directly rather than the
 /// whole app view model — this sheet touches nothing else.
 struct RecipeExtractorSheet: View {
@@ -55,9 +55,9 @@ struct RecipeExtractorSheet: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Derive LUT from JPG")
+            Text("Derive Look from JPG")
                 .font(.title2.bold())
-            Text("Extract a .cube LUT from a (RAW, JPG) pair by comparing pixel correspondences. The derived LUT lives as a preview until you save it.")
+            Text("Extract a .cube Look from a (RAW, JPG) pair by comparing pixel correspondences. The derived Look lives as a preview until you save it.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -120,7 +120,7 @@ struct RecipeExtractorSheet: View {
             Spacer()
 
             if coordinator.derivedLUT != nil && !coordinator.isDeriving {
-                Button("Save to LUT Folder…") {
+                Button("Save to Look Folder…") {
                     coordinator.saveDialog()
                 }
             }

@@ -112,7 +112,7 @@ struct InfoInspectorView: View {
 
     private var histogramSourceLabel: String {
         if viewModel.isShowingOriginal { return "Original" }
-        if viewModel.selectedLUT != nil { return "Graded" }
+        if viewModel.selectedLook != nil { return "Graded" }
         return viewModel.isComparisonAvailable ? "Edited" : "Original"
     }
 

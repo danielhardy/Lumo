@@ -35,6 +35,20 @@ final class LUTWorkflowTests: TempDirectoryTestCase {
         return (first, second)
     }
 
+    func testLookNavigationOpensTheSingleAuthoritativeInspectorSurface() {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+
+        viewModel.showLookInspector()
+
+        XCTAssertTrue(viewModel.isInspectorPresented)
+        XCTAssertEqual(viewModel.inspectorTab, .look)
+        XCTAssertEqual(
+            AppViewModel.InspectorTab.allCases.filter { $0 == .look }.count,
+            1,
+            "toolbar Look navigation must land on one shared inspector tab"
+        )
+    }
+
     func testLUTSurvivesNavigationAndRelaunchForItsPhoto() async throws {
         let (first, second) = try makePhotoFolder()
         let (lookFolder, lut) = try makeLUTFolder()
@@ -49,8 +63,8 @@ final class LUTWorkflowTests: TempDirectoryTestCase {
         viewModel.openImage(url: first)
         try await waitUntil("the first photo") { viewModel.sourceName == "one.png" }
 
-        viewModel.selectLUT(lut)
-        viewModel.setLUTIntensity(0.35)
+        viewModel.selectLook(lut)
+        viewModel.setLookIntensity(0.35)
         try await waitForLUTRequest(fake, id: lut.lutID, intensity: 0.35)
 
         viewModel.openImage(url: second)
@@ -73,8 +87,59 @@ final class LUTWorkflowTests: TempDirectoryTestCase {
             relaunched.sourceName == "one.png"
                 && relaunched.document.lut.lutID == lut.lutID
                 && relaunched.document.lut.intensity == 0.35
-                && relaunched.selectedLUT != nil
+                && relaunched.selectedLook != nil
         }
+    }
+
+    func testCanonicalLookStateDistinguishesMissingReferenceFromExplicitNone() async throws {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        let source = try Fixtures.writeGradientPNG(
+            width: 8, height: 8, named: "missing-look-source.png", in: tempDirectory
+        )
+        viewModel.openImage(url: source)
+        try await waitUntil("the source image") { viewModel.sourceName == source.lastPathComponent }
+
+        let missing = LUTID(raw: tempDirectory.appendingPathComponent("Moved Look.cube").path)
+        viewModel.updateDocument {
+            $0.lut.lutID = missing
+            $0.lut.intensity = 0.42
+        }
+
+        XCTAssertEqual(viewModel.selectedLookID, missing)
+        XCTAssertNil(viewModel.selectedLook, "an unresolved Look must not be mistaken for None")
+        XCTAssertFalse(viewModel.isLookNoneSelected)
+        XCTAssertEqual(viewModel.lookIntensity, 0.42)
+        XCTAssertEqual(
+            viewModel.lutResolutionStatus,
+            "Look “Moved Look.cube” is unavailable; the stored reference was kept."
+        )
+
+        viewModel.selectLook(nil)
+        XCTAssertNil(viewModel.selectedLookID)
+        XCTAssertTrue(viewModel.isLookNoneSelected)
+        XCTAssertEqual(viewModel.lookIntensity, 0.42, "clearing a Look keeps its chosen intensity")
+    }
+
+    func testCanonicalLookAuditionFollowsTheLibraryOrder() async throws {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        let folder = tempDirectory.appendingPathComponent("audition-looks")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let firstURL = try Fixtures.writeCube(
+            Fixtures.identityCubeText(size: 2), named: "01 First.cube", in: folder
+        )
+        let secondURL = try Fixtures.writeCube(
+            Fixtures.identityCubeText(size: 2), named: "02 Second.cube", in: folder
+        )
+        let first = try CubeLUT(url: firstURL)
+        let second = try CubeLUT(url: secondURL)
+
+        viewModel.library.setFolder(folder)
+        while viewModel.library.isScanning { try await Task.sleep(for: .milliseconds(10)) }
+        viewModel.selectLook(first)
+        viewModel.selectNextLook()
+        XCTAssertEqual(viewModel.selectedLookID, second.lutID)
+        viewModel.selectPreviousLook()
+        XCTAssertEqual(viewModel.selectedLookID, first.lutID)
     }
 
     func testCopyPasteTransfersLUTToExactlySelectedPhotosAndUndoRestoresEach() async throws {
@@ -95,8 +160,8 @@ final class LUTWorkflowTests: TempDirectoryTestCase {
         viewModel.selectCollectionImage(at: firstIndex)
         try await waitUntil("the source photo") { viewModel.sourceName == "one.png" }
 
-        viewModel.selectLUT(lut)
-        viewModel.setLUTIntensity(0.6)
+        viewModel.selectLook(lut)
+        viewModel.setLookIntensity(0.6)
         viewModel.copyAllEdits()
         guard let secondIndex = viewModel.collection.items.firstIndex(where: { $0.url == second }),
               let thirdIndex = viewModel.collection.items.firstIndex(where: { $0.url == third }) else {

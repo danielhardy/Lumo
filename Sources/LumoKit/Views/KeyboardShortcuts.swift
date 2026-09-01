@@ -111,16 +111,16 @@ final class KeyMonitor {
         }
 
         // Hardware key codes (US layout independent for arrows/space).
-        // ↑/↓ audition looks; ←/→ step through the source files.
+        // ↑/↓ audition Looks; ←/→ step through the source files.
         switch event.keyCode {
         case 49:  // Space — hold to compare original
             vm.showOriginal(isDown)
             return nil
-        case 126: // Up arrow — previous LUT
-            if isDown { vm.selectPreviousLUT() }
+        case 126: // Up arrow — previous Look
+            if isDown { vm.selectPreviousLook() }
             return nil
-        case 125: // Down arrow — next LUT
-            if isDown { vm.selectNextLUT() }
+        case 125: // Down arrow — next Look
+            if isDown { vm.selectNextLook() }
             return nil
         case 123: // Left arrow — previous image
             guard vm.collection.isActive else { return event }

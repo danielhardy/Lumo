@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The optional Look stage: a searchable, folder-aware browser for `.cube` looks and their
-/// per-photo intensity. Keeping this in the editor inspector makes a LUT available without making
+/// The one optional Look stage: a searchable, folder-aware browser for `.cube` looks and their
+/// per-photo intensity. It is hosted in the editor inspector so Look is available without making
 /// one a prerequisite for ordinary editing.
 struct LookInspectorView: View {
     @ObservedObject var viewModel: AppViewModel
@@ -77,7 +77,7 @@ struct LookInspectorView: View {
             .help("Derive a look from a RAW and JPG")
 
             Button {
-                viewModel.chooseLUTFolder()
+                viewModel.chooseLookFolder()
             } label: {
                 Image(systemName: "folder")
             }
@@ -125,7 +125,7 @@ struct LookInspectorView: View {
         List(selection: selectedLookBinding) {
             Section {
                 Button {
-                    viewModel.selectLUT(nil)
+                    viewModel.selectLook(nil)
                 } label: {
                     LookNoneRow(isSelected: viewModel.isLookNoneSelected)
                 }
@@ -151,8 +151,8 @@ struct LookInspectorView: View {
                 ForEach(filteredCategories) { category in
                     Section(isExpanded: isExpandedBinding(category.id)) {
                         ForEach(category.luts) { lut in
-                            LUTRow(
-                                lut: lut,
+                            LookRow(
+                                look: lut,
                                 isSelected: viewModel.selectedLookID == lut.lutID
                             )
                             .tag(Optional(lut.lutID))
@@ -177,7 +177,7 @@ struct LookInspectorView: View {
     private var selectedLookBinding: Binding<LUTID?> {
         Binding(
             get: { viewModel.selectedLookID },
-            set: { viewModel.selectLUT(id: $0) }
+            set: { viewModel.selectLook(id: $0) }
         )
     }
 
@@ -198,7 +198,7 @@ struct LookInspectorView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Button("Choose Folder…") {
-                viewModel.chooseLUTFolder()
+                viewModel.chooseLookFolder()
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
@@ -214,15 +214,15 @@ struct LookInspectorView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("\(Int((viewModel.lutIntensity * 100).rounded()))%")
+                Text("\(Int((viewModel.lookIntensity * 100).rounded()))%")
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
 
             Slider(
                 value: Binding(
-                    get: { viewModel.lutIntensity },
-                    set: { viewModel.setLUTIntensity($0) }
+                    get: { viewModel.lookIntensity },
+                    set: { viewModel.setLookIntensity($0) }
                 ),
                 in: 0...1,
                 onEditingChanged: { editing in
@@ -234,8 +234,8 @@ struct LookInspectorView: View {
                 }
             )
             .accessibilityLabel("Look intensity")
-            .accessibilityValue("\(Int((viewModel.lutIntensity * 100).rounded())) percent")
-            .disabled(viewModel.selectedLUT == nil)
+            .accessibilityValue("\(Int((viewModel.lookIntensity * 100).rounded())) percent")
+            .disabled(viewModel.selectedLook == nil)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -299,8 +299,8 @@ private struct LookNoneRow: View {
     }
 }
 
-struct LUTRow: View {
-    let lut: CubeLUT
+struct LookRow: View {
+    let look: CubeLUT
     let isSelected: Bool
 
     var body: some View {
@@ -309,7 +309,7 @@ struct LUTRow: View {
                 .fill(isSelected ? Color.accentColor : Color.secondary.opacity(0.3))
                 .frame(width: 4, height: 20)
 
-            Text(lut.name)
+            Text(look.name)
                 .font(.system(.body, design: .default))
                 .lineLimit(1)
 
@@ -321,7 +321,7 @@ struct LUTRow: View {
             }
         }
         .contentShape(Rectangle())
-        .accessibilityLabel(lut.name)
+        .accessibilityLabel(look.name)
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
     }
 }

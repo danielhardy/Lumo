@@ -104,7 +104,7 @@ struct RecipeReportView: View {
                 label: "Sharpening",
                 value: String(format: "%.1f×", report.sharpeningRatio),
                 tint: .purple,
-                hint: "applied separately, not in LUT"
+                hint: "applied separately, not in Look"
             )
             StatBadge(
                 label: "Coverage",

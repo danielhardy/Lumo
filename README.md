@@ -90,16 +90,16 @@ the *same* document, so what you see is what exports.
   only if the file's decoder offers it, and is seeded from that file's own defaults.
 - **Adjust panel** — Exposure (EV), Brightness, Contrast, Saturation, Highlights, Shadows,
   Temperature, Tint, and Vibrance.
-- **LUT** — optional, at any intensity; a look is one stage of the edit, not the whole edit.
+- **Look** — optional, at any intensity; a `.cube` LUT is one stage of the edit, not the whole edit.
 
-### Grade with LUTs
+### Apply an optional Look
 - Parses standard `.cube` 3D LUTs (`LUT_3D_SIZE`, `DOMAIN_MIN`/`MAX`) and applies them through `CIColorCubeWithColorSpace` — **fully GPU-accelerated** via Metal.
-- **Sidebar library** scans your LUT folder recursively and groups looks by subfolder, with a live search field and a running count.
-- **Folder access survives restarts** through App Sandbox security-scoped bookmarks — pick your LUT folder once.
-- **`↑` / `↓`** cycles through every LUT in your library with instant preview; the toolbar **intensity slider** (0–100%) blends the look back toward the original.
+- **Look inspector** is the single browser: it scans your Look folder recursively, groups looks by subfolder, and provides search, None, selection, and intensity controls.
+- **Folder access survives restarts** through App Sandbox security-scoped bookmarks — pick your Look folder once.
+- **`↑` / `↓`** auditions every Look in your library with instant preview; the inspector **intensity slider** (0–100%) blends the Look back toward the original.
 
-### Derive a LUT from a JPG
-- Most apps *apply* LUTs; Lumo can also **manufacture** one. Point it at a RAW file *and* the camera's straight-out-of-camera JPEG, and it synthesises a `.cube` LUT that turns the neutral RAW into that JPEG's look — bottle your camera's color science (or a borrowed film simulation) and apply it to everything else. See [Derive a LUT from a JPG](#-derive-a-lut-from-a-jpg).
+### Derive a Look from a JPG
+- Most apps *apply* LUTs; Lumo can also **manufacture** one. Point it at a RAW file *and* the camera's straight-out-of-camera JPEG, and it synthesises a `.cube` LUT that turns the neutral RAW into that JPEG's look — bottle your camera's color science (or a borrowed film simulation) and apply it to everything else. See [Derive a Look from a JPG](#-derive-a-look-from-a-jpg).
 
 ### Compare like you mean it
 - **Side-by-side** original vs. edited, or a single full-bleed view — toggle with **`V`**.
@@ -110,7 +110,7 @@ the *same* document, so what you see is what exports.
 
 ### Export at full quality
 - **16-bit TIFF**, **JPEG** (q 0.95), or **PNG** — always at full source resolution, rendered from the original plus your edit.
-- Output is auto-named `‹photo›_‹LUT name›.‹ext›` when a LUT is in the document.
+- Output is auto-named `‹photo›_‹Look name›.‹ext›` when a Look is in the document.
 - **Export All** (**`⌘⇧E`**) applies your current edit to every image in the set and writes them to a folder you pick, skipping (and counting) anything that fails rather than aborting the run.
 
 ---
@@ -135,13 +135,13 @@ the *same* document, so what you see is what exports.
 
 ---
 
-## 🔬 Derive a LUT from a JPG
+## 🔬 Derive a Look from a JPG
 
 This is what makes Lumo unusual. Most apps *apply* LUTs; Lumo can also **manufacture** one.
 
 **The idea:** your camera shot a RAW and, at the same instant, rendered its own JPEG using the manufacturer's color science (or whatever film simulation / picture profile you had dialed in). That JPEG *is* a look. Lumo compares the neutral RAW against that JPEG and bakes the difference into a portable `.cube` file you can apply to any other photo.
 
-**Menu:** `File ▸ Derive LUT from JPG…` (**`⌘D`**) → pick the RAW, pick the JPEG, hit **Derive**.
+**Menu:** `File ▸ Derive Look from JPG…` (**`⌘D`**) → pick the RAW, pick the JPEG, hit **Derive**.
 
 ```
   RAW ──► CIRAWFilter (neutral baseline) ─┐
@@ -170,8 +170,8 @@ Every derivation comes with a readout (rendered with Swift Charts) so you unders
 | **Samples** | How many smooth-region pixels survived the edge mask |
 | **Camera** | Make / model and EXIF contrast, saturation, sharpness, and white-balance tags from the JPEG |
 
-The result previews live on your current image immediately. It stays a scratch LUT until you click
-**Save to LUT Folder…**, at which point it joins your sidebar library like any other `.cube`; the
+The result previews live on your current image immediately. It stays a scratch Look until you click
+**Save to Look Folder…**, at which point it joins the Look inspector like any other `.cube`; the
 edit document references it by a stable ID, so the look keeps resolving even after the library is
 rescanned.
 
@@ -181,17 +181,17 @@ rescanned.
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` | Previous / next LUT |
+| `↑` / `↓` | Previous / next Look |
 | `←` / `→` (or `[` / `]`) | Previous / next image (when a set is loaded) |
 | `Space` (hold) | Show original — develop applied, look removed |
 | `V` | Toggle side-by-side / single view |
-| `⌘I` | Toggle the inspector (Info / Develop / Adjust tabs) |
+| `⌘I` | Toggle the inspector (Info / Develop / Adjust / Look tabs) |
 | `⌘O` | Open image |
 | `⌘⇧I` | Import from Photos |
 | `⌘⌥I` | Open source folder |
 | `⌘R` | Re-scan the source folder |
-| `⌘⇧L` | Choose LUT folder |
-| `⌘D` | Derive LUT from JPG |
+| `⌘⇧L` | Choose Look folder |
+| `⌘D` | Derive Look from JPG |
 | `⌘⌥C` | Copy all edits |
 | `⌘⌥V` | Paste edits |
 | `⌘S` | Export |
@@ -287,7 +287,7 @@ Sources/
     │   ├── AppViewModel.swift       # central @MainActor state: source, document, collection, LUT
     │   ├── AppViewModel+Adjust.swift  # the nine Adjust-panel bindings onto document.adjustments
     │   ├── AppViewModel+Develop.swift # develop-panel bindings, seeded from per-file decoder defaults
-    │   ├── DeriveCoordinator.swift  # "Derive LUT from JPG" flow, scratch-until-saved result
+    │   ├── DeriveCoordinator.swift  # "Derive Look from JPG" flow, scratch-until-saved result
     │   └── ExportCoordinator.swift  # single + batch export, and the naming they share
     └── Views/
         ├── AdjustInspectorView.swift  # slider rows for the adjust controls (data-driven)
@@ -296,10 +296,10 @@ Sources/
         ├── FilmstripView.swift        # horizontal thumbnail strip for batches
         ├── InfoInspectorView.swift    # inspector pane: Info (histogram + EXIF) / Develop / Adjust tabs
         ├── KeyboardShortcuts.swift    # window-level NSEvent monitor for arrow/letter keys
-        ├── LUTSidebar.swift           # searchable, category-grouped LUT list (sidebar)
+        ├── LookInspectorView.swift    # single searchable, category-grouped Look browser
         ├── MenuCommands.swift         # File menu + its notification names                   [public]
         ├── PreviewView.swift          # side-by-side / single canvas, drag-drop, badges
-        ├── RecipeExtractorSheet.swift # "Derive LUT from JPG" modal (pickers, progress, report)
+        ├── RecipeExtractorSheet.swift # "Derive Look from JPG" modal (pickers, progress, report)
         ├── RecipeReportView.swift     # analysis card — Swift Charts tone curve + stat badges
         ├── SourceBrowserView.swift    # docked source-folder file list, grouped by subfolder
         └── StatusBar.swift            # status line + key hints along the bottom

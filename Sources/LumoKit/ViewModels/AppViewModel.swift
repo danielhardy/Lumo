@@ -159,13 +159,20 @@ public final class AppViewModel: ObservableObject {
     /// single `scratchLUT` slot that stood here.
     private var derivedRegistry = DerivedLUTRegistry()
 
-    /// **Shim.** The document stores a `LUTID`; views still want the LUT. Resolution is deliberately
-    /// a fresh lookup rather than a cached object — `LUTID` is a file path precisely so a rescan
-    /// cannot break it (§4.3).
-    var selectedLUT: CubeLUT? { resolvedLUT(document.lut.lutID) }
+    /// The selected Look resolved from the active photo's persisted `LUTID`. Resolution is
+    /// deliberately fresh: a library rescan may replace the in-memory `CubeLUT`, but it must not
+    /// change the document's reference (§4.3).
+    var selectedLook: CubeLUT? { resolvedLUT(document.lut.lutID) }
 
-    /// **Shim.** Reads through to the document so the toolbar slider keeps working unchanged.
-    var lutIntensity: Double { document.lut.intensity }
+    /// The active photo's persisted Look strength.
+    var lookIntensity: Double { document.lut.intensity }
+
+    /// Compatibility seam for render and test callers that still use the model's historical LUT
+    /// name. The user-facing editor is routed through `selectedLook`.
+    var selectedLUT: CubeLUT? { selectedLook }
+
+    /// Compatibility seam for callers that still use the model's historical LUT name.
+    var lutIntensity: Double { lookIntensity }
 
     /// The document-level identity used by the Look inspector's selection binding. This remains
     /// separate from `selectedLUT`: an unresolved reference must not look like the explicit None
@@ -292,7 +299,7 @@ public final class AppViewModel: ObservableObject {
     /// Writing images to disk — the single export, the batch run, and naming.
     /// Shares this view model's engine, so an export renders through the same funnel the preview does.
     let export: ExportCoordinator
-    /// The "Derive LUT from JPG" flow and its scratch-until-saved result.
+    /// The "Derive Look from JPG" flow and its scratch-until-saved result.
     let derive = DeriveCoordinator()
 
     // Convenience passthroughs so views and the menu don't have to know which
@@ -402,7 +409,7 @@ public final class AppViewModel: ObservableObject {
         derive.onDerived = { [weak self] lut in
             // Preview the new look immediately, if there's something to see.
             guard let self, self.sourceImage != nil else { return }
-            self.selectLUT(lut)
+            self.selectLook(lut)
         }
         derive.libraryFolder = { [weak self] in self?.library.folderURL }
         derive.onSaved = { [weak self] destination in
@@ -873,28 +880,34 @@ public final class AppViewModel: ObservableObject {
         }
     }
 
-    // MARK: - LUT selection
+    // MARK: - Look selection
 
-    func selectLUT(_ lut: CubeLUT?) {
+    func selectLook(_ look: CubeLUT?) {
         // A derived LUT is in no library, so nothing but the registry can resolve it later. Remember
         // it rather than replacing the last one: a document made now must still resolve after the
         // user derives again.
-        if let lut, lut.lutID.isDerived { derivedRegistry.register(lut) }
+        if let look, look.lutID.isDerived { derivedRegistry.register(look) }
         endUndoGrouping()
-        updateDocument { $0.lut.lutID = lut?.lutID }
+        updateDocument { $0.lut.lutID = look?.lutID }
         refreshLUTResolutionStatus()
     }
 
     /// Select a Look by its stable document ID. The browser binds to IDs rather than resolved LUT
     /// values so the explicit None row and a missing file remain distinct selections.
-    func selectLUT(id: LUTID?) {
+    func selectLook(id: LUTID?) {
         guard let id else {
-            selectLUT(nil)
+            selectLook(nil)
             return
         }
-        guard let lut = resolvedLUT(id) else { return }
-        selectLUT(lut)
+        guard let look = resolvedLUT(id) else { return }
+        selectLook(look)
     }
+
+    /// Historical model-name compatibility for existing integrations and persisted-workflow
+    /// tests. New editor code should use the Look-named actions above.
+    func selectLUT(_ lut: CubeLUT?) { selectLook(lut) }
+
+    func selectLUT(id: LUTID?) { selectLook(id: id) }
 
     /// Mutate the document and re-render.
     ///
@@ -979,28 +992,32 @@ public final class AppViewModel: ObservableObject {
         guard lastReportedMissingLUT != id else { return }
 
         let name = id.isDerived ? "derived look" : URL(fileURLWithPath: id.raw).lastPathComponent
-        let message = "LUT “\(name)” is unavailable; the stored reference was kept."
+        let message = "Look “\(name)” is unavailable; the stored reference was kept."
         lastReportedMissingLUT = id
         lutResolutionStatus = message
         statusMessage = message
     }
 
-    func selectPreviousLUT() {
-        guard let current = selectedLUT,
+    func selectPreviousLook() {
+        guard let current = selectedLook,
               let idx = library.allLUTs.firstIndex(of: current),
               idx > 0 else { return }
-        selectLUT(library.allLUTs[idx - 1])
+        selectLook(library.allLUTs[idx - 1])
     }
 
-    func selectNextLUT() {
-        guard let current = selectedLUT else {
-            if let first = library.allLUTs.first { selectLUT(first) }
+    func selectNextLook() {
+        guard let current = selectedLook else {
+            if let first = library.allLUTs.first { selectLook(first) }
             return
         }
         guard let idx = library.allLUTs.firstIndex(of: current),
               idx < library.allLUTs.count - 1 else { return }
-        selectLUT(library.allLUTs[idx + 1])
+        selectLook(library.allLUTs[idx + 1])
     }
+
+    func selectPreviousLUT() { selectPreviousLook() }
+
+    func selectNextLUT() { selectNextLook() }
 
     /// Reset only the Look stage. Other inspector panels remain untouched, and the operation is one
     /// reversible history entry for the active photo.
@@ -1019,7 +1036,7 @@ public final class AppViewModel: ObservableObject {
     /// every slider tick: the re-render is debounced and the previous one is
     /// cancelled, so a full-travel drag costs a handful of renders, not one per
     /// pixel of travel.
-    func setLUTIntensity(_ value: Double) {
+    func setLookIntensity(_ value: Double) {
         let clamped = max(0, min(1, value))
         guard clamped != document.lut.intensity else { return }
         let oldDocument = document
@@ -1035,6 +1052,8 @@ public final class AppViewModel: ObservableObject {
             scheduleSettledPreviewAfterDebounce()
         }
     }
+
+    func setLUTIntensity(_ value: Double) { setLookIntensity(value) }
 
     // MARK: - Preview
 
@@ -1053,7 +1072,7 @@ public final class AppViewModel: ObservableObject {
     /// describe the pixels on screen, and it stopped doing so precisely because it derived its image
     /// separately. Reading the request from one place is what makes that structural.
     private var displayRequest: (document: EditDocument, lut: CubeLUT?) {
-        isShowingOriginal ? (document.originalForComparison, nil) : (document, selectedLUT)
+        isShowingOriginal ? (document.originalForComparison, nil) : (document, selectedLook)
     }
 
     /// Render the document for display.
@@ -1068,9 +1087,9 @@ public final class AppViewModel: ObservableObject {
             return
         }
 
-        let (requested, lut) = displayRequest
+        let (requested, look) = displayRequest
         previewCoordinator.submit(RenderRequest(
-                source: imageSource, document: requested, lut: lut,
+                source: imageSource, document: requested, lut: look,
                 targetSize: previewBackingSize, quality: .preview, output: .raster, space: .current
             ), phase: .settled)
     }
@@ -1268,6 +1287,13 @@ public final class AppViewModel: ObservableObject {
         isInspectorPresented.toggle()
     }
 
+    /// Open the existing inspector on the one authoritative Look browser. This is a navigation
+    /// action, not a second Look surface, so toolbar access and the inspector tab share all state.
+    func showLookInspector() {
+        inspectorTab = .look
+        isInspectorPresented = true
+    }
+
     /// Recompute the histogram for the currently displayed image. No-op unless the Info tab of an
     /// open inspector is on screen. Cancellable, so dragging the intensity slider stays smooth.
     ///
@@ -1381,8 +1407,8 @@ public final class AppViewModel: ObservableObject {
         return (
             source: imageSource,
             document: document,
-            lut: selectedLUT,
-            baseName: ExportCoordinator.exportBaseName(source: base, lut: selectedLUT)
+            lut: selectedLook,
+            baseName: ExportCoordinator.exportBaseName(source: base, lut: selectedLook)
         )
     }
 
@@ -1405,7 +1431,7 @@ public final class AppViewModel: ObservableObject {
         let items = collection.items.map {
             ExportCoordinator.BatchItem(url: $0.url, data: $0.imageData, name: $0.displayName)
         }
-        return (items: items, document: document, lut: selectedLUT)
+        return (items: items, document: document, lut: selectedLook)
     }
 
     // MARK: - Recipe extractor
@@ -1426,11 +1452,11 @@ public final class AppViewModel: ObservableObject {
         derive.saveDialog()
     }
 
-    // MARK: - LUT folder
+    // MARK: - Look folder
 
-    func chooseLUTFolder() {
+    func chooseLookFolder() {
         let panel = NSOpenPanel()
-        panel.title = "Select LUT Folder"
+        panel.title = "Select Look Folder"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
@@ -1439,6 +1465,8 @@ public final class AppViewModel: ObservableObject {
             library.setFolder(url)
         }
     }
+
+    func chooseLUTFolder() { chooseLookFolder() }
 
     private func saveActiveDocument() {
         guard let activeAssetID, let activeSourceReference else { return }

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Main image preview area. Supports side-by-side (original vs LUT)
+/// Main image preview area. Supports side-by-side (original vs Look)
 /// and single-image mode. Hold Space to flash original in single mode.
 struct PreviewView: View {
     @ObservedObject var viewModel: AppViewModel
@@ -58,10 +58,10 @@ struct PreviewView: View {
                     .fill(Color.primary.opacity(0.15))
                     .frame(width: 1)
 
-                // LUT applied
+                // Look applied
                 panelView(
                     surface: viewModel.previewSurface,
-                    label: viewModel.selectedLUT?.name ?? "Adjusted",
+                    label: viewModel.selectedLook?.name ?? "Adjusted",
                     labelSide: .trailing,
                     width: geo.size.width / 2
                 )
@@ -111,12 +111,12 @@ struct PreviewView: View {
                     .padding(20)
                 }
 
-                // LUT name badge
-                if !viewModel.isShowingOriginal, let lut = viewModel.selectedLUT {
+                // Look name badge
+                if !viewModel.isShowingOriginal, let look = viewModel.selectedLook {
                     VStack {
                         HStack {
                             Spacer()
-                            ComparisonBadge(text: lut.name)
+                            ComparisonBadge(text: look.name)
                         }
                         Spacer()
                     }

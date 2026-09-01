@@ -222,6 +222,14 @@ public struct ContentView: View {
         .keyboardShortcut("i", modifiers: .command)
         .disabled(viewModel.sourceImage == nil)
 
+        Button {
+            viewModel.showLookInspector()
+        } label: {
+            Label("Look", systemImage: "wand.and.stars")
+        }
+        .help("Show the Look browser")
+        .disabled(viewModel.sourceImage == nil)
+
         Divider()
 
         // Import menu
@@ -288,7 +296,7 @@ public struct ContentView: View {
             } label: {
                 Label("Export All", systemImage: "square.and.arrow.up.on.square")
             }
-            .help("Apply the current LUT to all imported images and export to a folder (⌘⇧E)")
+            .help("Apply the current Look to all imported images and export to a folder (⌘⇧E)")
             .disabled(viewModel.isExporting)
         }
     }

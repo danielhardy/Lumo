@@ -2,7 +2,7 @@ import Foundation
 import AppKit
 import UniformTypeIdentifiers
 
-/// Owns the "Derive LUT from JPG" flow: the sheet's presentation, the
+/// Owns the "Derive Look from JPG" flow: the sheet's presentation, the
 /// long-running extraction, and the scratch-until-saved lifecycle of the
 /// result.
 ///
@@ -160,12 +160,12 @@ final class DeriveCoordinator: ObservableObject {
     /// folder so the library picks it up on the next scan.
     func saveDialog() {
         guard let lut = derivedLUT, scratchURL != nil else {
-            onStatus?("No derived LUT to save")
+            onStatus?("No derived Look to save")
             return
         }
 
         let panel = NSSavePanel()
-        panel.title = "Save Derived LUT"
+        panel.title = "Save Derived Look"
         if let cubeType = UTType(filenameExtension: "cube") {
             panel.allowedContentTypes = [cubeType]
         }
@@ -201,7 +201,7 @@ final class DeriveCoordinator: ObservableObject {
 
         var errorDescription: String? {
             switch self {
-            case .nothingToSave: return "No derived LUT to save"
+            case .nothingToSave: return "No derived Look to save"
             }
         }
     }

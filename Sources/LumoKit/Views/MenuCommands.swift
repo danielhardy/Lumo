@@ -29,7 +29,7 @@ public struct LumoCommands: Commands {
             Button("Open Image...") { post(.openImage) }
                 .keyboardShortcut("o")
 
-            Button("Choose Look Folder...") { post(.chooseLUTFolder) }
+            Button("Choose Look Folder...") { post(.chooseLookFolder) }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
 
             Divider()
@@ -67,7 +67,7 @@ public struct LumoCommands: Commands {
 
             Divider()
 
-            Button("Derive LUT from JPG…") { post(.deriveRecipe) }
+            Button("Derive Look from JPG…") { post(.deriveRecipe) }
                 .keyboardShortcut("d")
 
             Divider()
@@ -102,8 +102,8 @@ struct MenuCommandReceivers: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: .exportAll)) { _ in
                 viewModel.batchExportDialog()
             }
-            .onReceive(NotificationCenter.default.publisher(for: .chooseLUTFolder)) { _ in
-                viewModel.chooseLUTFolder()
+            .onReceive(NotificationCenter.default.publisher(for: .chooseLookFolder)) { _ in
+                viewModel.chooseLookFolder()
             }
             .onReceive(NotificationCenter.default.publisher(for: .importFromPhotos)) { _ in
                 viewModel.importFromPhotos()
@@ -141,7 +141,7 @@ extension Notification.Name {
     static let openImage = Notification.Name("Lumo.openImage")
     static let exportImage = Notification.Name("Lumo.exportImage")
     static let exportAll = Notification.Name("Lumo.exportAll")
-    static let chooseLUTFolder = Notification.Name("Lumo.chooseLUTFolder")
+    static let chooseLookFolder = Notification.Name("Lumo.chooseLookFolder")
     static let importFromPhotos = Notification.Name("Lumo.importFromPhotos")
     static let openSourceFolder = Notification.Name("Lumo.openSourceFolder")
     static let refreshSourceFolder = Notification.Name("Lumo.refreshSourceFolder")

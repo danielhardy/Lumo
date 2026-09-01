@@ -336,7 +336,7 @@ final class AppViewModelTests: TempDirectoryTestCase {
         let missing = LUTID(raw: tempDirectory.appendingPathComponent("Gone.cube").path)
         viewModel.updateDocument { $0.lut.lutID = missing }
         XCTAssertEqual(viewModel.lutResolutionStatus,
-                       "LUT “Gone.cube” is unavailable; the stored reference was kept.")
+                       "Look “Gone.cube” is unavailable; the stored reference was kept.")
         let requestsBeforeRescan = await fake.previewRequests.count
 
         let url = try Fixtures.writeCube(

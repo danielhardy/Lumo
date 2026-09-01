@@ -13,4 +13,8 @@ final class MenuCommandTests: XCTestCase {
         XCTAssertEqual(LumoEditTransferShortcuts.copyKey, "c")
         XCTAssertEqual(LumoEditTransferShortcuts.pasteKey, "v")
     }
+
+    func testLookFolderMenuUsesTheCanonicalLookRoute() {
+        XCTAssertEqual(Notification.Name.chooseLookFolder.rawValue, "Lumo.chooseLookFolder")
+    }
 }
