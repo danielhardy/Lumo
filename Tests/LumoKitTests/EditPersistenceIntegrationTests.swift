@@ -120,6 +120,84 @@ final class EditPersistenceIntegrationTests: TempDirectoryTestCase {
         XCTAssertEqual(writeCount, 1)
     }
 
+    func testForcedFlushWaitsForAnInFlightSlowWrite() async throws {
+        let imageURL = try Fixtures.writeGradientPNG(
+            width: 32, height: 24, named: "slow-flush.png", in: tempDirectory
+        )
+        let store = EditDocumentStore(
+            fileURL: tempDirectory.appendingPathComponent("slow-flush-edits.json"),
+            artificialWriteDelay: .milliseconds(400)
+        )
+        let viewModel = AppViewModel(engine: FakeRenderEngine(), editStore: store)
+        viewModel.openImage(url: imageURL)
+        try await waitUntil("the slow-flush image") { viewModel.sourceImage != nil }
+        viewModel.updateDocument { $0.adjustments = [.exposure(ev: 0.6)] }
+        // The normal worker waits 250 ms before its first checkpoint. Yield just after that
+        // checkpoint so the forced flush has to chain behind the deliberately slow write.
+        try await Task.sleep(for: .milliseconds(270))
+
+        let started = Date()
+        await viewModel.flushPendingWrites()
+        let elapsed = Date().timeIntervalSince(started)
+
+        XCTAssertGreaterThanOrEqual(elapsed, 0.25)
+        XCTAssertEqual(viewModel.pendingPersistenceCount, 0)
+        let writeCount = await store.writeCount
+        XCTAssertEqual(writeCount, 1)
+        let restored = EditDocumentStore(fileURL: tempDirectory.appendingPathComponent("slow-flush-edits.json"))
+        let result = await restored.load(for: EditSourceReference(assetID: .file(imageURL), url: imageURL))
+        XCTAssertEqual(result.document.adjustments, [.exposure(ev: 0.6)])
+    }
+
+    func testFailedPersistenceRemainsDirtyUntilAForcedRetrySucceeds() async throws {
+        let imageURL = try Fixtures.writeGradientPNG(
+            width: 32, height: 24, named: "retry.png", in: tempDirectory
+        )
+        let store = EditDocumentStore(
+            fileURL: tempDirectory.appendingPathComponent("retry-edits.json"),
+            failuresBeforeSuccess: 1
+        )
+        let viewModel = AppViewModel(engine: FakeRenderEngine(), editStore: store)
+        viewModel.openImage(url: imageURL)
+        try await waitUntil("the retry image") { viewModel.sourceImage != nil }
+        viewModel.updateDocument { $0.adjustments = [.exposure(ev: 0.7)] }
+        await viewModel.flushPendingWrites()
+        XCTAssertEqual(viewModel.pendingPersistenceCount, 1)
+        let failedWriteCount = await store.writeCount
+        XCTAssertEqual(failedWriteCount, 0)
+
+        await viewModel.flushPendingWrites()
+        XCTAssertEqual(viewModel.pendingPersistenceCount, 0)
+        let writeCount = await store.writeCount
+        XCTAssertEqual(writeCount, 1)
+    }
+
+    func testLongGestureCheckpointsIntermediateSnapshotsBeforeMouseUp() async throws {
+        let imageURL = try Fixtures.writeGradientPNG(
+            width: 32, height: 24, named: "long-gesture.png", in: tempDirectory
+        )
+        let store = EditDocumentStore(
+            fileURL: tempDirectory.appendingPathComponent("long-gesture-edits.json")
+        )
+        let viewModel = AppViewModel(engine: FakeRenderEngine(), editStore: store)
+        viewModel.openImage(url: imageURL)
+        try await waitUntil("the long-gesture image") { viewModel.sourceImage != nil }
+
+        viewModel.beginUndoGrouping()
+        for value in [0.1, 0.2, 0.3] {
+            viewModel.updateDocument { $0.adjustments = [.exposure(ev: value)] }
+            try await Task.sleep(for: .milliseconds(300))
+        }
+
+        let intermediateWriteCount = await store.writeCount
+        XCTAssertGreaterThan(intermediateWriteCount, 1)
+        viewModel.endUndoGrouping()
+        await viewModel.flushPendingWrites()
+        XCTAssertEqual(viewModel.pendingPersistenceCount, 0)
+        let finalWriteCount = await store.writeCount
+        XCTAssertGreaterThanOrEqual(finalWriteCount, 2)
+    }
+
     func testMissingSourceStillReportsAnActionableLoadError() async throws {
         let viewModel = AppViewModel(
             engine: FakeRenderEngine(),

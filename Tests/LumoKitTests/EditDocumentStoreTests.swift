@@ -148,6 +148,28 @@ final class EditDocumentStoreTests: TempDirectoryTestCase {
         let didRunOnMainThread = await store.lastIOWasMainThread
         XCTAssertFalse(didRunOnMainThread)
     }
+
+    func testFailingStoreCanRetryTheCompleteSnapshot() async throws {
+        let url = tempDirectory.appendingPathComponent("failing-edits.json")
+        let store = EditDocumentStore(fileURL: url, failuresBeforeSuccess: 1)
+        let source = source()
+
+        do {
+            try await store.save(editedDocument, for: source)
+            XCTFail("the injected failure should be surfaced")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("injected persistence failure"))
+        }
+        let failedWriteCount = await store.writeCount
+        let failedAttemptCount = await store.saveAttemptCount
+        XCTAssertEqual(failedWriteCount, 0)
+        XCTAssertEqual(failedAttemptCount, 1)
+
+        try await store.save(editedDocument, for: source)
+        let restored = EditDocumentStore(fileURL: url)
+        let result = await restored.load(for: source)
+        XCTAssertEqual(result.document, editedDocument)
+    }
 }
 /// Small JSON inspection value used only to assert the outer migration envelope without depending on
 /// the store's private implementation types.

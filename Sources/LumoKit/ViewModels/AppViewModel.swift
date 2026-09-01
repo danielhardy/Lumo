@@ -202,6 +202,8 @@ public final class AppViewModel: ObservableObject {
     private static let persistenceCheckpoint: Duration = .milliseconds(250)
 
     var pendingPersistenceCount: Int { pendingPersistence.count }
+    var peakPendingPersistenceCount: Int { peakPendingPersistence }
+    private var peakPendingPersistence = 0
 
     /// Source generation prevents delayed work from a previous navigation selection from publishing
     /// into the new image, even if the source values happen to compare equal.
@@ -2001,6 +2003,7 @@ public final class AppViewModel: ObservableObject {
             reportsStatus: reportsStatus || (pendingPersistence[assetID]?.reportsStatus ?? false),
             force: force || priorForce
         )
+        peakPendingPersistence = max(peakPendingPersistence, pendingPersistence.count)
         guard persistenceTask == nil || force else { return }
         let previous = persistenceTask
         if force { previous?.cancel() }

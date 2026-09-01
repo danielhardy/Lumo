@@ -125,10 +125,27 @@ actor EditDocumentStore {
     /// verify coalescing without depending on filesystem tracing.
     private(set) var writeCount = 0
     private(set) var bytesWritten = 0
+    /// Test-only observability for persistence regression tests and the opt-in benchmark.
+    private(set) var saveAttemptCount = 0
+    private(set) var peakSaveConcurrency = 0
 
-    init(fileURL: URL = EditDocumentStore.defaultFileURL, backupURL: URL? = nil) {
+    // These seams are intentionally internal rather than part of the production API. They make
+    // the actor's durability behavior testable without introducing a protocol abstraction for a
+    // small, concrete file store.
+    private let artificialWriteDelay: Duration
+    private var failuresRemaining: Int
+    private var saveConcurrency = 0
+
+    init(
+        fileURL: URL = EditDocumentStore.defaultFileURL,
+        backupURL: URL? = nil,
+        artificialWriteDelay: Duration = .zero,
+        failuresBeforeSuccess: Int = 0
+    ) {
         self.fileURL = fileURL
         self.backupURL = backupURL ?? fileURL.appendingPathExtension("bak")
+        self.artificialWriteDelay = artificialWriteDelay
+        self.failuresRemaining = failuresBeforeSuccess
     }
 
     static var defaultFileURL: URL {
@@ -321,6 +338,21 @@ actor EditDocumentStore {
 
     private func persist() throws {
         lastIOWasMainThread = Thread.isMainThread
+        saveAttemptCount += 1
+        saveConcurrency += 1
+        peakSaveConcurrency = max(peakSaveConcurrency, saveConcurrency)
+        defer { saveConcurrency -= 1 }
+
+        if artificialWriteDelay > .zero {
+            let components = artificialWriteDelay.components
+            let seconds = Double(components.seconds) + Double(components.attoseconds) / 1e18
+            Thread.sleep(forTimeInterval: seconds)
+        }
+        if failuresRemaining > 0 {
+            failuresRemaining -= 1
+            throw StoreError.cannotWrite("injected persistence failure")
+        }
+
         let data: Data
         do {
             data = try JSONEncoder().encode(Envelope(schemaVersion: Self.currentVersion, records: records))
