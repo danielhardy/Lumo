@@ -377,12 +377,6 @@ public final class AppViewModel: ObservableObject {
     /// remain owned by their existing collaborators; this value only composes those surfaces.
     @Published private(set) var navigation = NavigationState()
 
-    /// Compatibility read/write seam for existing callers. New navigation should use
-    /// `navigate(to:)`, which applies the collection guard and thumbnail policy in one place.
-    var isLibraryGridPresented: Bool {
-        get { navigation.isGrid }
-        set { navigation.move(to: newValue ? .grid : .edit) }
-    }
     /// EXIF/TIFF/GPS metadata of the loaded image, read at load time.
     @Published var metadata: ImageMetadata = ImageMetadata()
     /// Histogram of the currently displayed image (graded result, or original
