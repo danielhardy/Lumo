@@ -373,8 +373,16 @@ public final class AppViewModel: ObservableObject {
     }
     /// Source-folder file browser panel visibility.
     @Published var isSourceBrowserPresented: Bool = false
-    /// Whether the source collection is being browsed as the virtualized library grid.
-    @Published var isLibraryGridPresented: Bool = false
+    /// The visible workspace. Library selection, the active edit document, and render surfaces
+    /// remain owned by their existing collaborators; this value only composes those surfaces.
+    @Published private(set) var navigation = NavigationState()
+
+    /// Compatibility read/write seam for existing callers. New navigation should use
+    /// `navigate(to:)`, which applies the collection guard and thumbnail policy in one place.
+    var isLibraryGridPresented: Bool {
+        get { navigation.isGrid }
+        set { navigation.move(to: newValue ? .grid : .edit) }
+    }
     /// EXIF/TIFF/GPS metadata of the loaded image, read at load time.
     @Published var metadata: ImageMetadata = ImageMetadata()
     /// Histogram of the currently displayed image (graded result, or original
@@ -475,7 +483,7 @@ public final class AppViewModel: ObservableObject {
         // window paints immediately and fills in as the scans land.
         if collection.restoreSourceFolder() {
             isSourceBrowserPresented = true
-            isLibraryGridPresented = true
+            navigation.move(to: .grid)
             collection.beginThumbnailDemand()
             openFirstImageWhenScanned()
         }
@@ -559,7 +567,9 @@ public final class AppViewModel: ObservableObject {
         Task {
             await collection.scanCompletion()
             guard let first = collection.items.first, let fileURL = first.url else { return }
-            openImage(url: fileURL)
+            // Folder open starts in Library even though the first image is also loaded so the
+            // editor is ready for an immediate Enter/double-click handoff.
+            load(name: first.displayName, url: fileURL, data: nil, assetID: first.id)
         }
     }
 
@@ -576,10 +586,12 @@ public final class AppViewModel: ObservableObject {
     // MARK: - Image loading
 
     func openImage(url: URL) {
+        navigation.move(to: .edit)
         load(name: url.lastPathComponent, url: url, data: nil)
     }
 
     private func openImage(url: URL, assetID: PhotoAssetID) {
+        navigation.move(to: .edit)
         load(name: url.lastPathComponent, url: url, data: nil, assetID: assetID)
     }
 
@@ -727,6 +739,7 @@ public final class AppViewModel: ObservableObject {
     // MARK: - Photo import
 
     func openImage(data: Data, name: String) {
+        navigation.move(to: .edit)
         load(name: name, url: nil, data: data)
     }
 
@@ -819,19 +832,46 @@ public final class AppViewModel: ObservableObject {
     func openSourceFolder(url: URL) {
         collection.setSourceFolder(url)
         isSourceBrowserPresented = true
-        isLibraryGridPresented = true
+        navigation.move(to: .grid)
         collection.beginThumbnailDemand()
         openFirstImageWhenScanned()
     }
 
     func toggleSourceBrowser() {
+        if navigation.isGrid, !navigate(to: .edit) { return }
         isSourceBrowserPresented.toggle()
     }
 
     func toggleLibraryGrid() {
-        guard collection.isActive else { return }
-        isLibraryGridPresented.toggle()
-        if isLibraryGridPresented { collection.beginThumbnailDemand() }
+        navigate(to: navigation.isGrid ? .edit : .grid)
+    }
+
+    /// Move between the two top-level workspaces. Entering Edit always uses the collection's active
+    /// item, so a grid selection is handed off deterministically and never relies on a stale source
+    /// image. The first folder scan is allowed to establish the initial Grid state asynchronously;
+    /// user-triggered transitions require an actual active item.
+    @discardableResult
+    func navigate(to mode: NavigationState.Mode) -> Bool {
+        switch mode {
+        case .grid:
+            guard collection.isActive else { return false }
+            navigation.move(to: .grid)
+            collection.beginThumbnailDemand()
+            return true
+
+        case .edit:
+            guard collection.isActive, collection.selectedItem != nil else {
+                return sourceImage != nil && setEditMode()
+            }
+            navigation.move(to: .edit)
+            openActiveCollectionImage(loadMode: false)
+            return true
+        }
+    }
+
+    private func setEditMode() -> Bool {
+        navigation.move(to: .edit)
+        return true
     }
 
     /// Re-scan the current source folder for added/removed files.
@@ -967,11 +1007,16 @@ public final class AppViewModel: ObservableObject {
     /// Enter the editor for the grid's active photo. Thumbnail availability is not a prerequisite;
     /// `openImage` starts the existing asynchronous RAW load immediately.
     func openActiveCollectionImage() {
+        openActiveCollectionImage(loadMode: true)
+    }
+
+    private func openActiveCollectionImage(loadMode: Bool) {
         guard let item = collection.selectedItem else { return }
-        isLibraryGridPresented = false
+        if loadMode { navigation.move(to: .edit) }
         if let url = item.url {
             openImage(url: url, assetID: item.id)
         } else if let data = item.imageData {
+            if loadMode { navigation.move(to: .edit) }
             load(name: item.displayName, url: nil, data: data, assetID: item.id)
         }
     }

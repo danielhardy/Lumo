@@ -89,7 +89,7 @@ final class KeyMonitor {
         // the menu bar.
         if mods.contains(.command) {
             if isDown,
-               vm.isLibraryGridPresented,
+               vm.navigation.isGrid,
                event.charactersIgnoringModifiers?.lowercased() == "a" {
                 vm.collection.selectAll()
                 return nil
@@ -125,7 +125,7 @@ final class KeyMonitor {
         case 123: // Left arrow — previous image
             guard vm.collection.isActive else { return event }
             if isDown {
-                if vm.isLibraryGridPresented {
+                if vm.navigation.isGrid {
                     vm.collection.selectPrevious()
                 } else {
                     vm.selectPreviousImage()
@@ -135,7 +135,7 @@ final class KeyMonitor {
         case 124: // Right arrow — next image
             guard vm.collection.isActive else { return event }
             if isDown {
-                if vm.isLibraryGridPresented {
+                if vm.navigation.isGrid {
                     vm.collection.selectNext()
                 } else {
                     vm.selectNextImage()
@@ -143,7 +143,7 @@ final class KeyMonitor {
             }
             return nil
         case 36: // Return — open the active grid item in Edit
-            if isDown, vm.isLibraryGridPresented {
+            if isDown, vm.navigation.isGrid {
                 vm.openActiveCollectionImage()
                 return nil
             }
@@ -172,12 +172,18 @@ final class KeyMonitor {
             return nil
         }
         switch chars {
+        case "g":
+            if vm.navigate(to: .grid) { return nil }
+            return event
+        case "e":
+            if vm.navigate(to: .edit) { return nil }
+            return event
         case "v":
             vm.toggleSideBySide()
             return nil
         case "[":
             guard vm.collection.isActive else { return event }
-            if vm.isLibraryGridPresented {
+            if vm.navigation.isGrid {
                 vm.collection.selectPrevious()
             } else {
                 vm.selectPreviousImage()
@@ -185,7 +191,7 @@ final class KeyMonitor {
             return nil
         case "]":
             guard vm.collection.isActive else { return event }
-            if vm.isLibraryGridPresented {
+            if vm.navigation.isGrid {
                 vm.collection.selectNext()
             } else {
                 vm.selectNextImage()

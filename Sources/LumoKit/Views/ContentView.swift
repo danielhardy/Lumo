@@ -133,7 +133,7 @@ public struct ContentView: View {
 
     private var detailContent: some View {
         Group {
-            if viewModel.isLibraryGridPresented && viewModel.collection.isActive {
+            if viewModel.navigation.isGrid && viewModel.collection.isActive {
                 VStack(spacing: 0) {
                     LibraryGridView(
                         collection: viewModel.collection,
@@ -169,10 +169,27 @@ public struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.25), value: viewModel.collection.isActive)
         .animation(.easeInOut(duration: 0.2), value: viewModel.isSourceBrowserPresented)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.navigation.mode)
     }
 
     @ViewBuilder
     private var toolbarContent: some View {
+        Picker("Workspace", selection: Binding(
+            get: { viewModel.navigation.mode },
+            set: { viewModel.navigate(to: $0) }
+        )) {
+            ForEach(NavigationState.Mode.allCases) { mode in
+                Text(mode.title)
+                    .tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 142)
+        .help("Library (G) or Edit (E)")
+
+        Divider()
+
         // Format picker
         Picker("Format", selection: $viewModel.exportFormat) {
             ForEach(ExportFormat.allCases) { fmt in
@@ -196,14 +213,6 @@ public struct ContentView: View {
         .help("Toggle side-by-side comparison (V)")
 
         // Source folder browser
-        Button {
-            viewModel.toggleLibraryGrid()
-        } label: {
-            Label("Library", systemImage: "square.grid.2x2")
-        }
-        .help("Show the virtualized photo library grid")
-        .disabled(viewModel.collection.items.isEmpty)
-
         Button {
             viewModel.toggleSourceBrowser()
         } label: {
