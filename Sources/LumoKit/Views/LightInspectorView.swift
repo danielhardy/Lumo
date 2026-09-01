@@ -2,9 +2,9 @@ import SwiftUI
 
 /// The photographer-facing global Light inspector.
 ///
-/// Sections are native `DisclosureGroup`s so the full toolset stays in the docked inspector without
-/// taking over the photo canvas. The view only talks to LightControl and AppViewModel value bindings;
-/// Core Image never appears in the editing surface.
+/// Sections use full-width disclosure rows so the full toolset stays in the docked inspector
+/// without taking over the photo canvas. The view only talks to LightControl and AppViewModel value
+/// bindings; Core Image never appears in the editing surface.
 struct LightInspectorView: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var toneSectionExpanded = true
@@ -15,7 +15,7 @@ struct LightInspectorView: View {
             VStack(alignment: .leading, spacing: 12) {
                 header
 
-                DisclosureGroup("Tone", isExpanded: $toneSectionExpanded) {
+                InspectorDisclosure("Tone", isExpanded: $toneSectionExpanded) {
                     VStack(alignment: .leading, spacing: 14) {
                         ForEach(LightControl.allCases, id: \.self) { control in
                             controlRow(control)
@@ -24,7 +24,7 @@ struct LightInspectorView: View {
                     .padding(.top, 10)
                 }
 
-                DisclosureGroup("Tone Curve", isExpanded: $curveSectionExpanded) {
+                InspectorDisclosure("Tone Curve", isExpanded: $curveSectionExpanded) {
                     ToneCurveEditor(viewModel: viewModel)
                         .padding(.top, 10)
                 }

@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The photographer-facing colour surface.
 ///
-/// Each major tool is a native disclosure section so the inspector remains useful at its narrow
+/// Each major tool is a full-width disclosure section so the inspector remains useful at its narrow
 /// dock width. Sliders and numeric fields share the same view-model binding; a slider drag uses the
 /// preview coordinator's interactive quality while a committed field value follows the normal
 /// debounced settled path.
@@ -38,7 +38,7 @@ struct ColorInspectorView: View {
     }
 
     private var whiteBalanceSection: some View {
-        DisclosureGroup("White Balance", isExpanded: $whiteBalanceExpanded) {
+        InspectorDisclosure("White Balance", isExpanded: $whiteBalanceExpanded) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text(viewModel.sourceIsRAW ? "RAW decoder" : "Standard image")
@@ -89,7 +89,7 @@ struct ColorInspectorView: View {
     }
 
     private var colorSection: some View {
-        DisclosureGroup("Color", isExpanded: $colorExpanded) {
+        InspectorDisclosure("Color", isExpanded: $colorExpanded) {
             VStack(alignment: .leading, spacing: 12) {
                 sectionResetButton(
                     title: "Reset Color",
@@ -111,7 +111,7 @@ struct ColorInspectorView: View {
     }
 
     private var mixerSection: some View {
-        DisclosureGroup("Color Mixer / HSL", isExpanded: $mixerExpanded) {
+        InspectorDisclosure("Color Mixer / HSL", isExpanded: $mixerExpanded) {
             VStack(alignment: .leading, spacing: 8) {
                 sectionResetButton(
                     title: "Reset Mixer",
@@ -119,7 +119,7 @@ struct ColorInspectorView: View {
                     action: viewModel.resetAllMixer
                 )
                 ForEach(ColorMixerChannelName.allCases, id: \.self) { channel in
-                    DisclosureGroup(
+                    InspectorDisclosure(
                         channel.title,
                         isExpanded: mixerExpansion(for: channel)
                     ) {
@@ -151,7 +151,7 @@ struct ColorInspectorView: View {
     }
 
     private var gradingSection: some View {
-        DisclosureGroup("Color Grading", isExpanded: $gradingExpanded) {
+        InspectorDisclosure("Color Grading", isExpanded: $gradingExpanded) {
             VStack(alignment: .leading, spacing: 8) {
                 sectionResetButton(
                     title: "Reset Grading",
@@ -159,7 +159,7 @@ struct ColorInspectorView: View {
                     action: viewModel.resetAllGrading
                 )
                 ForEach(ColorGradingZone.allCases, id: \.self) { zone in
-                    DisclosureGroup(
+                    InspectorDisclosure(
                         zone.title,
                         isExpanded: gradingExpansion(for: zone)
                     ) {

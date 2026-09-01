@@ -40,7 +40,7 @@ struct EffectsInspectorView: View {
     }
 
     private var detailSection: some View {
-        DisclosureGroup("Texture / Clarity / Dehaze", isExpanded: $detailExpanded) {
+        InspectorDisclosure("Texture / Clarity / Dehaze", isExpanded: $detailExpanded) {
             VStack(alignment: .leading, spacing: 12) {
                 sectionResetButton(
                     title: "Reset Texture / Clarity / Dehaze",
@@ -62,7 +62,7 @@ struct EffectsInspectorView: View {
     }
 
     private var vignetteSection: some View {
-        DisclosureGroup("Vignette", isExpanded: $vignetteExpanded) {
+        InspectorDisclosure("Vignette", isExpanded: $vignetteExpanded) {
             VStack(alignment: .leading, spacing: 12) {
                 sectionResetButton(
                     title: "Reset Vignette",
@@ -85,7 +85,7 @@ struct EffectsInspectorView: View {
     }
 
     private var grainSection: some View {
-        DisclosureGroup("Grain", isExpanded: $grainExpanded) {
+        InspectorDisclosure("Grain", isExpanded: $grainExpanded) {
             VStack(alignment: .leading, spacing: 12) {
                 sectionResetButton(
                     title: "Reset Grain",
