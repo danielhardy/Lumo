@@ -34,6 +34,17 @@ final class ImageCollection: ObservableObject {
         var displayName: String { asset.filename }
         var imageData: Data? { asset.source.data }
 
+        /// The upright display ratio is available from deferred metadata as soon as ImageIO has
+        /// read it. Until then use a photographic 4:3 placeholder, which keeps the first layout
+        /// deterministic and independent of thumbnail completion order.
+        var libraryAspectRatio: Double {
+            guard let dimensions = asset.dimensions,
+                  dimensions.width > 0, dimensions.height > 0 else { return 4.0 / 3.0 }
+            return LibraryGridLayout.normalizedAspectRatio(
+                Double(dimensions.width) / Double(dimensions.height)
+            )
+        }
+
         init(
             asset: PhotoAsset,
             thumbnail: NSImage? = nil,

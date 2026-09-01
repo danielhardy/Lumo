@@ -3,8 +3,8 @@ import SwiftUI
 
 /// The grid-first browsing surface for a source collection.
 ///
-/// `LazyVGrid` is important here: the collection may contain thousands of `PhotoAsset` values, but
-/// SwiftUI only hosts the cells around the viewport. Each hosted cell opts into thumbnail work from
+/// `LazyVStack` is important here: the collection may contain thousands of `PhotoAsset` values, but
+/// SwiftUI only hosts the rows around the viewport. Each hosted cell opts into thumbnail work from
 /// `onAppear`, and releases in-flight work from `onDisappear`, so scrolling does not create a decode
 /// task for the entire folder.
 struct LibraryGridView: View {
@@ -24,39 +24,21 @@ struct LibraryGridView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
-                        LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: CGFloat(layout.minimumCellWidth)), spacing: CGFloat(layout.spacing))],
-                            spacing: CGFloat(layout.spacing)
-                        ) {
-                            ForEach(collection.filteredIndices, id: \.self) { index in
-                                let item = collection.items[index]
-                                LibraryGridCell(
-                                    item: item,
-                                    isSelected: collection.selection.selectedIDs.contains(item.id),
-                                    isActive: collection.selection.activeID == item.id
+                        let indices = collection.filteredIndices
+                        let rows = layout.mosaicRows(
+                            aspectRatios: indices.map { collection.items[$0].libraryAspectRatio },
+                            width: max(1, geometry.size.width - 32)
+                        )
+                        LazyVStack(alignment: .leading, spacing: CGFloat(layout.spacing)) {
+                            ForEach(rows) { row in
+                                LibraryMosaicRow(
+                                    row: row,
+                                    sourceIndices: indices,
+                                    collection: collection,
+                                    spacing: layout.spacing,
+                                    onSelect: select(index:),
+                                    onOpen: onOpen
                                 )
-                                .onAppear {
-                                    // Make the cell callback order-independent: SwiftUI may deliver a
-                                    // child's appearance before its container's appearance.
-                                    collection.beginThumbnailDemand()
-                                    collection.requestThumbnail(for: item.id)
-                                }
-                                .onDisappear {
-                                    collection.releaseThumbnail(for: item.id)
-                                }
-                                .onTapGesture {
-                                    select(index: index)
-                                }
-                                .simultaneousGesture(
-                                    TapGesture(count: 2).onEnded {
-                                        select(index: index)
-                                        onOpen()
-                                    }
-                                )
-                                .accessibilityAddTraits(
-                                    collection.selection.selectedIDs.contains(item.id) ? .isSelected : []
-                                )
-                                .accessibilityHint("Double-click to edit")
                             }
                         }
                         .padding(16)
@@ -90,6 +72,71 @@ struct LibraryGridView: View {
         if flags.contains(.shift) { modifiers.insert(.shift) }
         collection.select(at: index, modifiers: modifiers)
     }
+}
+
+private struct LibraryMosaicRow: View {
+    let row: LibraryGridLayout.MosaicRow
+    let sourceIndices: [Int]
+    @ObservedObject var collection: ImageCollection
+    let spacing: Double
+    let onSelect: (Int) -> Void
+    let onOpen: () -> Void
+
+    private var cells: [LibraryMosaicCellLayout] {
+        zip(row.itemIndices, row.itemWidths).map { offset, width in
+            LibraryMosaicCellLayout(
+                offset: offset,
+                width: width,
+                id: collection.items[sourceIndices[offset]].id
+            )
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: CGFloat(spacing)) {
+            ForEach(cells) { cell in
+                let index = sourceIndices[cell.offset]
+                let item = collection.items[index]
+                LibraryGridCell(
+                    item: item,
+                    isSelected: collection.selection.selectedIDs.contains(item.id),
+                    isActive: collection.selection.activeID == item.id,
+                    imageWidth: cell.width,
+                    imageHeight: row.imageHeight
+                )
+                .frame(width: CGFloat(cell.width))
+                .onAppear {
+                    // Make the cell callback order-independent: SwiftUI may deliver a child's
+                    // appearance before its row's appearance.
+                    collection.beginThumbnailDemand()
+                    collection.requestThumbnail(for: item.id)
+                }
+                .onDisappear {
+                    collection.releaseThumbnail(for: item.id)
+                }
+                .onTapGesture {
+                    onSelect(index)
+                }
+                .simultaneousGesture(
+                    TapGesture(count: 2).onEnded {
+                        onSelect(index)
+                        onOpen()
+                    }
+                )
+                .accessibilityAddTraits(
+                    collection.selection.selectedIDs.contains(item.id) ? .isSelected : []
+                )
+                .accessibilityHint("Double-click to edit")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct LibraryMosaicCellLayout: Identifiable {
+    let offset: Int
+    let width: Double
+    let id: PhotoAssetID
 }
 
 private struct LibraryFilterBar: View {
@@ -185,13 +232,14 @@ private struct LibraryGridCell: View {
     let item: ImageCollection.Item
     let isSelected: Bool
     let isActive: Bool
+    let imageWidth: Double
+    let imageHeight: Double
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             thumbnail
-                .frame(maxWidth: .infinity)
-                .aspectRatio(1, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+                .frame(width: CGFloat(imageWidth), height: CGFloat(imageHeight))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay {
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(
@@ -218,7 +266,7 @@ private struct LibraryGridCell: View {
         if let thumbnail = item.thumbnail {
             Image(nsImage: thumbnail)
                 .resizable()
-                .aspectRatio(contentMode: .fill)
+                .aspectRatio(contentMode: .fit)
         } else if item.asset.thumbnailState == .failed {
             Rectangle()
                 .fill(Color.secondary.opacity(0.12))

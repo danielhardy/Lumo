@@ -133,10 +133,17 @@ struct LibrarySelectionModel: Equatable, Sendable {
     }
 }
 
-/// Geometry shared by the grid and its performance test. The actual view uses `LazyVGrid` for
-/// cell virtualization; this value type makes the intended viewport/prefetch bounds explicit and
-/// keeps a synthetic 1,000-item profile independent of SwiftUI's view-hosting machinery.
+/// Geometry shared by the library mosaic and its performance test. The view uses a `LazyVStack`
+/// of justified rows for virtualization; this value type keeps the row grouping deterministic and
+/// makes a synthetic 1,000-item profile independent of SwiftUI's view-hosting machinery.
 struct LibraryGridLayout: Sendable, Equatable {
+    struct MosaicRow: Sendable, Equatable, Identifiable {
+        let id: Int
+        let itemIndices: [Int]
+        let imageHeight: Double
+        let itemWidths: [Double]
+    }
+
     let minimumCellWidth: Double
     let cellHeight: Double
     let spacing: Double
@@ -156,6 +163,80 @@ struct LibraryGridLayout: Sendable, Equatable {
 
     func columnCount(for width: Double) -> Int {
         max(1, Int((max(0, width) + spacing) / (minimumCellWidth + spacing)))
+    }
+
+    /// Build a justified photo mosaic. Items are grouped in source order, with each row sharing
+    /// one image height and each cell's width derived from its source aspect ratio. A candidate
+    /// row is closed before it becomes too dense or would make a cell uncomfortably narrow. The
+    /// final row is intentionally left-aligned; forcing it to fill the viewport would make a
+    /// short tail row unexpectedly tall and would cause a visible scroll jump while scanning.
+    ///
+    /// The returned geometry is pure value data. It can therefore be tested without constructing
+    /// SwiftUI views, and the same result is used for every cell in a row so no overlap can be
+    /// introduced by independent child measurements.
+    func mosaicRows(aspectRatios: [Double], width: Double) -> [MosaicRow] {
+        guard !aspectRatios.isEmpty, width > 0 else { return [] }
+
+        let contentWidth = max(width, minimumCellWidth)
+        let targetHeight = cellHeight
+        let minimumMosaicWidth = max(96, minimumCellWidth * 0.72)
+        let usableRatios = aspectRatios.map { Self.normalizedAspectRatio($0) }
+        var rows: [MosaicRow] = []
+        var currentIndices: [Int] = []
+        var currentRatios: [Double] = []
+
+        func candidateHeight(for ratios: [Double]) -> Double {
+            guard !ratios.isEmpty else { return 0 }
+            let gaps = spacing * Double(max(0, ratios.count - 1))
+            return max(1, (contentWidth - gaps) / ratios.reduce(0, +))
+        }
+
+        func canFit(_ ratios: [Double]) -> Bool {
+            let height = candidateHeight(for: ratios)
+            return ratios.allSatisfy { $0 * height >= minimumMosaicWidth }
+        }
+
+        func appendRow(isLast: Bool) {
+            guard !currentIndices.isEmpty else { return }
+            let idealHeight = candidateHeight(for: currentRatios)
+            // Keep single-item and tail rows from becoming enormous. Full rows are allowed to be
+            // a little taller than the target when that is what preserves useful cell widths.
+            let upperBound = targetHeight * 1.45
+            let height = isLast
+                ? min(targetHeight, idealHeight)
+                : min(upperBound, idealHeight)
+            let widths = currentRatios.map { $0 * height }
+            rows.append(MosaicRow(
+                id: currentIndices[0],
+                itemIndices: currentIndices,
+                imageHeight: height,
+                itemWidths: widths
+            ))
+            currentIndices.removeAll(keepingCapacity: true)
+            currentRatios.removeAll(keepingCapacity: true)
+        }
+
+        for (index, ratio) in usableRatios.enumerated() {
+            let candidate = currentRatios + [ratio]
+            let shouldClose = !currentRatios.isEmpty && (
+                !canFit(candidate)
+                || (candidate.count > 1 && candidateHeight(for: candidate) < targetHeight)
+            )
+            if shouldClose {
+                appendRow(isLast: false)
+            }
+            currentIndices.append(index)
+            currentRatios.append(ratio)
+        }
+        appendRow(isLast: true)
+        return rows
+    }
+
+    /// Normalize malformed or extreme source geometry to a useful bounded display ratio. The
+    /// source dimensions remain untouched; this only protects row math from corrupt metadata.
+    static func normalizedAspectRatio(_ ratio: Double) -> Double {
+        guard ratio.isFinite, ratio > 0 else { return 4.0 / 3.0 }
+        return min(max(ratio, 0.35), 3.0)
     }
 
     func visibleIndices(

@@ -3,6 +3,47 @@ import XCTest
 
 @MainActor
 final class LibraryGridTests: TempDirectoryTestCase {
+    func testMosaicRowsPreserveMixedOrientationWithoutOverlapAtRepresentativeWidths() {
+        let layout = LibraryGridLayout()
+        let aspects = [1.5, 0.75, 1.0, 1.5, 0.75, 1.0, 1.5, 0.75]
+
+        for width in [320.0, 768.0, 1_280.0] {
+            let rows = layout.mosaicRows(aspectRatios: aspects, width: width)
+            XCTAssertEqual(rows.flatMap(\.itemIndices), Array(aspects.indices))
+
+            for row in rows {
+                XCTAssertEqual(row.itemIndices.count, row.itemWidths.count)
+                XCTAssertGreaterThan(row.imageHeight, 0)
+                XCTAssertLessThanOrEqual(
+                    row.itemWidths.reduce(0, +) + layout.spacing * Double(max(0, row.itemWidths.count - 1)),
+                    max(width, layout.minimumCellWidth) + 0.001
+                )
+                XCTAssertTrue(row.itemWidths.allSatisfy { $0 > 0 })
+            }
+        }
+    }
+
+    func testMosaicRowsKeepCellIdentityAndAspectRatioAttachedToSourceOrder() {
+        let layout = LibraryGridLayout()
+        let aspects = [3.0 / 2.0, 3.0 / 4.0, 1.0]
+        let rows = layout.mosaicRows(aspectRatios: aspects, width: 900)
+        let positions = rows.flatMap { row in
+            zip(row.itemIndices, row.itemWidths).map { ($0, $1 / row.imageHeight) }
+        }
+
+        XCTAssertEqual(positions.map(\.0), [0, 1, 2])
+        for (index, ratio) in positions {
+            XCTAssertEqual(ratio, aspects[index], accuracy: 0.000_001)
+        }
+    }
+
+    func testInvalidAspectRatiosUseStablePhotographicFallback() {
+        XCTAssertEqual(LibraryGridLayout.normalizedAspectRatio(.nan), 4.0 / 3.0)
+        XCTAssertEqual(LibraryGridLayout.normalizedAspectRatio(.infinity), 4.0 / 3.0)
+        XCTAssertEqual(LibraryGridLayout.normalizedAspectRatio(0), 4.0 / 3.0)
+        XCTAssertEqual(LibraryGridLayout.normalizedAspectRatio(10), 3.0)
+    }
+
     func testDemandDrivenGridWaitsForMaterializedCellsBeforeDecoding() async throws {
         for index in 0..<64 {
             try Fixtures.writeJPEG(
