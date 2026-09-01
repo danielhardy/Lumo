@@ -212,7 +212,7 @@ final class PreviewCoordinator {
         phase: Phase,
         engine: any RenderEngining
     ) async {
-        telemetry.mark(token.revision, renderStart: Date.timeIntervalSinceReferenceDate)
+        telemetry.mark(token.revision, renderStart: LiveEditTelemetryClock.now)
         LumoObservability.liveEdit(.renderStart, source: request.source, quality: request.quality,
                                    revision: token.revision)
         let gpuImage = await engine.makeCIImage(request)
@@ -220,7 +220,7 @@ final class PreviewCoordinator {
         // the persistent presentation surface owns display for both phases, so rasterizing the
         // same request would rebuild the graph and perform a redundant second render pass.
         let image = gpuImage == nil ? await engine.makeCGImage(request) : nil
-        telemetry.mark(token.revision, renderEnd: Date.timeIntervalSinceReferenceDate)
+        telemetry.mark(token.revision, renderEnd: LiveEditTelemetryClock.now)
         LumoObservability.liveEdit(.renderEnd, source: request.source, quality: request.quality,
                                    revision: token.revision)
         guard !Task.isCancelled else { return }

@@ -55,4 +55,19 @@ final class ObservabilityTests: XCTestCase {
         XCTAssertEqual(sample.renderWidth, 4000)
         XCTAssertEqual(sample.renderHeight, 3000)
     }
+
+    @MainActor
+    func testLiveEditReportDoesNotTreatGPUCompletionAsPresentation() {
+        let source = ImageSource(url: URL(fileURLWithPath: "/tmp/telemetry.png"),
+                                 nativeExtent: CGSize(width: 4000, height: 3000))
+        let request = RenderRequest(source: source, document: EditDocument(), quality: .interactive,
+                                    output: .raster)
+        let telemetry = LiveEditTelemetry()
+        telemetry.input(source: source, request: request, revision: 8, time: 10)
+        telemetry.mark(8, gpuCompletion: 10.010)
+
+        XCTAssertNil(telemetry.report().samples[0].inputToPresent)
+        XCTAssertNil(telemetry.report().p50InputToPresentMS)
+        XCTAssertEqual(telemetry.report().deliveredFPS, 0)
+    }
 }

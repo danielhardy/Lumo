@@ -1,4 +1,11 @@
 import Foundation
+import QuartzCore
+
+/// Metal command-buffer and drawable timestamps use the Core Animation host-time clock. Keep
+/// input/render timestamps in that same clock so pointer-to-presentation latency is meaningful.
+enum LiveEditTelemetryClock {
+    static var now: TimeInterval { CACurrentMediaTime() }
+}
 
 struct LiveEditMeasurement: Sendable, Equatable {
     let sourceToken: String
@@ -55,14 +62,15 @@ struct LiveEditReport: Sendable, Equatable {
 }
 
 /// Value-only live-edit measurements for the UI and deterministic orchestration tests. Hardware
-/// CPU/GPU counters and actual display timing remain in the accompanying Instruments trace.
+/// CPU/GPU counters remain in the accompanying Instruments trace; drawable presentation is
+/// timestamped by Metal's presented callback.
 @MainActor
 final class LiveEditTelemetry {
     private(set) var measurements: [LiveEditMeasurement] = []
     private var index: [UInt64: Int] = [:]
 
     func input(source: ImageSource, request: RenderRequest, revision: UInt64,
-               time: TimeInterval = Date.timeIntervalSinceReferenceDate) {
+               time: TimeInterval = LiveEditTelemetryClock.now) {
         measurements.append(LiveEditMeasurement(
             sourceToken: LumoTraceContext(source: source, quality: request.quality).sourceToken,
             revision: revision, quality: request.quality,

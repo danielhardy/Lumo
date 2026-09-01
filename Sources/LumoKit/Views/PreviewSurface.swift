@@ -10,9 +10,13 @@ final class PreviewSurface: ObservableObject {
     private(set) var image: CIImage?
     private(set) var space: WorkingSpace = .current
     private var pendingGPURevision: UInt64?
-    private var pendingTelemetry: LiveEditTelemetry?
-    private var pendingSource: ImageSource?
-    private var pendingQuality: RenderQuality = .interactive
+    private struct PendingTelemetry {
+        let telemetry: LiveEditTelemetry
+        let source: ImageSource?
+        let quality: RenderQuality
+    }
+    private var telemetryByRevision: [UInt64: PendingTelemetry] = [:]
+    private var submittedTelemetryRevisions: Set<UInt64> = []
 
     func present(_ image: CIImage?, space: WorkingSpace = .current, revision: UInt64? = nil,
                  telemetry: LiveEditTelemetry? = nil, source: ImageSource? = nil,
@@ -21,33 +25,52 @@ final class PreviewSurface: ObservableObject {
         self.space = space
         self.revision &+= 1
         if let revision, let telemetry {
+            // A pending value that has not reached a drawable is obsolete once a newer value is
+            // presented. Submitted values remain until Metal reports their completion/display.
+            if let previous = pendingGPURevision,
+               !submittedTelemetryRevisions.contains(previous) {
+                telemetryByRevision.removeValue(forKey: previous)
+            }
             pendingGPURevision = revision
-            pendingTelemetry = telemetry
-            pendingSource = source
-            pendingQuality = quality
+            telemetryByRevision[revision] = PendingTelemetry(telemetry: telemetry, source: source,
+                                                             quality: quality)
+        } else {
+            pendingGPURevision = nil
         }
     }
     fileprivate func pendingPresentationRevision() -> UInt64? { pendingGPURevision }
 
-    fileprivate func markGPUCompletion(revision: UInt64) {
-        guard pendingGPURevision == revision, let telemetry = pendingTelemetry else { return }
-        telemetry.mark(revision, gpuCompletion: Date.timeIntervalSinceReferenceDate)
-        if let source = pendingSource {
-            LumoObservability.liveEdit(.gpuComplete, source: source, quality: pendingQuality,
-                                       revision: revision)
-        }
-        pendingGPURevision = nil
-        pendingTelemetry = nil
-        pendingSource = nil
+    fileprivate func markPresentationSubmitted(revision: UInt64) {
+        guard telemetryByRevision[revision] != nil else { return }
+        submittedTelemetryRevisions.insert(revision)
+        if pendingGPURevision == revision { pendingGPURevision = nil }
     }
 
-    fileprivate func markDrawablePresented(revision: UInt64) {
-        guard pendingGPURevision == revision, let telemetry = pendingTelemetry else { return }
-        telemetry.mark(revision, drawablePresentation: Date.timeIntervalSinceReferenceDate)
-        if let source = pendingSource {
-            LumoObservability.liveEdit(.drawablePresented, source: source, quality: pendingQuality,
-                                       revision: revision, detail: "drawable-submitted")
+    fileprivate func markGPUCompletion(revision: UInt64, time: TimeInterval) {
+        guard let pending = telemetryByRevision[revision] else { return }
+        pending.telemetry.mark(revision, gpuCompletion: time)
+        if let source = pending.source {
+            LumoObservability.liveEdit(.gpuComplete, source: source, quality: pending.quality,
+                                       revision: revision)
         }
+    }
+
+    fileprivate func markDrawablePresented(revision: UInt64, time: TimeInterval) {
+        guard let pending = telemetryByRevision[revision] else { return }
+        // Metal reports zero when a drawable was skipped. Do not turn a skipped frame into a
+        // false presentation sample, but release its association so the next frame can be tracked.
+        guard time > 0 else {
+            telemetryByRevision.removeValue(forKey: revision)
+            submittedTelemetryRevisions.remove(revision)
+            return
+        }
+        pending.telemetry.mark(revision, drawablePresentation: time)
+        if let source = pending.source {
+            LumoObservability.liveEdit(.drawablePresented, source: source, quality: pending.quality,
+                                       revision: revision, detail: "displayed")
+        }
+        telemetryByRevision.removeValue(forKey: revision)
+        submittedTelemetryRevisions.remove(revision)
     }
     func clear() {
         image = nil
@@ -56,8 +79,8 @@ final class PreviewSurface: ObservableObject {
         // A source switch invalidates any telemetry attached to the previous drawable. Its
         // command buffer may still complete, but it must not be attributed to the next source.
         pendingGPURevision = nil
-        pendingTelemetry = nil
-        pendingSource = nil
+        telemetryByRevision.removeAll()
+        submittedTelemetryRevisions.removeAll()
     }
 }
 
@@ -142,16 +165,26 @@ struct PreviewSurfaceView: NSViewRepresentable {
             // encoded, so a new frame cannot expose Core Image's intermediate tiles.
             commandBuffer.present(drawable)
             if let revision = surface.pendingPresentationRevision() {
-                commandBuffer.addCompletedHandler { [weak surface] _ in
-                    Task { @MainActor in surface?.markGPUCompletion(revision: revision) }
+                commandBuffer.addCompletedHandler { [weak surface] commandBuffer in
+                    let gpuCompletion = commandBuffer.gpuEndTime > 0
+                        ? commandBuffer.gpuEndTime : LiveEditTelemetryClock.now
+                    Task { @MainActor in
+                        surface?.markGPUCompletion(revision: revision, time: gpuCompletion)
+                    }
+                }
+                drawable.addPresentedHandler { [weak surface] drawable in
+                    let presentationTime = drawable.presentedTime
+                    Task { @MainActor in
+                        surface?.markDrawablePresented(revision: revision, time: presentationTime)
+                    }
                 }
             }
             commandBuffer.commit()
+            if let revision = surface.pendingPresentationRevision() {
+                surface.markPresentationSubmitted(revision: revision)
+            }
             lastDrawnRevision = surface.revision
             lastDrawableSize = drawableSize
-            if let revision = surface.pendingPresentationRevision() {
-                surface.markDrawablePresented(revision: revision)
-            }
         }
 
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
