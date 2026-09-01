@@ -2,19 +2,21 @@
 id: LUMO-032
 title: Implement the eight-channel HSL Color Mixer
 type: task
-status: backlog
+status: done
 priority: high
 labels:
   - mvp
   - epic:color
   - phase:5
 created: 2026-08-30T18:30:27.784Z
-updated: 2026-08-30T18:30:45.111Z
+updated: 2026-08-31T20:48:35.237Z
 depends_on:
   - LUMO-024
 estimate: 8
-order: n1fu8n1c
+order: a0
 board: product
+commits:
+  - ea79753
 ---
 
 ## Objective
@@ -47,6 +49,14 @@ Part of **Epic 5 — White balance, mixer, and color grading**. The source produ
 
 - Targeted adjustment eyedropper.
 
+### Comment — codex @ 2026-08-31T20:48:18.248Z
+
+### Comment — codex @ 2026-08-31T20:48:35.050Z
+
+Implemented in commit ea79753. Added Codable/Equatable/Sendable eight-channel ColorMixerAdjustments with finite clamped Hue/Saturation/Luminance ranges, nested ColorAdjustments persistence/hash/identity integration, one reusable Core Image GPU HSL kernel with raised-cosine overlaps and circular red wraparound, premultiplied-alpha handling, and cache version bump. Added locality, overlap, wraparound, neutral, determinism, undo, persistence, and preview/export parity tests. Verification: swift test passed (405 executed, 21 skipped), swift build -c release passed, git diff --check passed, dg validate OK with only pre-existing warnings.
+
 ## Agent log
 
 <!-- Generated summaries only. Detailed activity lives in events.jsonl. -->
+
+- 2026-08-31T20:48:35.235Z: Verified LUMO-032: eight-channel HSL mixer model and shared GPU kernel pass locality, smooth overlap, red wraparound, neutral identity, determinism, undo/persistence, and preview/export parity checks. swift test (405/0 fail, 21 expected skips), release build, git diff --check, and dg validate all passed.

@@ -2,20 +2,22 @@
 id: LUMO-030
 title: Implement As Shot and RAW-aware white balance behavior
 type: task
-status: backlog
+status: done
 priority: high
 labels:
   - mvp
   - epic:color
   - phase:5
 created: 2026-08-30T18:30:27.022Z
-updated: 2026-08-30T18:30:44.750Z
+updated: 2026-08-31T20:25:42.164Z
 depends_on:
   - LUMO-007
   - LUMO-024
 estimate: 5
-order: llllllli
+order: n
 board: product
+commits:
+  - "0376e89"
 ---
 
 ## Objective
@@ -51,3 +53,5 @@ Part of **Epic 5 — White balance, mixer, and color grading**. The source produ
 ## Agent log
 
 <!-- Generated summaries only. Detailed activity lives in events.jsonl. -->
+
+- 2026-08-31T20:25:42.160Z: Implemented RAW-aware white balance: As Shot restores the file decoder baseline, RAWs use CIRAWFilter while standard images retain the post-render fallback, unsupported RAW controls are visibly disabled, and capability publication is navigation-safe. Added mixed-source, capability, As Shot, direction, and per-asset navigation coverage. Auto white balance is deferred because no reliable, testable Apple API was found. Verification: swift test (386 executed, 21 expected RAW-environment skips), swift build -c release, git diff --check, and dg validate.

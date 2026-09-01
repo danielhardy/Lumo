@@ -2,7 +2,7 @@
 id: LUMO-017
 title: Epic 3 — Folder library and rapid culling
 type: feature
-status: ready
+status: done
 priority: urgent
 labels:
   - mvp
@@ -10,7 +10,7 @@ labels:
   - epic:library
   - phase:3
 created: 2026-08-30T18:30:22.834Z
-updated: 2026-08-31T14:24:11.249Z
+updated: 2026-08-31T18:34:58.679Z
 depends_on:
   - LUMO-018
   - LUMO-019
@@ -19,6 +19,8 @@ depends_on:
   - LUMO-022
 order: a0
 board: product
+commits:
+  - HEAD
 ---
 
 ## Objective
@@ -50,3 +52,5 @@ Do not expand into the concept's explicitly excluded V2 features. Avoid a giant 
 ## Agent log
 
 <!-- Generated summaries only. Detailed activity lives in events.jsonl. -->
+
+- 2026-08-31T18:34:58.677Z: Verified Epic 3 on merged main: stable PhotoAsset identity and source fingerprints, progressive cancellable folder ingestion with deferred metadata, prioritized embedded-preview thumbnails, lazy virtualized grid admission, multi-selection, keyboard culling, composable filters, undo, persistent culling state, and security-scoped folder restoration. Full verification passed: swift test (353 passed, 20 skipped), swift build -c release, dg validate, and git diff --check.

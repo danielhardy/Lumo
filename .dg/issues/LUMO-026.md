@@ -2,19 +2,21 @@
 id: LUMO-026
 title: Implement Whites and Blacks endpoint controls
 type: task
-status: backlog
+status: done
 priority: high
 labels:
   - mvp
   - epic:light
   - phase:4
 created: 2026-08-30T18:30:25.693Z
-updated: 2026-08-30T18:30:43.225Z
+updated: 2026-08-31T19:44:06.385Z
 depends_on:
   - LUMO-024
 estimate: 5
-order: ipx4bipu
+order: t
 board: product
+commits:
+  - 2cbc904
 ---
 
 ## Objective
@@ -49,3 +51,5 @@ Part of **Epic 4 — Photographic Light controls**. The source product brief is 
 ## Agent log
 
 <!-- Generated summaries only. Detailed activity lives in events.jsonl. -->
+
+- 2026-08-31T19:44:06.383Z: Implemented independent GPU-backed Whites and Blacks endpoint tone stages with deterministic Light ordering, finite/monotonic rolloff, clipping and neutral/extent/parity coverage. Full swift test, release build, and dg validate pass.
