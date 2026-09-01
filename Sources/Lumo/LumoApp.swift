@@ -11,7 +11,16 @@ import LumoKit
 /// background process: no Dock icon, not in ⌘-Tab, and the window never comes
 /// to the front. Setting `.regular` + activating makes the window appear
 /// reliably. This is a no-op once Lumo runs as a properly bundled `.app`.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    let viewModel: AppViewModel
+    private var terminationFlushInProgress = false
+
+    override init() {
+        viewModel = AppViewModel()
+        super.init()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
@@ -19,6 +28,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminationFlushInProgress else { return .terminateLater }
+        terminationFlushInProgress = true
+        Task { @MainActor [viewModel] in
+            await viewModel.flushPendingWrites()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }
 
@@ -28,7 +47,7 @@ struct LumoApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(viewModel: appDelegate.viewModel)
                 .frame(minWidth: 800, minHeight: 500)
         }
         .windowStyle(.titleBar)

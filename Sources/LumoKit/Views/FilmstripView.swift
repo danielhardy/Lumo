@@ -1,9 +1,10 @@
 import SwiftUI
+import AppKit
 
 /// Horizontal thumbnail strip for browsing imported images.
 struct FilmstripView: View {
     @ObservedObject var collection: ImageCollection
-    let onSelect: (Int) -> Void
+    let onSelect: (Int, Bool) -> Void
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -13,7 +14,7 @@ struct FilmstripView: View {
                         let item = collection.items[index]
                         FilmstripThumbnail(
                             item: item,
-                            isSelected: index == collection.selectedIndex
+                            isSelected: collection.selection.selectedIDs.contains(item.id)
                         )
                         .id(item.id)
                         .onAppear {
@@ -25,7 +26,8 @@ struct FilmstripView: View {
                             collection.releaseThumbnail(for: item.id)
                         }
                         .onTapGesture {
-                            onSelect(index)
+                            let modifiers = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                            onSelect(index, modifiers.contains(.command))
                         }
                     }
                 }

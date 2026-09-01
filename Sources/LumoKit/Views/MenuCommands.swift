@@ -46,6 +46,13 @@ public struct LumoCommands: Commands {
 
             Divider()
 
+            Button("Copy All Edits") { post(.copyAllEdits) }
+                .keyboardShortcut("c")
+            Button("Paste Edits") { post(.pasteEdits) }
+                .keyboardShortcut("v")
+
+            Divider()
+
             Button("Derive LUT from JPG…") { post(.deriveRecipe) }
                 .keyboardShortcut("d")
 
@@ -102,6 +109,12 @@ struct MenuCommandReceivers: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: .resetPhoto)) { _ in
                 viewModel.resetPhoto()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .copyAllEdits)) { _ in
+                viewModel.copyAllEdits()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .pasteEdits)) { _ in
+                viewModel.pasteEdits()
+            }
             .onReceive(NotificationCenter.default.publisher(for: .deriveRecipe)) { _ in
                 viewModel.presentRecipeExtractor()
             }
@@ -121,5 +134,7 @@ extension Notification.Name {
     static let undoEdit = Notification.Name("Lumo.undoEdit")
     static let redoEdit = Notification.Name("Lumo.redoEdit")
     static let resetPhoto = Notification.Name("Lumo.resetPhoto")
+    static let copyAllEdits = Notification.Name("Lumo.copyAllEdits")
+    static let pasteEdits = Notification.Name("Lumo.pasteEdits")
     static let deriveRecipe = Notification.Name("Lumo.deriveRecipe")
 }

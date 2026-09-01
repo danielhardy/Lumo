@@ -135,6 +135,16 @@ final class ImageCollection: ObservableObject {
         return items[selectedIndex]
     }
 
+    /// The current edit-transfer destinations, in source order. The active item remains separate
+    /// from this selection so command-click can prepare a batch without changing the open photo.
+    var selectedIndices: [Int] {
+        items.indices.filter { selection.selectedIDs.contains(items[$0].id) }
+    }
+
+    var selectedItems: [Item] {
+        selectedIndices.map { items[$0] }
+    }
+
     var filteredItems: [Item] {
         items.filter { filter.matches(flag: $0.asset.flag, rating: $0.asset.rating) }
     }
@@ -557,9 +567,20 @@ final class ImageCollection: ObservableObject {
         startMetadataLoading()
 
         var newItems: [Item] = []
-        for item in dataItems {
+        for (ordinal, item) in dataItems.enumerated() {
+            // A Photos import is a collection of distinct assets even when two assets contain
+            // identical bytes. Content-addressed IDs are correct for a one-off data source, but
+            // would collapse two selected Photos items into one edit destination here.
+            let source = PhotoAssetSource(
+                data: item.data,
+                id: .imported(data: item.data, name: item.name, ordinal: ordinal)
+            )
             newItems.append(Item(
-                asset: restoredCullingState(for: PhotoAsset(data: item.data, filename: item.name)),
+                asset: restoredCullingState(for: PhotoAsset(
+                    source: source,
+                    filename: item.name,
+                    fileType: URL(fileURLWithPath: item.name).pathExtension
+                )),
                 metadata: nil
             ))
         }
@@ -654,6 +675,12 @@ final class ImageCollection: ObservableObject {
     /// above so both paths apply the same policy.
     func select(at index: Int) {
         select(at: index, modifiers: [])
+    }
+
+    /// Select an item for edit-transfer without opening it. This compatibility seam keeps tests and
+    /// non-view callers independent of the modifier bitset used by the library UI.
+    func setSelection(at index: Int, additive: Bool = false) {
+        select(at: index, modifiers: additive ? [.command] : [])
     }
 
     /// Clear the in-session collection (e.g. when opening a one-off single

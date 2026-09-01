@@ -7,10 +7,18 @@ import AppKit
 /// One of two entry points LumoKit exposes to the executable (the other is
 /// `LumoCommands`); everything else in the module stays internal.
 public struct ContentView: View {
-    @StateObject private var viewModel = AppViewModel()
+    @StateObject private var viewModel: AppViewModel
     @State private var photosSelection: [PhotosPickerItem] = []
 
-    public init() {}
+    public init() {
+        _viewModel = StateObject(wrappedValue: AppViewModel())
+    }
+
+    /// Allows the application delegate to share the model that owns the persistence queue, so clean
+    /// termination can flush the same edit catalog the window has been using.
+    public init(viewModel: AppViewModel) {
+        _viewModel = StateObject(wrappedValue: viewModel)
+    }
 
     public var body: some View {
         mainContent
@@ -101,8 +109,8 @@ public struct ContentView: View {
 
                         if viewModel.collection.isActive {
                             Divider()
-                            FilmstripView(collection: viewModel.collection) { index in
-                                viewModel.selectCollectionImage(at: index)
+                            FilmstripView(collection: viewModel.collection) { index, additive in
+                                viewModel.selectCollectionImage(at: index, additive: additive)
                             }
                             .frame(height: 100)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -190,6 +198,25 @@ public struct ContentView: View {
         } label: {
             Label("Import", systemImage: "photo.on.rectangle")
         }
+
+        // Edit transfer
+        Button {
+            viewModel.copyAllEdits()
+        } label: {
+            Label("Copy Edits", systemImage: "doc.on.doc")
+        }
+        .help("Copy all edits from the active photo (⌘C)")
+        .disabled(viewModel.sourceImage == nil)
+
+        Button {
+            viewModel.pasteEdits()
+        } label: {
+            Label("Paste Edits", systemImage: "doc.on.clipboard")
+        }
+        .help("Paste edits to the active photo or current selection (⌘V)")
+        .disabled(!viewModel.canPasteEdits)
+
+        Divider()
 
         // Export
         Button {

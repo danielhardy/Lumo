@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Docked panel listing the source folder's images, grouped by subfolder.
 /// Click a row to open it; the current selection is highlighted and scrolled
@@ -99,11 +100,14 @@ struct SourceBrowserView: View {
     private func rows(_ group: Group) -> some View {
         ForEach(group.entries, id: \.item.id) { entry in
             Button {
-                viewModel.selectCollectionImage(at: entry.index)
+                let modifiers = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                viewModel.selectCollectionImage(
+                    at: entry.index, additive: modifiers.contains(.command)
+                )
             } label: {
                 SourceBrowserRow(
                     item: entry.item,
-                    isSelected: entry.index == collection.selectedIndex
+                    isSelected: collection.selection.selectedIDs.contains(entry.item.id)
                 )
             }
             .buttonStyle(.plain)

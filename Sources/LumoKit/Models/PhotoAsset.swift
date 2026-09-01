@@ -46,6 +46,14 @@ struct PhotoAssetID: Codable, Hashable, Sendable, Equatable, CustomStringConvert
         PhotoAssetID(rawValue: "import:\(id.uuidString.lowercased())")
     }
 
+    /// Stable identity for an imported collection item when Photos did not provide its local
+    /// identifier. The ordinal distinguishes duplicate bytes within one import while the content
+    /// and name let the same import be reopened and find its persisted edits after relaunch.
+    static func imported(data: Data, name: String, ordinal: Int) -> PhotoAssetID {
+        let nameHash = SHA256.hash(data: Data(name.utf8)).map { String(format: "%02x", $0) }.joined()
+        return PhotoAssetID(rawValue: "import-data:\(Self.sha256Hex(data)):\(nameHash):\(ordinal)")
+    }
+
     var raw: String { rawValue }
     var description: String { rawValue }
 

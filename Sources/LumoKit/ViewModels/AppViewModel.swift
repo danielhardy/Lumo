@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 
 /// Central state for the Lumo app.
 @MainActor
-final class AppViewModel: ObservableObject {
+public final class AppViewModel: ObservableObject {
 
     // MARK: - Published state
 
@@ -22,6 +22,16 @@ final class AppViewModel: ObservableObject {
     /// Stored in a per-photo session keyed by stable source identity. Navigation restores the active
     /// photo's Light, other edits, and history without carrying them onto a different frame.
     @Published private(set) var document = EditDocument()
+
+    /// The last copied value-state payload. It contains no image or rendered data, so it remains
+    /// safe to apply to several destinations and keeps future selective-copy UI on one stable seam.
+    @Published private(set) var editClipboard: EditClipboardPayload?
+
+    var canPasteEdits: Bool { editClipboard != nil }
+
+    /// The most recent persistence warning. A damaged edit catalog must not prevent the source
+    /// image from opening, but it should remain visible to the user.
+    @Published private(set) var editStoreStatus: String?
 
     /// How to reproduce the open image. Held instead of a decoded `CIImage` because a RAW has to be
     /// re-developed to honour `document.rawDevelop` (§4.2).
@@ -99,6 +109,9 @@ final class AppViewModel: ObservableObject {
     private var editSessions: [PhotoAssetID: PhotoEditSession] = [:]
     private var activeAssetID: PhotoAssetID?
     private var activeHistory = EditHistory()
+    private var activeSourceReference: EditSourceReference?
+    private var persistenceTask: Task<Void, Never>?
+    private var persistenceGeneration = 0
 
     /// Source generation prevents delayed work from a previous navigation selection from publishing
     /// into the new image, even if the source values happen to compare equal.
@@ -245,6 +258,7 @@ final class AppViewModel: ObservableObject {
     let library = LUTLibrary()
     let workScheduler: ImageWorkScheduler
     let collection: ImageCollection
+    let editStore: EditDocumentStore
     /// Writing images to disk — the single export, the batch run, and naming.
     /// Shares this view model's engine, so an export renders through the same funnel the preview does.
     let export: ExportCoordinator
@@ -271,11 +285,19 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Init
 
-    init(engine: any RenderEngining = RenderEngine.shared) {
+    public convenience init() {
+        self.init(engine: RenderEngine.shared, editStore: EditDocumentStore())
+    }
+
+    init(
+        engine: any RenderEngining = RenderEngine.shared,
+        editStore: EditDocumentStore = EditDocumentStore()
+    ) {
         var interval = LumoSignpostInterval(.launch, context: .unknown)
         defer { interval.end() }
 
         self.engine = engine
+        self.editStore = editStore
         self.workScheduler = ImageWorkScheduler()
         self.collection = ImageCollection(scheduler: workScheduler)
         self.export = ExportCoordinator(engine: engine)
@@ -427,14 +449,17 @@ final class AppViewModel: ObservableObject {
         endUndoGrouping()
         saveActiveDocument()
         activeAssetID = assetID
-        let session = editSessions[assetID] ?? PhotoEditSession()
-        document = session.document
-        activeHistory = session.history
+        let sourceReference = EditSourceReference(assetID: assetID, url: url)
+        activeSourceReference = sourceReference
+        let session = editSessions[assetID]
+        document = session?.document ?? EditDocument()
+        activeHistory = session?.history ?? EditHistory()
         lastReportedMissingLUT = nil
         lutResolutionStatus = nil
         refreshLUTResolutionStatus()
 
         sourceRevision &+= 1
+        let sourceRevision = self.sourceRevision
         previewCoordinator.cancel()
         previewSurface.clear()
         originalPreviewSurface.clear()
@@ -479,7 +504,9 @@ final class AppViewModel: ObservableObject {
                 }
             }.value
 
-            guard !Task.isCancelled else { return }
+            let stored = await self.editStore.load(for: sourceReference)
+
+            guard !Task.isCancelled, sourceRevision == self.sourceRevision else { return }
 
             switch decoded {
             case .failure(let error):
@@ -487,6 +514,22 @@ final class AppViewModel: ObservableObject {
                 self.presentError("Error: \(error.localizedDescription)")
 
             case .success(let ci):
+                // An edit made while the source was decoding is newer than the disk snapshot. The
+                // in-memory session wins in that case; otherwise adopt the persisted document.
+                let loadedSession = self.editSessions[assetID]
+                let loadedDocument = loadedSession?.document ?? stored.document
+                let loadedHistory = loadedSession?.history ?? EditHistory()
+                self.activeHistory = loadedHistory
+                self.editSessions[assetID] = PhotoEditSession(
+                    document: loadedDocument, history: loadedHistory
+                )
+                self.document = loadedDocument
+                self.refreshLUTResolutionStatus()
+                if stored.status.isActionable {
+                    self.editStoreStatus = stored.status.message
+                } else {
+                    self.editStoreStatus = nil
+                }
                 self.sourceImage = ci
                 self.sourceURL = url
                 self.sourceName = name
@@ -537,8 +580,8 @@ final class AppViewModel: ObservableObject {
 
     func importPhotosData(_ items: [(name: String, data: Data)]) {
         collection.addFromData(items)
-        if let first = items.first {
-            openImage(data: first.data, name: first.name)
+        if let first = items.first, let assetID = collection.items.first?.id {
+            load(name: first.name, url: nil, data: first.data, assetID: assetID)
         }
     }
 
@@ -582,16 +625,94 @@ final class AppViewModel: ObservableObject {
         collection.refresh()
     }
 
-    func selectCollectionImage(at index: Int) {
+    func selectCollectionImage(at index: Int, additive: Bool = false) {
         guard collection.items.indices.contains(index) else { return }
-        collection.select(at: index)
+        collection.select(at: index, modifiers: additive ? [.command] : [])
         let item = collection.items[index]
 
         if let url = item.url {
             openImage(url: url, assetID: item.id)
         } else if let data = item.imageData {
-            openImage(data: data, name: item.displayName)
+            load(name: item.displayName, url: nil, data: data, assetID: item.id)
         }
+    }
+
+    // MARK: - Copy and paste
+
+    /// Copy the active photo's value-state edits. RAW decoder defaults are represented by neutral
+    /// optional settings, so copying never transfers a source photo's as-shot seed accidentally.
+    func copyAllEdits() {
+        guard activeAssetID != nil, sourceImage != nil else {
+            statusMessage = "Open an image first"
+            return
+        }
+        editClipboard = EditClipboardPayload(document: document)
+        statusMessage = "Copied all edits from \(sourceName)"
+    }
+
+    /// Paste to the active photo, or to every selected photo. Non-active destinations receive their
+    /// own history entry and disk snapshot; they do not need to be opened first.
+    func pasteEdits() {
+        guard let clipboard = editClipboard else {
+            statusMessage = "Copy edits first"
+            return
+        }
+
+        let selected = collection.selectedItems
+        if selected.isEmpty {
+            guard activeAssetID != nil, let source = imageSource else {
+                statusMessage = "Open an image first"
+                return
+            }
+            endUndoGrouping()
+            let updated = clipboard.applying(
+                to: document, destinationIsRAW: source.kind == .raw
+            )
+            updateDocument { $0 = updated }
+            statusMessage = "Pasted edits"
+            return
+        }
+
+        endUndoGrouping()
+        var pastedCount = 0
+        for item in selected {
+            let assetID = item.id
+            let destinationIsRAW: Bool
+            if let url = item.url {
+                destinationIsRAW = ImageSource.kind(forExtension: url.pathExtension) == .raw
+            } else if let data = item.imageData {
+                destinationIsRAW = ImageSource.kind(forData: data) == .raw
+            } else {
+                destinationIsRAW = false
+            }
+
+            if assetID == activeAssetID {
+                let updated = clipboard.applying(
+                    to: document, destinationIsRAW: destinationIsRAW
+                )
+                updateDocument { $0 = updated }
+            } else {
+                var session = editSessions[assetID] ?? PhotoEditSession()
+                let updated = clipboard.applying(
+                    to: session.document, destinationIsRAW: destinationIsRAW
+                )
+                guard updated != session.document else { continue }
+                session.history.endGrouping(document: session.document)
+                session.history.recordChange(from: session.document, to: updated)
+                session.document = updated
+                editSessions[assetID] = session
+                queuePersistence(
+                    updated,
+                    for: EditSourceReference(assetID: assetID, url: item.url),
+                    reportsStatus: false
+                )
+            }
+            pastedCount += 1
+        }
+
+        statusMessage = pastedCount == 1
+            ? "Pasted edits to 1 photo"
+            : pastedCount > 1 ? "Pasted edits to \(pastedCount) photos" : "Pasted edits"
     }
 
     /// Select a grid cell without leaving the grid. This is what makes a multi-selection useful:
@@ -637,7 +758,7 @@ final class AppViewModel: ObservableObject {
         if let url = item.url {
             openImage(url: url, assetID: item.id)
         } else if let data = item.imageData {
-            openImage(data: data, name: item.displayName)
+            load(name: item.displayName, url: nil, data: data, assetID: item.id)
         }
     }
 
@@ -933,6 +1054,7 @@ final class AppViewModel: ObservableObject {
 
     var canUndo: Bool { activeHistory.canUndo }
     var canRedo: Bool { activeHistory.canRedo }
+    var undoDepth: Int { activeHistory.undoCount }
 
     func undo() {
         endUndoGrouping()
@@ -1226,7 +1348,49 @@ final class AppViewModel: ObservableObject {
     }
 
     private func saveActiveDocument() {
-        guard let activeAssetID else { return }
+        guard let activeAssetID, let activeSourceReference else { return }
         editSessions[activeAssetID] = PhotoEditSession(document: document, history: activeHistory)
+
+        queuePersistence(document, for: activeSourceReference, reportsStatus: true)
+    }
+
+    /// Serialize disk snapshots in edit order. This is shared with multi-photo paste because a
+    /// destination that was never opened does not pass through `saveActiveDocument` before quit.
+    private func queuePersistence(
+        _ document: EditDocument,
+        for reference: EditSourceReference,
+        reportsStatus: Bool
+    ) {
+        let store = editStore
+        let previous = persistenceTask
+        persistenceGeneration += 1
+        let generation = persistenceGeneration
+        persistenceTask = Task { [weak self] in
+            _ = await previous?.value
+            defer {
+                if self?.persistenceGeneration == generation {
+                    self?.persistenceTask = nil
+                }
+            }
+            do {
+                try await store.save(document, for: reference)
+                guard !Task.isCancelled, reportsStatus,
+                      self?.persistenceGeneration == generation else { return }
+                self?.editStoreStatus = nil
+            } catch {
+                guard !Task.isCancelled, reportsStatus,
+                      self?.persistenceGeneration == generation else { return }
+                let message = error.localizedDescription
+                self?.editStoreStatus = message
+                self?.statusMessage = message
+            }
+        }
+    }
+
+    /// Wait for queued snapshots before clean application termination.
+    public func flushPendingWrites() async {
+        while let pending = persistenceTask {
+            await pending.value
+        }
     }
 }
