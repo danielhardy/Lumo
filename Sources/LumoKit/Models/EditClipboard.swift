@@ -4,9 +4,9 @@ import Foundation
 /// The value copied by “Copy All Edits”.
 ///
 /// The categories are intentionally separate even though the current renderer only has a small
-/// adjustment enum and no crop stage yet. Keeping the clipboard's shape wider than today's document
-/// means selective copy can later choose categories without replacing the clipboard schema or
-/// teaching every caller how to split an `EditDocument`.
+/// adjustment enum. Keeping the clipboard's shape wider than today's document means selective copy
+/// can later choose categories without replacing the clipboard schema or teaching every caller how
+/// to split an `EditDocument`.
 struct EditClipboardPayload: Codable, Sendable, Equatable {
     static let currentVersion = 1
 
@@ -25,26 +25,16 @@ struct EditClipboardPayload: Codable, Sendable, Equatable {
         var adjustments: [AdjustmentNode] = []
     }
 
-    /// The crop stage copied as a normalized, non-destructive framing value.
+    /// The crop stage copied as a normalized, non-destructive framing value. Rotation/straighten
+    /// is out of scope for this crop tool (see `CropAdjustments`) and intentionally has no field
+    /// here — an unused property would imply the clipboard carries rotation when nothing does.
     struct CropCategory: Codable, Sendable, Equatable {
         var normalizedRect: CGRect?
-        var angle: Double
 
-        static let neutral = CropCategory(normalizedRect: nil, angle: 0)
+        static let neutral = CropCategory(normalizedRect: nil)
 
-        init(normalizedRect: CGRect? = nil, angle: Double = 0) {
+        init(normalizedRect: CGRect? = nil) {
             self.normalizedRect = normalizedRect
-            self.angle = angle
-        }
-
-        private enum CodingKeys: String, CodingKey {
-            case normalizedRect, angle
-        }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            normalizedRect = try container.decodeIfPresent(CGRect.self, forKey: .normalizedRect)
-            angle = try container.decodeIfPresent(Double.self, forKey: .angle) ?? 0
         }
     }
 
