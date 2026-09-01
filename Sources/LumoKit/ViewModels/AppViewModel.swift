@@ -1977,15 +1977,23 @@ public final class AppViewModel: ObservableObject {
             reportsStatus: reportsStatus || (pendingPersistence[assetID]?.reportsStatus ?? false),
             force: force || priorForce
         )
-        if force { persistenceTask?.cancel() }
         guard persistenceTask == nil || force else { return }
-        startPersistenceWorker(force: force)
+        let previous = persistenceTask
+        if force { previous?.cancel() }
+        startPersistenceWorker(force: force, after: previous)
     }
 
-    private func startPersistenceWorker(force: Bool) {
+    /// Chain onto `previous` rather than letting a cancelled worker run orphaned: cancelling a task
+    /// only stops it from starting its *next* save, it does not abort a save already in flight. If a
+    /// forced restart simply replaced `persistenceTask`, `flushPendingWrites` — which only awaits the
+    /// current `persistenceTask` — could return while that orphaned save was still writing to disk.
+    /// Awaiting `previous` first keeps writes serialized to at most one in flight and keeps
+    /// `flushPendingWrites` a real guarantee.
+    private func startPersistenceWorker(force: Bool, after previous: Task<Void, Never>?) {
         persistenceGeneration &+= 1
         let generation = persistenceGeneration
         persistenceTask = Task { [weak self] in
+            await previous?.value
             guard let self else { return }
             if !force { try? await Task.sleep(for: Self.persistenceCheckpoint) }
             await self.drainPersistence(generation: generation)
@@ -2015,9 +2023,9 @@ public final class AppViewModel: ObservableObject {
 
     private func requestPersistenceFlush() {
         guard !pendingPersistence.isEmpty else { return }
-        persistenceTask?.cancel()
-        persistenceTask = nil
-        startPersistenceWorker(force: true)
+        let previous = persistenceTask
+        previous?.cancel()
+        startPersistenceWorker(force: true, after: previous)
     }
 
     /// Wait for queued snapshots before clean application termination.
