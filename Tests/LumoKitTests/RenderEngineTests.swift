@@ -70,6 +70,7 @@ final class RenderEngineTests: TempDirectoryTestCase {
                     balance: -12
                 )
             ),
+            effects: EffectsAdjustments(texture: 55, clarity: 45, dehaze: 35),
             adjustments: [.exposure(ev: 0.3), .vibrance(amount: 0.4)],
             lut: LUTSettings(lutID: lut.lutID, intensity: 0.8)
         )

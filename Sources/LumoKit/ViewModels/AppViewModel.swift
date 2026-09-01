@@ -160,6 +160,7 @@ final class AppViewModel: ObservableObject {
     var isComparisonAvailable: Bool {
         !document.light.isIdentity ||
             !document.color.isIdentity ||
+            !document.effects.isIdentity ||
             !document.adjustments.allSatisfy(\.isIdentity) || !document.lut.isIdentity
     }
 

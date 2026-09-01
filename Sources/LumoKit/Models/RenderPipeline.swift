@@ -25,8 +25,9 @@ enum RenderPipeline {
     /// document schema is unchanged. v5 adds the Whites and Blacks endpoint stages. v6 adds the
     /// editable master RGB curve. v7 adds the global Color stage. v8 adds the GPU HSL mixer stage.
     /// v9 adds three-way color grading. v10 replaces the master curve's 64³ cube with a sampled
-    /// 1D Core Image kernel while preserving the piecewise-linear transfer function.
-    static let cacheVersion = 10
+    /// 1D Core Image kernel while preserving the piecewise-linear transfer function. v11 adds the
+    /// GPU-backed Texture, Clarity, and Dehaze Effects stage.
+    static let cacheVersion = 11
 
     /// Build the graph for `document` over `source`.
     ///
@@ -85,10 +86,11 @@ enum RenderPipeline {
     ) -> CIImage {
         let lightAdjusted = applyLight(document.light, to: developed, cache: toneCurveCache)
         let colorAdjusted = applyColor(document.color, to: lightAdjusted)
+        let effectsAdjusted = applyEffects(document.effects, to: colorAdjusted)
         let adjustmentNodes = includePostRenderWhiteBalance
             ? document.adjustments
             : document.adjustments.filter { $0.slot != .temperatureTint }
-        let adjusted = applyAdjustments(adjustmentNodes, to: colorAdjusted)
+        let adjusted = applyAdjustments(adjustmentNodes, to: effectsAdjusted)
         return applyLUT(document.lut, lut: lut, to: adjusted, space: space, cache: lutCache)
     }
 
@@ -294,6 +296,167 @@ enum RenderPipeline {
     }
 
     // MARK: - HSL mixer
+
+    // MARK: - Effects
+
+    /// Apply the global photographic Effects controls as one lazy Core Image graph.
+    ///
+    /// Texture and Clarity use different spatial scales: Texture is a small-radius luminance
+    /// detail operation, while Clarity uses a broader local operation and a smooth midtone mask.
+    /// Dehaze is intentionally not another sharpen slider: it combines a broader local operation
+    /// with contrast, saturation, and a restrained S-curve so positive values reduce the veiled
+    /// appearance of low-contrast colour, while negative values produce the inverse haze-like look.
+    ///
+    /// All radii are fractions of the current image's shortest side. Since source downscaling is
+    /// performed before this stage, preview and export use the same photographic radius relative to
+    /// the image rather than accidentally using the same number of pixels.
+    static func applyEffects(_ effects: EffectsAdjustments, to image: CIImage) -> CIImage {
+        guard !effects.isIdentity else { return image }
+        var result = image
+
+        if effects.texture != 0 {
+            result = applyTexture(effects.texture, to: result)
+        }
+        if effects.clarity != 0 {
+            result = applyClarity(effects.clarity, to: result)
+        }
+        if effects.dehaze != 0 {
+            result = applyDehaze(effects.dehaze, to: result)
+        }
+        return result
+    }
+
+    /// Texture is a small-radius luminance detail operation. Negative Texture uses the same
+    /// narrow neighbourhood as a softening operation, so its inverse does not become a global blur.
+    private static func applyTexture(_ value: Double, to image: CIImage) -> CIImage {
+        let amount = CGFloat(abs(value) / EffectsAdjustments.textureRange.upperBound)
+        let radius = normalizedRadius(0.004, for: image)
+        let effect: CIImage
+        if value > 0 {
+            effect = image.applyingFilter("CISharpenLuminance", parameters: [
+                "inputSharpness": 0.85 * amount,
+                "inputRadius": radius,
+            ])
+        } else {
+            effect = croppedBlur(image, radius: radius * 0.7)
+        }
+        return blend(effect: effect, over: image, amount: amount, mask: nil, extent: image.extent)
+    }
+
+    /// Clarity is broader local contrast, restricted by a smooth midtone weighting. The mask keeps
+    /// skies and deep shadows from receiving the same edge emphasis as photographic midtones.
+    private static func applyClarity(_ value: Double, to image: CIImage) -> CIImage {
+        let amount = CGFloat(abs(value) / EffectsAdjustments.clarityRange.upperBound)
+        let radius = normalizedRadius(0.028, for: image)
+        let effect = value > 0
+            ? image.applyingFilter("CISharpenLuminance", parameters: [
+                "inputRadius": radius,
+                "inputSharpness": 0.95 * amount,
+            ])
+            : croppedBlur(image, radius: radius * 0.7)
+        let mask = midtoneMask(for: image, amount: amount)
+        return blend(effect: effect, over: image, amount: 1, mask: mask, extent: image.extent)
+    }
+
+    /// Dehaze combines broad local contrast with global tone and colour separation. The global
+    /// terms are intentionally restrained: at moderate settings the operation remains reversible
+    /// and avoids making clipped highlights or artificial halos the primary visual effect.
+    private static func applyDehaze(_ value: Double, to image: CIImage) -> CIImage {
+        let amount = CGFloat(abs(value) / EffectsAdjustments.dehazeRange.upperBound)
+        let radius = normalizedRadius(0.026, for: image)
+        let local: CIImage
+        if value > 0 {
+            local = image.applyingFilter("CIUnsharpMask", parameters: [
+                "inputRadius": radius,
+                "inputIntensity": 0.65 * amount,
+            ])
+        } else {
+            local = croppedBlur(image, radius: radius * 0.8)
+        }
+
+        var result = blend(effect: local, over: image, amount: amount, mask: nil, extent: image.extent)
+        let controls = CIFilter.colorControls()
+        controls.inputImage = result
+        controls.brightness = 0
+        controls.contrast = Float(1 + (value > 0 ? 0.28 : -0.22) * amount)
+        controls.saturation = Float(1 + (value > 0 ? 0.16 : -0.14) * amount)
+        result = controls.outputImage ?? result
+        return applyDehazeTone(value, amount: amount, to: result)
+    }
+
+    /// A shallow S-curve supplies the tonal part of Dehaze without reusing the Clarity midtone
+    /// mask. It is kept as a dedicated GPU tone node so the three controls remain independently
+    /// observable on both frequency patterns and smooth tonal regions.
+    private static func applyDehazeTone(_ value: Double, amount: CGFloat, to image: CIImage) -> CIImage {
+        let curve = CIFilter.toneCurve()
+        curve.inputImage = image
+        let direction: CGFloat = value > 0 ? 1 : -1
+        curve.point0 = toneCurvePoint(input: 0, output: 0)
+        curve.point1 = toneCurvePoint(input: 0.25, output: 0.25 - 0.035 * direction * amount)
+        curve.point2 = toneCurvePoint(input: 0.5, output: 0.5)
+        curve.point3 = toneCurvePoint(input: 0.75, output: 0.75 + 0.035 * direction * amount)
+        curve.point4 = toneCurvePoint(input: 1, output: 1)
+        return curve.outputImage ?? image
+    }
+
+    private static func normalizedRadius(_ fraction: CGFloat, for image: CIImage) -> CGFloat {
+        let extent = image.extent
+        let shortestSide = min(abs(extent.width), abs(extent.height))
+        guard shortestSide.isFinite, shortestSide > 0 else { return 1 }
+        return max(0.5, shortestSide * fraction)
+    }
+
+    private static func croppedBlur(_ image: CIImage, radius: CGFloat) -> CIImage {
+        image.clampedToExtent()
+            .applyingFilter("CIGaussianBlur", parameters: ["inputRadius": radius])
+            .cropped(to: image.extent)
+    }
+
+    private static func blend(
+        effect: CIImage,
+        over image: CIImage,
+        amount: CGFloat,
+        mask: CIImage?,
+        extent: CGRect
+    ) -> CIImage {
+        let maskImage = mask ?? CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1))
+            .cropped(to: extent)
+        return effectsBlendKernel?.apply(
+            extent: extent,
+            roiCallback: { _, rect in rect },
+            arguments: [image, effect.cropped(to: extent), maskImage, amount]
+        )?.cropped(to: extent) ?? image
+    }
+
+    private static func midtoneMask(for image: CIImage, amount: CGFloat) -> CIImage {
+        midtoneMaskKernel?.apply(
+            extent: image.extent,
+            arguments: [image, CIVector(x: amount, y: 0, z: 0, w: 0)]
+        ) ?? image
+    }
+
+    private static let midtoneMaskKernel = CIColorKernel(source: """
+    kernel vec4 effectsMidtoneMask(__sample pixel, vec4 controls) {
+        if (pixel.a <= 0.00001) { return vec4(0.0); }
+        vec3 rgb = clamp(pixel.rgb / pixel.a, 0.0, 1.0);
+        float luminance = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+        // A smooth bell centred on middle gray, zero at both endpoints.
+        float weight = clamp(4.0 * luminance * (1.0 - luminance), 0.0, 1.0);
+        float alpha = weight * clamp(controls.x, 0.0, 1.0);
+        return vec4(0.0, 0.0, 0.0, alpha);
+    }
+    """)
+
+    private static let effectsBlendKernel = CIKernel(source: """
+    kernel vec4 effectsBlend(sampler original, sampler effect, sampler mask, float amount) {
+        vec2 coordinate = samplerCoord(original);
+        vec4 base = sample(original, coordinate);
+        vec4 altered = sample(effect, coordinate);
+        vec4 maskPixel = sample(mask, coordinate);
+        float mixAmount = clamp(amount * maskPixel.a, 0.0, 1.0);
+        return mix(base, altered, mixAmount);
+    }
+    """)
 
     /// Apply the eight-channel mixer in one Core Image color kernel.
     ///
