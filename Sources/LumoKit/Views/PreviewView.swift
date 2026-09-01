@@ -103,7 +103,9 @@ struct PreviewView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .padding(8)
+            }
 
+            if viewModel.previewSurface.image != nil || viewModel.previewNSImage != nil {
                 // Comparison badge
                 if viewModel.isShowingOriginal && viewModel.isComparisonAvailable {
                     VStack {
