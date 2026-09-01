@@ -885,7 +885,8 @@ final class AppViewModel: ObservableObject {
     private func publishPreview(_ publication: PreviewCoordinator.Publication) {
         guard publication.request.source == imageSource else { return }
         if let gpuImage = publication.gpuImage {
-            previewSurface.present(gpuImage, revision: publication.revision,
+            previewSurface.present(gpuImage, space: publication.request.space,
+                                   revision: publication.revision,
                                    telemetry: previewCoordinator.telemetry,
                                    source: publication.request.source,
                                    quality: publication.request.quality)
@@ -947,7 +948,7 @@ final class AppViewModel: ObservableObject {
                       sourceRevision == self.sourceRevision,
                       documentRevision == self.documentRevision,
                       self.imageSource == imageSource else { return }
-                self.originalPreviewSurface.present(gpuImage)
+                self.originalPreviewSurface.present(gpuImage, space: request.space)
                 return
             }
             let cgImage = await engine.makeCGImage(request)

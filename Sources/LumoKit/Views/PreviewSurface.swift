@@ -8,14 +8,17 @@ import MetalKit
 final class PreviewSurface: ObservableObject {
     @Published private(set) var revision: UInt64 = 0
     private(set) var image: CIImage?
+    private(set) var space: WorkingSpace = .current
     private var pendingGPURevision: UInt64?
     private var pendingTelemetry: LiveEditTelemetry?
     private var pendingSource: ImageSource?
     private var pendingQuality: RenderQuality = .interactive
 
-    func present(_ image: CIImage?, revision: UInt64? = nil, telemetry: LiveEditTelemetry? = nil,
-                 source: ImageSource? = nil, quality: RenderQuality = .interactive) {
+    func present(_ image: CIImage?, space: WorkingSpace = .current, revision: UInt64? = nil,
+                 telemetry: LiveEditTelemetry? = nil, source: ImageSource? = nil,
+                 quality: RenderQuality = .interactive) {
         self.image = image
+        self.space = space
         self.revision &+= 1
         if let revision, let telemetry {
             pendingGPURevision = revision
@@ -66,7 +69,7 @@ struct PreviewSurfaceView: NSViewRepresentable {
         guard let image = surface.image, let drawable = view.currentDrawable,
               let commandBuffer = context.coordinator.commandQueue.makeCommandBuffer()
         else { return }
-        let colorSpace = WorkingSpace.current.cgColorSpace
+        let colorSpace = surface.space.cgColorSpace
         context.coordinator.context.render(image, to: drawable.texture, commandBuffer: commandBuffer,
                                            bounds: image.extent, colorSpace: colorSpace)
         // CIContext.render(_:to:commandBuffer:...) only encodes into this buffer; presenting the
