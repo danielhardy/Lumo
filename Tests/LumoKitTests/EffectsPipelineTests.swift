@@ -20,6 +20,20 @@ final class EffectsPipelineTests: XCTestCase {
         XCTAssertFalse(decoded.isIdentity)
     }
 
+    func testVignetteValuesClampAndRoundTripInTheDocument() throws {
+        let vignette = VignetteAdjustments(
+            amount: .infinity, midpoint: -.infinity, roundness: .nan,
+            feather: 150, highlights: -20
+        )
+        XCTAssertEqual(vignette, VignetteAdjustments(midpoint: 50, feather: 100))
+
+        let document = EditDocument(effects: EffectsAdjustments(vignette: VignetteAdjustments(
+            amount: 65, midpoint: 42, roundness: -30, feather: 72, highlights: 55
+        )))
+        let data = try JSONEncoder().encode(document)
+        XCTAssertEqual(try JSONDecoder().decode(EditDocument.self, from: data), document)
+    }
+
     private func grayscaleImage(values: [CGFloat], width: Int, height: Int) throws -> CIImage {
         var pixels = [Float](repeating: 0, count: width * height * 4)
         for y in 0..<height {
@@ -210,5 +224,78 @@ final class EffectsPipelineTests: XCTestCase {
         XCTAssertEqual(full.extent.width / preview.extent.width, 2, accuracy: 0.05)
         XCTAssertEqual(full.extent.height / preview.extent.height, 2, accuracy: 0.05)
         XCTAssertTrue(try Pixels.bytes(of: preview).count > 0)
+    }
+
+    func testNeutralVignetteIsAnExactIdentity() throws {
+        let source = try highFrequencyFixture()
+        let output = RenderPipeline.applyVignette(.neutral, to: source)
+        XCTAssertEqual(output.extent, source.extent)
+        assertPixelsEqual(try Pixels.bytes(of: output), try Pixels.bytes(of: source),
+                          "neutral vignette must be an exact no-op")
+    }
+
+    func testVignettePreservesExtentAndHasIndependentControls() throws {
+        let source = try grayscaleImage(
+            values: (0..<128 * 64).map { index in
+                let x = CGFloat(index % 128) / 127
+                let y = CGFloat(index / 128) / 63
+                return 0.15 + 0.7 * (0.65 * x + 0.35 * y)
+            }, width: 128, height: 64
+        )
+        let base = try Pixels.bytes(of: source)
+        let amount = VignetteAdjustments(amount: 70)
+        let variants = [
+            VignetteAdjustments(amount: 70, midpoint: 25),
+            VignetteAdjustments(amount: 70, roundness: 80),
+            VignetteAdjustments(amount: 70, feather: 5),
+            VignetteAdjustments(amount: 70, highlights: 90),
+        ]
+        let reference = try Pixels.bytes(of: RenderPipeline.applyVignette(amount, to: source))
+        XCTAssertNotEqual(reference, base)
+        for variant in variants {
+            let output = RenderPipeline.applyVignette(variant, to: source)
+            XCTAssertEqual(output.extent, source.extent)
+            assertPixelsDiffer(try Pixels.bytes(of: output), reference,
+                               "each vignette subordinate control must have a visible effect")
+        }
+    }
+
+    func testVignetteUsesPostCropAspectRatioAndPreservesHighlights() throws {
+        let extent = CGRect(x: 37, y: 19, width: 128, height: 64)
+        let dark = CIImage(color: CIColor(red: 0.25, green: 0.25, blue: 0.25)).cropped(to: extent)
+        let bright = CIImage(color: CIColor(red: 0.95, green: 0.95, blue: 0.95)).cropped(to: extent)
+        let vignette = VignetteAdjustments(amount: 80, midpoint: 45, feather: 30)
+        let darkOutput = RenderPipeline.applyVignette(vignette, to: dark)
+        let brightBytes = try Pixels.bytes(of: RenderPipeline.applyVignette(vignette, to: bright))
+        let preservedBytes = try Pixels.bytes(of: RenderPipeline.applyVignette(
+            VignetteAdjustments(amount: 80, midpoint: 45, feather: 30, highlights: 100), to: bright
+        ))
+
+        XCTAssertEqual(darkOutput.extent, extent)
+        XCTAssertLessThan(try Pixels.bytes(of: darkOutput)[0], 64,
+                          "positive Amount should darken an edge")
+        XCTAssertGreaterThan(preservedBytes[0], brightBytes[0],
+                             "Highlights should preserve bright edge detail")
+    }
+
+    func testVignetteIsAfterTheLUTInTheFullPipeline() throws {
+        let source = try highFrequencyFixture(width: 32, height: 16)
+        let lut = TestImages.warmLUT()
+        let document = EditDocument(
+            effects: EffectsAdjustments(vignette: VignetteAdjustments(amount: 65)),
+            lut: LUTSettings(lutID: lut.lutID, intensity: 1)
+        )
+        let graph = try XCTUnwrap(RenderPipeline.buildImage(
+            developed: source, document: document, lut: lut, includePostRenderWhiteBalance: false
+        ))
+        let lutOnly = try XCTUnwrap(RenderPipeline.buildImage(
+            developed: source,
+            document: EditDocument(lut: document.lut),
+            lut: lut,
+            includePostRenderWhiteBalance: false
+        ))
+        let expected = RenderPipeline.applyVignette(document.effects.vignette, to: lutOnly)
+        assertPixelsEqual(try Pixels.bytes(of: graph), try Pixels.bytes(of: expected),
+                          "vignette must consume LUT output")
     }
 }

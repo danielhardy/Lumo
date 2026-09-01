@@ -23,7 +23,7 @@ RAW develop → Light → Color → legacy ordered adjustments → LUT
 The inherited adjustment array remains untouched. A v1 document with no `light` key decodes with
 neutral Light and therefore retains its old exposure, contrast, highlight, and shadow nodes,
 including their original order and Core Image parameter values. This is an additive migration, so
-`EditDocument.currentVersion` remains 1. `RenderPipeline.cacheVersion` is 10: v2 introduced the
+`EditDocument.currentVersion` remains 1. `RenderPipeline.cacheVersion` is now 12: v2 introduced the
 explicit Light stage, v3 recorded the refined non-neutral mapping, v4 clamps the curve's interior
 points to stay monotonic, v5 adds the GPU-backed Whites and Blacks endpoint stages, and v6 adds the
 editable master RGB curve, v7 adds the global Color stage, and v10 replaces the master-curve cube

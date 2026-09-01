@@ -26,8 +26,8 @@ enum RenderPipeline {
     /// editable master RGB curve. v7 adds the global Color stage. v8 adds the GPU HSL mixer stage.
     /// v9 adds three-way color grading. v10 replaces the master curve's 64³ cube with a sampled
     /// 1D Core Image kernel while preserving the piecewise-linear transfer function. v11 adds the
-    /// GPU-backed Texture, Clarity, and Dehaze Effects stage.
-    static let cacheVersion = 11
+    /// GPU-backed Texture, Clarity, and Dehaze Effects stage. v12 adds the post-LUT vignette stage.
+    static let cacheVersion = 12
 
     /// Build the graph for `document` over `source`.
     ///
@@ -66,7 +66,8 @@ enum RenderPipeline {
         )
     }
 
-    /// The graph from an **already-developed** source onwards — adjustments, then the LUT.
+    /// The graph from an **already-developed** source onwards — adjustments, LUT, then post-crop
+    /// composition effects.
     ///
     /// Split out so a caller that already holds the developed image can skip the source stage.
     /// `RenderEngine` does exactly that, and it is not a micro-optimization: Core Image caches decoded
@@ -86,12 +87,15 @@ enum RenderPipeline {
     ) -> CIImage {
         let lightAdjusted = applyLight(document.light, to: developed, cache: toneCurveCache)
         let colorAdjusted = applyColor(document.color, to: lightAdjusted)
-        let effectsAdjusted = applyEffects(document.effects, to: colorAdjusted)
+        // Detail/atmosphere effects are pre-LUT. Vignette is deliberately held until after the LUT
+        // because it is a final composition effect and its mask must describe the post-crop frame.
+        let effectsAdjusted = applyPreLUTEffects(document.effects, to: colorAdjusted)
         let adjustmentNodes = includePostRenderWhiteBalance
             ? document.adjustments
             : document.adjustments.filter { $0.slot != .temperatureTint }
         let adjusted = applyAdjustments(adjustmentNodes, to: effectsAdjusted)
-        return applyLUT(document.lut, lut: lut, to: adjusted, space: space, cache: lutCache)
+        let lutAdjusted = applyLUT(document.lut, lut: lut, to: adjusted, space: space, cache: lutCache)
+        return applyVignette(document.effects.vignette, to: lutAdjusted)
     }
 
     // MARK: - Source
@@ -311,7 +315,14 @@ enum RenderPipeline {
     /// performed before this stage, preview and export use the same photographic radius relative to
     /// the image rather than accidentally using the same number of pixels.
     static func applyEffects(_ effects: EffectsAdjustments, to image: CIImage) -> CIImage {
-        guard !effects.isIdentity else { return image }
+        let preLUT = applyPreLUTEffects(effects, to: image)
+        return applyVignette(effects.vignette, to: preLUT)
+    }
+
+    /// Apply the detail/atmosphere controls that belong before the LUT. Kept separate from the
+    /// convenience above so the full pipeline can place vignette after LUT exactly once.
+    private static func applyPreLUTEffects(_ effects: EffectsAdjustments, to image: CIImage) -> CIImage {
+        guard effects.texture != 0 || effects.clarity != 0 || effects.dehaze != 0 else { return image }
         var result = image
 
         if effects.texture != 0 {
@@ -324,6 +335,40 @@ enum RenderPipeline {
             result = applyDehaze(effects.dehaze, to: result)
         }
         return result
+    }
+
+    /// Apply a vignette over the current (post-crop) image extent. The mask uses normalized
+    /// coordinates in both axes, so a 4:3 image gets an ellipse that reaches its left/right and
+    /// top/bottom edges at the same normalized distance rather than a circle stretched by pixels.
+    /// Every operation is clipped back to that extent; vignette never changes output dimensions.
+    static func applyVignette(_ vignette: VignetteAdjustments, to image: CIImage) -> CIImage {
+        guard !vignette.isIdentity,
+              let kernel = vignetteKernel,
+              image.extent.width.isFinite,
+              image.extent.height.isFinite,
+              image.extent.width > 0,
+              image.extent.height > 0
+        else { return image }
+
+        let extent = image.extent
+        let geometry = CIVector(
+            x: extent.midX,
+            y: extent.midY,
+            z: extent.width / 2,
+            w: extent.height / 2
+        )
+        let shape = CIVector(
+            x: vignette.midpoint / 100,
+            y: vignette.roundness / 100,
+            z: vignette.feather / 100,
+            w: vignette.amount / 100
+        )
+        let highlight = CIVector(x: vignette.highlights / 100, y: 0, z: 0, w: 0)
+        return kernel.apply(
+            extent: extent,
+            roiCallback: { _, rect in rect },
+            arguments: [image, geometry, shape, highlight]
+        )?.cropped(to: extent) ?? image
     }
 
     /// Texture is a small-radius luminance detail operation. Negative Texture uses the same
@@ -455,6 +500,42 @@ enum RenderPipeline {
         vec4 maskPixel = sample(mask, coordinate);
         float mixAmount = clamp(amount * maskPixel.a, 0.0, 1.0);
         return mix(base, altered, mixAmount);
+    }
+    """)
+
+    private static let vignetteKernel = CIKernel(source: """
+    kernel vec4 effectsVignette(
+        sampler image,
+        vec4 geometry,
+        vec4 shape,
+        vec4 highlightControls
+    ) {
+        vec2 coordinate = samplerCoord(image);
+        vec4 pixel = sample(image, coordinate);
+        if (pixel.a <= 0.00001) { return pixel; }
+
+        // Normalize independently by half-width/half-height: crop aspect ratio is part of the
+        // geometry, while the vignette values remain resolution independent.
+        vec2 normalized = (coordinate - geometry.xy) / max(geometry.zw, vec2(0.00001));
+        float roundness = clamp(shape.y, -1.0, 1.0);
+        // p=4 is squarer and p=2 is circular. Positive Roundness therefore rounds the corners.
+        float exponent = 3.0 - roundness;
+        float radius = pow(pow(abs(normalized.x), exponent) +
+                            pow(abs(normalized.y), exponent), 1.0 / exponent);
+
+        float midpoint = clamp(shape.x, 0.0, 1.0);
+        float feather = clamp(shape.z, 0.0, 1.0);
+        float transition = max(0.015, 0.08 + feather * 0.42);
+        float edge = smoothstep(max(0.0, midpoint - transition),
+                                min(1.5, midpoint + transition), radius);
+
+        vec3 straight = clamp(pixel.rgb / pixel.a, 0.0, 1.0);
+        float luminance = dot(straight, vec3(0.2126, 0.7152, 0.0722));
+        float highlightWeight = smoothstep(0.55, 1.0, luminance);
+        float preservation = 1.0 - clamp(highlightControls.x, 0.0, 1.0) * highlightWeight;
+        float signedAmount = clamp(shape.w, -1.0, 1.0);
+        float multiplier = 1.0 - signedAmount * edge * preservation;
+        return vec4(pixel.rgb * multiplier, pixel.a);
     }
     """)
 
