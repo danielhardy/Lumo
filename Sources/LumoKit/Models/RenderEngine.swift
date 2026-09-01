@@ -498,7 +498,8 @@ actor RenderEngine: RenderEngining {
         return RenderPipeline.buildImage(
             developed: developed, document: document, lut: lut, space: space, lutCache: lutCache,
             toneCurveCache: toneCurveCache,
-            includePostRenderWhiteBalance: source.kind == .standard
+            includePostRenderWhiteBalance: source.kind == .standard,
+            grainSeed: RenderPipeline.grainSeed(for: source)
         )
     }
 

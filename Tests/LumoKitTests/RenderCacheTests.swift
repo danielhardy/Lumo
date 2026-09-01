@@ -58,6 +58,30 @@ final class RenderCacheTests: TempDirectoryTestCase {
         XCTAssertEqual(stats.preview.hits, 0)
     }
 
+    func testPreviewKeyIncludesAllGrainParameters() async throws {
+        let source = try makeSource()
+        let engine = RenderEngine()
+        let neutral = request(source: source)
+        let amount = request(source: source, document: EditDocument(effects: EffectsAdjustments(
+            grain: GrainAdjustments(amount: 35)
+        )))
+        let size = request(source: source, document: EditDocument(effects: EffectsAdjustments(
+            grain: GrainAdjustments(amount: 35, size: 80)
+        )))
+        let roughness = request(source: source, document: EditDocument(effects: EffectsAdjustments(
+            grain: GrainAdjustments(amount: 35, size: 80, roughness: 15)
+        )))
+
+        _ = try await engine.render(neutral)
+        _ = try await engine.render(amount)
+        _ = try await engine.render(size)
+        _ = try await engine.render(roughness)
+
+        let stats = await engine.cacheStatistics()
+        XCTAssertEqual(stats.preview.misses, 4)
+        XCTAssertEqual(stats.preview.hits, 0)
+    }
+
     func testFullResolutionRequestsNeverEnterThePreviewCache() async throws {
         let source = try makeSource()
         let engine = RenderEngine()

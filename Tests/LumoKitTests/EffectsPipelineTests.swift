@@ -34,6 +34,18 @@ final class EffectsPipelineTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(EditDocument.self, from: data), document)
     }
 
+    func testGrainValuesClampAndRoundTripInTheDocument() throws {
+        let grain = GrainAdjustments(amount: .infinity, size: -.infinity, roughness: .nan)
+        XCTAssertEqual(grain, GrainAdjustments(size: 50, roughness: 50))
+
+        let document = EditDocument(effects: EffectsAdjustments(grain: GrainAdjustments(
+            amount: 72, size: 28, roughness: 84
+        )))
+        let data = try JSONEncoder().encode(document)
+        XCTAssertEqual(try JSONDecoder().decode(EditDocument.self, from: data), document)
+        XCTAssertNotEqual(document.editHash, EditDocument().editHash)
+    }
+
     private func grayscaleImage(values: [CGFloat], width: Int, height: Int) throws -> CIImage {
         var pixels = [Float](repeating: 0, count: width * height * 4)
         for y in 0..<height {
@@ -297,5 +309,119 @@ final class EffectsPipelineTests: XCTestCase {
         let expected = RenderPipeline.applyVignette(document.effects.vignette, to: lutOnly)
         assertPixelsEqual(try Pixels.bytes(of: graph), try Pixels.bytes(of: expected),
                           "vignette must consume LUT output")
+    }
+
+    func testGrainIsAfterTheLUTInTheFullPipeline() throws {
+        let source = try highFrequencyFixture(width: 32, height: 16)
+        let lut = TestImages.warmLUT()
+        let grain = GrainAdjustments(amount: 72, size: 55, roughness: 70)
+        let document = EditDocument(
+            effects: EffectsAdjustments(grain: grain),
+            lut: LUTSettings(lutID: lut.lutID, intensity: 1)
+        )
+        let graph = try XCTUnwrap(RenderPipeline.buildImage(
+            developed: source, document: document, lut: lut, includePostRenderWhiteBalance: false
+        ))
+        let lutOnly = try XCTUnwrap(RenderPipeline.buildImage(
+            developed: source,
+            document: EditDocument(lut: document.lut),
+            lut: lut,
+            includePostRenderWhiteBalance: false
+        ))
+        let expected = RenderPipeline.applyGrain(grain, to: lutOnly)
+        assertPixelsEqual(try Pixels.bytes(of: graph), try Pixels.bytes(of: expected),
+                          "grain must consume LUT output")
+    }
+
+    func testNeutralGrainIsAnExactIdentity() throws {
+        let source = try highFrequencyFixture()
+        let output = RenderPipeline.applyGrain(.neutral, to: source, seed: 0x1234)
+
+        XCTAssertEqual(output.extent, source.extent)
+        assertPixelsEqual(try Pixels.bytes(of: output), try Pixels.bytes(of: source),
+                          "neutral grain must be an exact no-op")
+    }
+
+    func testGrainIsDeterministicAndSeedIsIndependentOfEditState() throws {
+        let source = try highFrequencyFixture()
+        let grain = GrainAdjustments(amount: 78, size: 62, roughness: 35)
+        let first = RenderPipeline.applyGrain(grain, to: source, seed: 0xDEADBEEF)
+        let second = RenderPipeline.applyGrain(grain, to: source, seed: 0xDEADBEEF)
+
+        assertPixelsEqual(try Pixels.bytes(of: first), try Pixels.bytes(of: second),
+                          "the same grain request must reproduce the same pattern")
+        assertPixelsDiffer(
+            try Pixels.bytes(of: first),
+            try Pixels.bytes(of: RenderPipeline.applyGrain(grain, to: source, seed: 0x12345678)),
+            byAtLeast: 2,
+            "different source seeds should produce different fields"
+        )
+
+        let asset = ImageSource(data: Data("same asset".utf8), nativeExtent: source.extent.size)
+        let sameAsset = ImageSource(data: Data("same asset".utf8), nativeExtent: source.extent.size)
+        let otherAsset = ImageSource(data: Data("other asset".utf8), nativeExtent: source.extent.size)
+        XCTAssertEqual(RenderPipeline.grainSeed(for: asset), RenderPipeline.grainSeed(for: sameAsset))
+        XCTAssertNotEqual(RenderPipeline.grainSeed(for: asset), RenderPipeline.grainSeed(for: otherAsset))
+    }
+
+    func testGrainAmountSizeAndRoughnessAreIndependentlyMeasurable() throws {
+        let source = try highFrequencyFixture()
+        let base = try Pixels.bytes(of: source)
+        let amount = try Pixels.bytes(of: RenderPipeline.applyGrain(
+            GrainAdjustments(amount: 80), to: source, seed: 7
+        ))
+        let small = try Pixels.bytes(of: RenderPipeline.applyGrain(
+            GrainAdjustments(amount: 80, size: 10, roughness: 50), to: source, seed: 7
+        ))
+        let large = try Pixels.bytes(of: RenderPipeline.applyGrain(
+            GrainAdjustments(amount: 80, size: 90, roughness: 50), to: source, seed: 7
+        ))
+        let smooth = try Pixels.bytes(of: RenderPipeline.applyGrain(
+            GrainAdjustments(amount: 80, size: 50, roughness: 10), to: source, seed: 7
+        ))
+        let rough = try Pixels.bytes(of: RenderPipeline.applyGrain(
+            GrainAdjustments(amount: 80, size: 50, roughness: 90), to: source, seed: 7
+        ))
+
+        assertPixelsDiffer(amount, base, byAtLeast: 2, "Amount must add visible grain")
+        assertPixelsDiffer(small, large, byAtLeast: 2, "Size must change the grain field")
+        assertPixelsDiffer(smooth, rough, byAtLeast: 2, "Roughness must change the grain field")
+        XCTAssertNotEqual(small, rough, "the subordinate controls must not collapse to one alias")
+    }
+
+    func testGrainUsesRelativeOutputScaleAndPreservesExtentAndAlpha() throws {
+        let full = try highFrequencyFixture(width: 256, height: 128)
+        let preview = full.applyingFilter("CILanczosScaleTransform", parameters: [
+            "inputScale": 0.5, "inputAspectRatio": 1.0,
+        ])
+        let grain = GrainAdjustments(amount: 85, size: 58, roughness: 64)
+        let fullOutput = RenderPipeline.applyGrain(grain, to: full, seed: 19)
+        let previewOutput = RenderPipeline.applyGrain(grain, to: preview, seed: 19)
+
+        XCTAssertEqual(fullOutput.extent, full.extent)
+        XCTAssertEqual(previewOutput.extent.width, 128, accuracy: 1)
+        XCTAssertEqual(previewOutput.extent.height, 64, accuracy: 1)
+        XCTAssertGreaterThan(try grainVariation(of: fullOutput), 0.0001)
+        XCTAssertGreaterThan(try grainVariation(of: previewOutput), 0.0001)
+        let fullVariation = try grainVariation(of: fullOutput)
+        let previewVariation = try grainVariation(of: previewOutput)
+        XCTAssertEqual(
+            fullVariation / previewVariation,
+            1, accuracy: 0.45,
+            "normalized grain should retain a comparable viewed-scale variation"
+        )
+
+        let alphaSource = CIImage(color: CIColor(red: 0.4, green: 0.3, blue: 0.2, alpha: 0.4))
+            .cropped(to: CGRect(x: 11, y: 7, width: 32, height: 19))
+        let alphaOutput = RenderPipeline.applyGrain(grain, to: alphaSource, seed: 19)
+        XCTAssertEqual(alphaOutput.extent, alphaSource.extent)
+        XCTAssertEqual(try Pixels.bytes(of: alphaOutput)[3], 102, accuracy: 2)
+    }
+
+    private func grainVariation(of image: CIImage) throws -> Double {
+        let bytes = try Pixels.bytes(of: image)
+        let values = stride(from: 0, to: bytes.count, by: 4).map { Double(bytes[$0]) / 255 }
+        let mean = values.reduce(0, +) / Double(max(values.count, 1))
+        return values.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(max(values.count, 1))
     }
 }

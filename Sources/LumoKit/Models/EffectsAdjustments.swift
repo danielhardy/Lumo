@@ -76,13 +76,67 @@ struct VignetteAdjustments: Codable, Equatable, Sendable {
     }
 }
 
+/// Photographer-facing film grain controls.
+///
+/// Grain Amount is the only control that enables the operation. Size and Roughness remain
+/// persisted while Amount is zero so a grain recipe can be switched off and on without losing its
+/// shape. The renderer maps Size to a frequency relative to the output's shortest side.
+struct GrainAdjustments: Codable, Equatable, Sendable {
+    static let neutral = GrainAdjustments()
+
+    static let amountRange = 0.0...100.0
+    static let sizeRange = 0.0...100.0
+    static let roughnessRange = 0.0...100.0
+
+    var amount: Double {
+        didSet { amount = Self.clamp(amount, to: Self.amountRange, default: 0) }
+    }
+    /// Small values produce finer grain; large values produce larger photographic clumps.
+    var size: Double {
+        didSet { size = Self.clamp(size, to: Self.sizeRange, default: 50) }
+    }
+    /// Low values favor soft, clustered grain; high values add finer variation within each clump.
+    var roughness: Double {
+        didSet { roughness = Self.clamp(roughness, to: Self.roughnessRange, default: 50) }
+    }
+
+    init(amount: Double = 0, size: Double = 50, roughness: Double = 50) {
+        self.amount = Self.clamp(amount, to: Self.amountRange, default: 0)
+        self.size = Self.clamp(size, to: Self.sizeRange, default: 50)
+        self.roughness = Self.clamp(roughness, to: Self.roughnessRange, default: 50)
+    }
+
+    var isIdentity: Bool { amount == 0 }
+
+    private enum CodingKeys: String, CodingKey { case amount, size, roughness }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            amount: try container.decodeIfPresent(Double.self, forKey: .amount) ?? 0,
+            size: try container.decodeIfPresent(Double.self, forKey: .size) ?? 50,
+            roughness: try container.decodeIfPresent(Double.self, forKey: .roughness) ?? 50
+        )
+    }
+
+    private static func clamp(
+        _ value: Double,
+        to range: ClosedRange<Double>,
+        default fallback: Double
+    ) -> Double {
+        guard value.isFinite else { return fallback }
+        return min(max(value, range.lowerBound), range.upperBound)
+    }
+}
+
 /// Photographer-facing global Effects controls.
 ///
-/// The three controls deliberately share a -100...100 scale but not an operation. Texture is a
+/// The three main controls deliberately share a -100...100 scale but not an operation. Texture is a
 /// small-radius detail operation, Clarity is a larger-radius operation limited to midtones, and
-/// Dehaze combines local contrast with tonal and colour separation. The renderer owns the mapping
-/// from these values to Core Image filters; keeping that mapping out of the persisted value makes
-/// the edit portable across preview and export resolutions.
+/// Dehaze combines local contrast with tonal and colour separation. Vignette and Grain are nested
+/// parameter groups. The renderer owns the mapping from these values to Core Image filters;
+/// keeping that mapping out of the persisted value makes the edit portable across preview and
+/// export resolutions.
 struct EffectsAdjustments: Codable, Equatable, Sendable {
     static let neutral = EffectsAdjustments()
 
@@ -100,24 +154,29 @@ struct EffectsAdjustments: Codable, Equatable, Sendable {
         didSet { dehaze = Self.clamp(dehaze, to: Self.dehazeRange, default: 0) }
     }
     var vignette: VignetteAdjustments
+    /// Post-LUT film grain. Amount is the identity gate; Size and Roughness remain persisted while
+    /// Amount is zero.
+    var grain: GrainAdjustments
 
     init(
         texture: Double = 0,
         clarity: Double = 0,
         dehaze: Double = 0,
-        vignette: VignetteAdjustments = .neutral
+        vignette: VignetteAdjustments = .neutral,
+        grain: GrainAdjustments = .neutral
     ) {
         self.texture = Self.clamp(texture, to: Self.textureRange, default: 0)
         self.clarity = Self.clamp(clarity, to: Self.clarityRange, default: 0)
         self.dehaze = Self.clamp(dehaze, to: Self.dehazeRange, default: 0)
         self.vignette = vignette
+        self.grain = grain
     }
 
     var isIdentity: Bool {
-        texture == 0 && clarity == 0 && dehaze == 0 && vignette.isIdentity
+        texture == 0 && clarity == 0 && dehaze == 0 && vignette.isIdentity && grain.isIdentity
     }
 
-    private enum CodingKeys: String, CodingKey { case texture, clarity, dehaze, vignette }
+    private enum CodingKeys: String, CodingKey { case texture, clarity, dehaze, vignette, grain }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -125,8 +184,8 @@ struct EffectsAdjustments: Codable, Equatable, Sendable {
             texture: try container.decodeIfPresent(Double.self, forKey: .texture) ?? 0,
             clarity: try container.decodeIfPresent(Double.self, forKey: .clarity) ?? 0,
             dehaze: try container.decodeIfPresent(Double.self, forKey: .dehaze) ?? 0,
-            vignette: try container.decodeIfPresent(VignetteAdjustments.self, forKey: .vignette)
-                ?? .neutral
+            vignette: try container.decodeIfPresent(VignetteAdjustments.self, forKey: .vignette) ?? .neutral,
+            grain: try container.decodeIfPresent(GrainAdjustments.self, forKey: .grain) ?? .neutral
         )
     }
 

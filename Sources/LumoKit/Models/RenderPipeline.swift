@@ -27,7 +27,8 @@ enum RenderPipeline {
     /// v9 adds three-way color grading. v10 replaces the master curve's 64³ cube with a sampled
     /// 1D Core Image kernel while preserving the piecewise-linear transfer function. v11 adds the
     /// GPU-backed Texture, Clarity, and Dehaze Effects stage. v12 adds the post-LUT vignette stage.
-    static let cacheVersion = 12
+    /// v13 adds deterministic, resolution-aware post-LUT grain.
+    static let cacheVersion = 13
 
     /// Build the graph for `document` over `source`.
     ///
@@ -62,7 +63,8 @@ enum RenderPipeline {
         }
         return buildImage(
             developed: developed, document: document, lut: lut, space: space, lutCache: lutCache,
-            includePostRenderWhiteBalance: source.kind == .standard
+            includePostRenderWhiteBalance: source.kind == .standard,
+            grainSeed: grainSeed(for: source)
         )
     }
 
@@ -83,7 +85,8 @@ enum RenderPipeline {
         space: WorkingSpace = .current,
         lutCache: LUTFilterCache? = nil,
         toneCurveCache: ToneCurveFilterCache? = nil,
-        includePostRenderWhiteBalance: Bool = true
+        includePostRenderWhiteBalance: Bool = true,
+        grainSeed: UInt32 = 0
     ) -> CIImage {
         let lightAdjusted = applyLight(document.light, to: developed, cache: toneCurveCache)
         let colorAdjusted = applyColor(document.color, to: lightAdjusted)
@@ -95,7 +98,8 @@ enum RenderPipeline {
             : document.adjustments.filter { $0.slot != .temperatureTint }
         let adjusted = applyAdjustments(adjustmentNodes, to: effectsAdjusted)
         let lutAdjusted = applyLUT(document.lut, lut: lut, to: adjusted, space: space, cache: lutCache)
-        return applyVignette(document.effects.vignette, to: lutAdjusted)
+        let vignetted = applyVignette(document.effects.vignette, to: lutAdjusted)
+        return applyGrain(document.effects.grain, to: vignetted, seed: grainSeed)
     }
 
     // MARK: - Source
@@ -316,7 +320,55 @@ enum RenderPipeline {
     /// the image rather than accidentally using the same number of pixels.
     static func applyEffects(_ effects: EffectsAdjustments, to image: CIImage) -> CIImage {
         let preLUT = applyPreLUTEffects(effects, to: image)
-        return applyVignette(effects.vignette, to: preLUT)
+        let vignetted = applyVignette(effects.vignette, to: preLUT)
+        return applyGrain(effects.grain, to: vignetted, seed: 0)
+    }
+
+    /// A source-scoped seed for the noise field. It intentionally excludes the document and render
+    /// quality: moving any edit slider, including Grain itself, must not make the existing pattern
+    /// jump, and normalized coordinates let preview and export use the same field at different
+    /// pixel dimensions. The source fingerprint still changes when a file is replaced in place.
+    static func grainSeed(for source: ImageSource) -> UInt32 {
+        let digest = RenderCacheHash.digest(Data("Lumo.grain.v1:\(source.cacheFingerprint)".utf8))
+        return UInt32(String(digest.prefix(8)), radix: 16) ?? 0
+    }
+
+    /// Apply photographic grain with a deterministic, GPU-generated multi-octave value-noise
+    /// field. The field is correlated rather than independently random per pixel, and its blended
+    /// octaves give Roughness a measurable effect beyond uniform digital noise.
+    ///
+    /// Size is expressed as grain cells per shortest output side, not source pixels. This keeps a
+    /// preview representative of export: a full-resolution export contains proportionally more
+    /// pixels per grain clump, while the viewed image has the same relative grain scale.
+    static func applyGrain(
+        _ grain: GrainAdjustments,
+        to image: CIImage,
+        seed: UInt32 = 0
+    ) -> CIImage {
+        guard !grain.isIdentity,
+              let kernel = grainKernel,
+              image.extent.width.isFinite,
+              image.extent.height.isFinite,
+              image.extent.width > 0,
+              image.extent.height > 0
+        else { return image }
+
+        let extent = image.extent
+        let shortestSide = min(abs(extent.width), abs(extent.height))
+        guard shortestSide.isFinite, shortestSide > 0 else { return image }
+
+        let controls = CIVector(
+            x: 48 + (1 - grain.size / 100) * 144,
+            y: grain.roughness / 100,
+            z: grain.amount / 100,
+            w: 0
+        )
+        let geometry = CIVector(x: extent.midX, y: extent.midY, z: shortestSide, w: 0)
+        return kernel.apply(
+            extent: extent,
+            roiCallback: { _, rect in rect },
+            arguments: [image, geometry, controls, Float(seed)]
+        )?.cropped(to: extent) ?? image
     }
 
     /// Apply the detail/atmosphere controls that belong before the LUT. Kept separate from the
@@ -536,6 +588,66 @@ enum RenderPipeline {
         float signedAmount = clamp(shape.w, -1.0, 1.0);
         float multiplier = 1.0 - signedAmount * edge * preservation;
         return vec4(pixel.rgb * multiplier, pixel.a);
+    }
+    """)
+
+    private static let grainKernel = CIKernel(source: """
+    float grainHash(vec2 point, float seed) {
+        float stableSeed = fract(seed * 0.0000000002328306436538696);
+        return fract(sin(dot(point + vec2(stableSeed * 17.13, stableSeed * 31.71),
+                             vec2(127.1, 311.7))) * 43758.5453);
+    }
+
+    float grainValueNoise(vec2 point, float seed) {
+        vec2 cell = floor(point);
+        vec2 local = fract(point);
+        local = local * local * (3.0 - 2.0 * local);
+        float lowerLeft = grainHash(cell, seed);
+        float lowerRight = grainHash(cell + vec2(1.0, 0.0), seed);
+        float upperLeft = grainHash(cell + vec2(0.0, 1.0), seed);
+        float upperRight = grainHash(cell + vec2(1.0, 1.0), seed);
+        float lower = mix(lowerLeft, lowerRight, local.x);
+        float upper = mix(upperLeft, upperRight, local.x);
+        return mix(lower, upper, local.y);
+    }
+
+    kernel vec4 effectsGrain(
+        sampler image,
+        vec4 geometry,
+        vec4 controls,
+        float seed
+    ) {
+        vec2 coordinate = samplerCoord(image);
+        vec4 pixel = sample(image, coordinate);
+        if (pixel.a <= 0.00001) { return pixel; }
+
+        vec2 normalized = (coordinate - geometry.xy) / geometry.z;
+        float frequency = max(1.0, controls.x);
+        float roughness = clamp(controls.y, 0.0, 1.0);
+        float amount = clamp(controls.z, 0.0, 1.0);
+        vec2 grainCoordinate = normalized * frequency;
+
+        // A broad octave creates clumps; blending in finer octaves makes Roughness visibly change
+        // the grain's character. Pairing noise fields keeps the result closer to a bell-shaped
+        // photographic distribution than a flat, independently random digital field.
+        float broad = grainValueNoise(grainCoordinate * 0.45, seed + 1.0);
+        float medium = grainValueNoise(grainCoordinate, seed + 7.0);
+        float fine = grainValueNoise(grainCoordinate * 2.4, seed + 19.0);
+        float paired = grainValueNoise(grainCoordinate * 1.35, seed + 43.0);
+        float shaped = mix(broad, fine, roughness);
+        shaped = mix(shaped, medium, 0.35);
+        shaped = (shaped * 0.72 + paired * 0.28 - 0.5) * 2.0;
+
+        vec3 straight = clamp(pixel.rgb / pixel.a, 0.0, 1.0);
+        float luminance = dot(straight, vec3(0.2126, 0.7152, 0.0722));
+        // Grain is more visible in shadows and is predominantly luminance, with restrained chroma
+        // variation so it reads as emulsion texture instead of RGB channel noise.
+        float response = 0.58 + 0.42 * (1.0 - luminance);
+        float amplitude = 0.055 * amount * response;
+        float chroma = (fine - 0.5) * 0.12 * amount * response;
+        vec3 offset = vec3(shaped * amplitude) + vec3(chroma, -chroma * 0.55, chroma * 0.35);
+        vec3 altered = clamp(straight + offset, 0.0, 1.0);
+        return vec4(altered * pixel.a, pixel.a);
     }
     """)
 

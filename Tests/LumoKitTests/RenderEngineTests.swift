@@ -74,7 +74,8 @@ final class RenderEngineTests: TempDirectoryTestCase {
                 texture: 55, clarity: 45, dehaze: 35,
                 vignette: VignetteAdjustments(
                     amount: 62, midpoint: 44, roundness: -35, feather: 68, highlights: 48
-                )
+                ),
+                grain: GrainAdjustments(amount: 64, size: 58, roughness: 72)
             ),
             adjustments: [.exposure(ev: 0.3), .vibrance(amount: 0.4)],
             lut: LUTSettings(lutID: lut.lutID, intensity: 0.8)
