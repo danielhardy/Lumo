@@ -16,6 +16,7 @@ enum LumoWorkflowStage: CaseIterable {
     case photoSwitch
     case histogram
     case export
+    case liveEdit
 
     var name: StaticString {
         switch self {
@@ -27,6 +28,7 @@ enum LumoWorkflowStage: CaseIterable {
         case .photoSwitch: return "PhotoSwitch"
         case .histogram: return "Histogram"
         case .export: return "Export"
+        case .liveEdit: return "LiveEdit"
         }
     }
 }
@@ -36,6 +38,12 @@ enum LumoWorkflowEvent: CaseIterable {
     case cacheMiss
     case cancellation
     case coalesced
+    case pointerInput
+    case renderStart
+    case renderEnd
+    case gpuComplete
+    case drawablePresented
+    case staleRevision
 
     var name: StaticString {
         switch self {
@@ -43,6 +51,12 @@ enum LumoWorkflowEvent: CaseIterable {
         case .cacheMiss: return "CacheMiss"
         case .cancellation: return "Cancellation"
         case .coalesced: return "Coalesced"
+        case .pointerInput: return "PointerInput"
+        case .renderStart: return "RenderStart"
+        case .renderEnd: return "RenderEnd"
+        case .gpuComplete: return "GPUComplete"
+        case .drawablePresented: return "DrawablePresented"
+        case .staleRevision: return "StaleRevision"
         }
     }
 }
@@ -132,5 +146,11 @@ enum LumoObservability {
             .map { String(format: "%02x", $0) }
             .joined()
         return String(digest.prefix(16))
+    }
+
+    static func liveEdit(_ event: LumoWorkflowEvent, source: ImageSource, quality: RenderQuality,
+                         revision: UInt64, detail: String = "") {
+        self.event(event, source: source, quality: quality,
+                   detail: "revision=\(revision) \(detail)")
     }
 }

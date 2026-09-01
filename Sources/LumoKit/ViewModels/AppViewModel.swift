@@ -885,7 +885,10 @@ final class AppViewModel: ObservableObject {
     private func publishPreview(_ publication: PreviewCoordinator.Publication) {
         guard publication.request.source == imageSource else { return }
         if let gpuImage = publication.gpuImage {
-            previewSurface.present(gpuImage)
+            previewSurface.present(gpuImage, revision: publication.revision,
+                                   telemetry: previewCoordinator.telemetry,
+                                   source: publication.request.source,
+                                   quality: publication.request.quality)
         }
         guard let cgImage = publication.image else {
             if publication.phase == .settled {

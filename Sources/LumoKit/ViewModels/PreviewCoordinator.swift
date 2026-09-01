@@ -50,6 +50,7 @@ final class PreviewCoordinator {
 
     var onPublication: PublicationHandler?
     var onFailure: FailureHandler?
+    let telemetry = LiveEditTelemetry()
 
     init(
         engine: any RenderEngining,
@@ -94,6 +95,10 @@ final class PreviewCoordinator {
 
         nextRevision &+= 1
         let token = Token(source: request.source, revision: nextRevision)
+        telemetry.input(source: request.source, request: request, revision: token.revision)
+        LumoObservability.liveEdit(.pointerInput, source: request.source, quality: request.quality,
+                                   revision: token.revision)
+        if phase == .interactive, interactiveTask != nil { telemetry.coalesced(token.revision) }
         latestRequest = request
         latestToken = token
 
@@ -207,12 +212,25 @@ final class PreviewCoordinator {
         phase: Phase,
         engine: any RenderEngining
     ) async {
+        telemetry.mark(token.revision, renderStart: Date.timeIntervalSinceReferenceDate)
+        LumoObservability.liveEdit(.renderStart, source: request.source, quality: request.quality,
+                                   revision: token.revision)
         let gpuImage = await engine.makeCIImage(request)
         // Test doubles and non-GPU conformers retain the old raster seam. Once a GPU image exists,
         // the persistent presentation surface owns display for both phases, so rasterizing the
         // same request would rebuild the graph and perform a redundant second render pass.
         let image = gpuImage == nil ? await engine.makeCGImage(request) : nil
-        guard !Task.isCancelled, isCurrent(token) else { return }
+        telemetry.mark(token.revision, renderEnd: Date.timeIntervalSinceReferenceDate)
+        LumoObservability.liveEdit(.renderEnd, source: request.source, quality: request.quality,
+                                   revision: token.revision)
+        guard !Task.isCancelled else { return }
+        guard isCurrent(token) else {
+            let age = nextRevision >= token.revision ? nextRevision - token.revision : 0
+            telemetry.stale(token.revision, age: age)
+            LumoObservability.liveEdit(.staleRevision, source: request.source, quality: request.quality,
+                                       revision: token.revision, detail: "age=\(age)")
+            return
+        }
         guard image != nil || gpuImage != nil else {
             onFailure?(request)
             return

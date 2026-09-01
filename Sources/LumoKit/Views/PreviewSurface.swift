@@ -8,10 +8,43 @@ import MetalKit
 final class PreviewSurface: ObservableObject {
     @Published private(set) var revision: UInt64 = 0
     private(set) var image: CIImage?
+    private var pendingGPURevision: UInt64?
+    private var pendingTelemetry: LiveEditTelemetry?
+    private var pendingSource: ImageSource?
+    private var pendingQuality: RenderQuality = .interactive
 
-    func present(_ image: CIImage?) {
+    func present(_ image: CIImage?, revision: UInt64? = nil, telemetry: LiveEditTelemetry? = nil,
+                 source: ImageSource? = nil, quality: RenderQuality = .interactive) {
         self.image = image
-        revision &+= 1
+        self.revision &+= 1
+        if let revision, let telemetry {
+            pendingGPURevision = revision
+            pendingTelemetry = telemetry
+            pendingSource = source
+            pendingQuality = quality
+        }
+    }
+    fileprivate func pendingPresentationRevision() -> UInt64? { pendingGPURevision }
+
+    fileprivate func markGPUCompletion(revision: UInt64) {
+        guard pendingGPURevision == revision, let telemetry = pendingTelemetry else { return }
+        telemetry.mark(revision, gpuCompletion: Date.timeIntervalSinceReferenceDate)
+        if let source = pendingSource {
+            LumoObservability.liveEdit(.gpuComplete, source: source, quality: pendingQuality,
+                                       revision: revision)
+        }
+        pendingGPURevision = nil
+        pendingTelemetry = nil
+        pendingSource = nil
+    }
+
+    fileprivate func markDrawablePresented(revision: UInt64) {
+        guard pendingGPURevision == revision, let telemetry = pendingTelemetry else { return }
+        telemetry.mark(revision, drawablePresentation: Date.timeIntervalSinceReferenceDate)
+        if let source = pendingSource {
+            LumoObservability.liveEdit(.drawablePresented, source: source, quality: pendingQuality,
+                                       revision: revision, detail: "drawable-submitted")
+        }
     }
     func clear() { present(nil) }
 }
@@ -39,7 +72,15 @@ struct PreviewSurfaceView: NSViewRepresentable {
         // CIContext.render(_:to:commandBuffer:...) only encodes into this buffer; presenting the
         // drawable is on us, or the rendered texture never reaches the screen.
         commandBuffer.present(drawable)
+        if let revision = surface.pendingPresentationRevision() {
+            commandBuffer.addCompletedHandler { [weak surface] _ in
+                Task { @MainActor in surface?.markGPUCompletion(revision: revision) }
+            }
+        }
         commandBuffer.commit()
+        if let revision = surface.pendingPresentationRevision() {
+            surface.markDrawablePresented(revision: revision)
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
