@@ -795,12 +795,6 @@ final class AppViewModel: ObservableObject {
         updateDocument { $0.lut = .none }
     }
 
-    /// LUT terminology remains available to callers that have not adopted the user-facing Look
-    /// name yet.
-    func resetLUT() {
-        resetLook()
-    }
-
     // MARK: - LUT application
 
     private func applyLUT() {
