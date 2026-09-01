@@ -1310,7 +1310,19 @@ public final class AppViewModel: ObservableObject {
     /// describe the pixels on screen, and it stopped doing so precisely because it derived its image
     /// separately. Reading the request from one place is what makes that structural.
     private var displayRequest: (document: EditDocument, lut: CubeLUT?) {
-        isShowingOriginal ? (document.comparisonBaseline, nil) : (document, selectedLook)
+        var requested = isShowingOriginal ? document.comparisonBaseline : document
+
+        // Crop is a composition stage. While the tool is open the overlay is expressed in the
+        // full, oriented source coordinate space, so the pixels underneath it must be the same
+        // adjusted stage before crop. This preserves the developed-source cache (including RAW
+        // reuse) while making the saved rectangle line up with recognizable content. Vignette and
+        // grain consequently describe this temporary full-source frame; the committed request
+        // below restores their existing post-crop semantics.
+        if isCropToolActive {
+            requested.crop = .neutral
+        }
+
+        return isShowingOriginal ? (requested, nil) : (requested, selectedLook)
     }
 
     /// Render the document for display.
@@ -1406,6 +1418,9 @@ public final class AppViewModel: ObservableObject {
         isCropToolActive = true
         cropDraft = document.crop.normalizedRect ?? CropAdjustments.unitRect
         statusMessage = "Adjust crop, then Apply"
+        // The committed preview may already be cropped. Ask for the same adjusted stage without
+        // the composition crop so the full-source overlay has actual pixels underneath it.
+        schedulePreview()
     }
 
     func toggleCropTool() {
@@ -1426,7 +1441,14 @@ public final class AppViewModel: ObservableObject {
         let committed = cropDraft ?? CropAdjustments.unitRect
         isCropToolActive = false
         cropDraft = nil
+        let previousDocument = document
         updateDocument { $0.crop = CropAdjustments(normalizedRect: committed) }
+        // Applying an unchanged draft is still a composition transition: updateDocument quite
+        // correctly records no history entry, but the temporary uncropped preview must be replaced
+        // by the committed framing.
+        if document == previousDocument {
+            schedulePreview()
+        }
         statusMessage = "Crop applied"
     }
 
@@ -1435,6 +1457,8 @@ public final class AppViewModel: ObservableObject {
         guard isCropToolActive else { return }
         isCropToolActive = false
         cropDraft = nil
+        // Restore the committed framing without touching history or persistence.
+        schedulePreview()
         statusMessage = hasCropAdjustments ? "Crop unchanged" : "Crop cancelled"
     }
 
