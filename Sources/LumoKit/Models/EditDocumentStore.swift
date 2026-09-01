@@ -127,14 +127,12 @@ actor EditDocumentStore {
     private(set) var bytesWritten = 0
     /// Test-only observability for persistence regression tests and the opt-in benchmark.
     private(set) var saveAttemptCount = 0
-    private(set) var peakSaveConcurrency = 0
 
     // These seams are intentionally internal rather than part of the production API. They make
     // the actor's durability behavior testable without introducing a protocol abstraction for a
     // small, concrete file store.
     private let artificialWriteDelay: Duration
     private var failuresRemaining: Int
-    private var saveConcurrency = 0
 
     init(
         fileURL: URL = EditDocumentStore.defaultFileURL,
@@ -339,9 +337,6 @@ actor EditDocumentStore {
     private func persist() throws {
         lastIOWasMainThread = Thread.isMainThread
         saveAttemptCount += 1
-        saveConcurrency += 1
-        peakSaveConcurrency = max(peakSaveConcurrency, saveConcurrency)
-        defer { saveConcurrency -= 1 }
 
         if artificialWriteDelay > .zero {
             let components = artificialWriteDelay.components
