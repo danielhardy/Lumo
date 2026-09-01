@@ -208,11 +208,10 @@ final class PreviewCoordinator {
         engine: any RenderEngining
     ) async {
         let gpuImage = await engine.makeCIImage(request)
-        // Test doubles and non-GPU conformers retain the old raster seam. RenderEngine uses the
-        // GPU branch, so interactive production frames never allocate a CGImage.
-        // Settled raster output remains available to existing non-view clients/tests; interactive
-        // frames are surface-only and never take this allocation path.
-        let image = gpuImage == nil || phase == .settled ? await engine.makeCGImage(request) : nil
+        // Test doubles and non-GPU conformers retain the old raster seam. Once a GPU image exists,
+        // the persistent presentation surface owns display for both phases, so rasterizing the
+        // same request would rebuild the graph and perform a redundant second render pass.
+        let image = gpuImage == nil ? await engine.makeCGImage(request) : nil
         guard !Task.isCancelled, isCurrent(token) else { return }
         guard image != nil || gpuImage != nil else {
             onFailure?(request)

@@ -404,7 +404,7 @@ final class ExportCutoverTests: TempDirectoryTestCase {
     func testThePublishedHistogramTracksTheDocument() async throws {
         let viewModel = AppViewModel(engine: RenderEngine())
         viewModel.openImage(url: try makeImageFile())
-        try await waitUntil("the first preview") { viewModel.previewNSImage != nil }
+        try await waitUntil("the first preview") { viewModel.previewSurface.image != nil }
 
         viewModel.isInspectorPresented = true
         try await waitUntil("the first histogram") { viewModel.histogram != nil }

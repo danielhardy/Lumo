@@ -66,6 +66,22 @@ final class PreviewCoordinatorTests: XCTestCase {
         XCTAssertEqual(publications[0].revision, 2)
     }
 
+    func testSettledGPUPublicationDoesNotRasterizeASecondImage() async throws {
+        let fake = GPUBackedRenderEngine()
+        let coordinator = PreviewCoordinator(engine: fake)
+        var publications: [PreviewCoordinator.Publication] = []
+        coordinator.onPublication = { publications.append($0) }
+
+        coordinator.submit(request(source: makeSource(), exposure: 0.5))
+
+        try await waitUntil("the GPU-backed settled publication") { publications.count == 1 }
+        XCTAssertEqual(publications[0].phase, .settled)
+        XCTAssertNotNil(publications[0].gpuImage)
+        XCTAssertNil(publications[0].image)
+        let makeCGImageCalls = await fake.makeCGImageCalls
+        XCTAssertEqual(makeCGImageCalls, 0)
+    }
+
     func testInteractiveUpdatesDoNotStartAnotherRenderWhileOneIsInFlight() async throws {
         let fake = ControlledRenderEngine()
         let coordinator = PreviewCoordinator(
@@ -217,4 +233,31 @@ private actor ControlledRenderEngine: RenderEngining {
         precondition(CGImageDestinationFinalize(destination))
         return data as Data
     }
+}
+
+private actor GPUBackedRenderEngine: RenderEngining {
+    private(set) var makeCGImageCalls = 0
+
+    func makeCIImage(_ request: RenderRequest) async -> sending CIImage? {
+        CIImage(color: CIColor(red: 0.5, green: 0.25, blue: 0.75)).cropped(
+            to: CGRect(origin: .zero, size: request.targetSize ?? CGSize(width: 2, height: 2))
+        )
+    }
+
+    func makeCGImage(_ request: RenderRequest) async -> sending CGImage? {
+        makeCGImageCalls += 1
+        return nil
+    }
+
+    func render(_ request: RenderRequest) async throws -> RenderResult {
+        fatalError("not used by this test")
+    }
+
+    func histogram(
+        source: ImageSource, document: EditDocument, lut: CubeLUT?, scale: RenderScale,
+        space: WorkingSpace, maxDimension: Int
+    ) -> HistogramData? { nil }
+
+    func invalidateLUTCache() {}
+    func rawCapabilities(for source: ImageSource) async -> RAWCapabilities? { nil }
 }

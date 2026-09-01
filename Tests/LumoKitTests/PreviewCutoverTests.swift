@@ -66,9 +66,9 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
     }
 
     private func previewBytes(_ viewModel: AppViewModel) throws -> [UInt8] {
-        let nsImage = try XCTUnwrap(viewModel.previewNSImage)
-        var rect = CGRect(origin: .zero, size: nsImage.size)
-        let cg = try XCTUnwrap(nsImage.cgImage(forProposedRect: &rect, context: nil, hints: nil))
+        let image = try XCTUnwrap(viewModel.previewSurface.image)
+        let context = CIContext()
+        let cg = try XCTUnwrap(context.createCGImage(image, from: image.extent.integral))
         return try Pixels.bytes(of: cg)
     }
 
@@ -161,7 +161,7 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
     func testEachKnobVisiblyChangesThePreview() async throws {
         let viewModel = AppViewModel(engine: RenderEngine())
         try await openImage(viewModel)
-        try await waitUntil("the first preview") { viewModel.previewNSImage != nil }
+        try await waitUntil("the first preview") { viewModel.previewSurface.image != nil }
         let plain = try previewBytes(viewModel)
 
         // 1. Adjustments.
@@ -197,13 +197,14 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
     /// and asserts on the *request*; a request carrying the right LUT ID proves nothing about pixels
     /// if resolution hands the engine a nil.
     ///
-    /// So this one rasterizes: derive-shaped LUT, real `RenderEngine`, compare `previewNSImage`
+    /// So this one rasterizes the GPU surface in the test: derive-shaped LUT, real `RenderEngine`,
+    /// compare the published surface image
     /// before and after. It needs no RAW — the resolution path does not care what the source is —
     /// which is why it runs on CI too, unlike the derive gate proper.
     func testAFreshDerivePutsAGradedImageOnScreen() async throws {
         let viewModel = AppViewModel(engine: RenderEngine())
         try await openImage(viewModel)
-        try await waitUntil("the first preview") { viewModel.previewNSImage != nil }
+        try await waitUntil("the first preview") { viewModel.previewSurface.image != nil }
         let ungraded = try previewBytes(viewModel)
 
         // Built the way DeriveCoordinator builds one, and delivered the way a finished derive
@@ -223,12 +224,12 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
     ///
     /// The fake cannot prove this: the side-by-side baseline issues an identical request, so a
     /// mutation that ignored `isShowingOriginal` entirely still produced a matching request and
-    /// survived. What distinguishes them is which published property changes — `previewNSImage` is
-    /// the main panel, `originalPreviewNSImage` is the left one — so this checks the pixels there.
+    /// survived. What distinguishes them is which surface is published for the main panel, so this
+    /// checks the pixels there.
     func testHoldingSpaceShowsTheUngradedImageInTheMainPanel() async throws {
         let viewModel = AppViewModel(engine: RenderEngine())
         try await openImage(viewModel)
-        try await waitUntil("the first preview") { viewModel.previewNSImage != nil }
+        try await waitUntil("the first preview") { viewModel.previewSurface.image != nil }
         let ungraded = try previewBytes(viewModel)
 
         viewModel.selectLUT(TestImages.warmLUT())
@@ -257,7 +258,7 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
         let viewModel = AppViewModel(engine: RenderEngine())
         viewModel.openImage(url: rawURL)
         try await waitUntil("the RAW to load", timeout: 30) { viewModel.sourceImage != nil }
-        try await waitUntil("the first preview", timeout: 30) { viewModel.previewNSImage != nil }
+        try await waitUntil("the first preview", timeout: 30) { viewModel.previewSurface.image != nil }
         let neutral = try previewBytes(viewModel)
 
         viewModel.updateDocument { $0.rawDevelop.exposure = 1.5 }
