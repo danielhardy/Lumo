@@ -246,6 +246,62 @@ final class PreviewCostBenchmark: XCTestCase {
         print(String(format: "  measured timing: %.2f → %.2f ms/tick (%.2fx)", old, new, new / old))
     }
 
+    /// Measures the Effects inspector's common interactive path on a large preview-sized image.
+    /// This is deliberately a signpost/benchmark rather than a hard wall: Core Image timing varies
+    /// materially by Apple GPU and OS revision, while the release threshold is recorded in
+    /// `docs/EFFECTS_VALIDATION.md` and must be checked on the reference hardware.
+    func testMeasureEffectsInteractiveCost() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["LUMO_BENCH"] != nil,
+            "set LUMO_BENCH=1 to run the Effects interactive-cost measurement"
+        )
+
+        let context = CIContext(mtlDevice: MTLCreateSystemDefaultDevice()!)
+        let image = CIImage(cgImage: try Fixtures.makeCGImage(width: 1600, height: 1200))
+        let ticks = 30
+        var samples: [Double] = []
+        samples.reserveCapacity(ticks)
+
+        func document(for tick: Int) -> EditDocument {
+            let progress = Double(tick % ticks) / Double(ticks - 1)
+            return EditDocument(effects: EffectsAdjustments(
+                texture: 55 * progress,
+                clarity: 45 * progress,
+                dehaze: 35 * progress,
+                vignette: VignetteAdjustments(amount: 50 * progress),
+                grain: GrainAdjustments(amount: 45 * progress, size: 55, roughness: 65)
+            ))
+        }
+
+        for tick in 0..<3 {
+            let output = RenderPipeline.buildImage(
+                developed: image, document: document(for: tick), lut: nil,
+                includePostRenderWhiteBalance: false, grainSeed: 0x1234
+            )
+            _ = context.createCGImage(output, from: output.extent.integral,
+                                      format: .RGBA8, colorSpace: WorkingSpace.current.cgColorSpace)
+        }
+
+        for tick in 3..<(ticks + 3) {
+            let start = Date()
+            let output = RenderPipeline.buildImage(
+                developed: image, document: document(for: tick), lut: nil,
+                includePostRenderWhiteBalance: false, grainSeed: 0x1234
+            )
+            _ = context.createCGImage(output, from: output.extent.integral,
+                                      format: .RGBA8, colorSpace: WorkingSpace.current.cgColorSpace)
+            samples.append(Date().timeIntervalSince(start) * 1000)
+        }
+
+        let sorted = samples.sorted()
+        let p50 = sorted[sorted.count / 2]
+        let p95 = sorted[min(Int(Double(sorted.count - 1) * 0.95), sorted.count - 1)]
+        print("\n=== Effects interactive benchmark (1600x1200, \(samples.count) ticks) ===")
+        print(String(format: "  p50: %.2f ms/tick", p50))
+        print(String(format: "  p95: %.2f ms/tick", p95))
+        XCTAssertEqual(samples.count, ticks)
+    }
+
     /// The same question for a standard image. `CIImage(contentsOf:)` is lazy, so the *construction*
     /// is cheap — but the decode still happens at render time, and doing it per render rather than
     /// once could regress just as badly. Assuming otherwise would be exactly the kind of guess this

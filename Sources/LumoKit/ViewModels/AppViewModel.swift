@@ -177,7 +177,7 @@ final class AppViewModel: ObservableObject {
         didSet { if isInspectorPresented { updateHistogram() } }
     }
 
-    /// Which half of the inspector is showing.
+    /// Which panel of the inspector is showing.
     ///
     /// The histogram lives on `.info` only, so this gates it exactly as `isInspectorPresented` does:
     /// an open inspector showing Develop is as much "a panel nobody's looking at" as a closed one,
@@ -190,12 +190,14 @@ final class AppViewModel: ObservableObject {
 
     enum InspectorTab: String, CaseIterable, Sendable {
         case info, light, develop, adjust
+        case effects
         var title: String {
             switch self {
             case .info: return "Info"
             case .light: return "Light"
             case .develop: return "Develop"
             case .adjust: return "Adjust"
+            case .effects: return "Effects"
             }
         }
     }

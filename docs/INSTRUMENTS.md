@@ -31,7 +31,7 @@ keeps live editing separate from settled preview and export work.
    Compare the `PhotoSwitch` interval and the first `Render` interval. Repeat
    once after returning to the first image to capture a warm developed-source
    and thumbnail cache case.
-5. For live-edit latency, open Light, Develop, and Adjust in turn. Drag every
+5. For live-edit latency, open Light, Develop, Adjust, and Effects in turn. Drag every
    Light slider, the tone curve, every available Develop slider, and every visible
    Adjust slider continuously for at least one second. Join `PointerInput` to
    `DrawablePresented` by revision for input-to-present latency; use `GPUComplete`
@@ -61,6 +61,7 @@ Run each row cold and warm on the reference Apple Silicon Mac, using representat
 | Light | Exposure, Contrast, Highlights, Shadows, Whites, Blacks, tone curve | 24 MP RAW, 40–60 MP RAW, large standard |
 | Develop | Every available decoder control | 24 MP RAW, 40–60 MP RAW |
 | Adjust | Every visible adjustment control | 24 MP RAW, 40–60 MP RAW, large standard |
+| Effects | Texture, Clarity, Dehaze, Vignette, Grain | 24 MP RAW, 40–60 MP RAW, large standard |
 
 Store Mac/chip/memory, OS, commit, source dimensions, render dimensions, decoder name/version,
 warm/cold state, trace path, telemetry summary, and dropped/coalesced values. XCTest orchestration
