@@ -124,6 +124,7 @@ struct PreviewSurfaceView: NSViewRepresentable {
         weak var view: MTKView?
         var navigation = CanvasNavigation()
         private var lastDrawnRevision: UInt64?
+        private var lastDrawnNavigation: CanvasNavigation?
         private var lastDrawableSize: (width: Int, height: Int)?
         /// `makeCIImage` builds a lazy Core Image graph, so its completion is not the same thing
         /// as its GPU work finishing. Keep one drawable submission in flight and redraw only the
@@ -142,7 +143,12 @@ struct PreviewSurfaceView: NSViewRepresentable {
             let drawableSize = (drawable.texture.width, drawable.texture.height)
             let sameDrawableSize = lastDrawableSize?.width == drawableSize.0 &&
                 lastDrawableSize?.height == drawableSize.1
-            guard surface.revision != lastDrawnRevision || !sameDrawableSize else {
+            // A pan/zoom/fit change does not bump `surface.revision` — it is presentation-only
+            // and deliberately does not wait for a new render — so it must independently trigger
+            // a redraw here, or dragging the image would have no visible effect until some other
+            // change (an edit, a settled render) happened to bump the revision.
+            guard surface.revision != lastDrawnRevision || !sameDrawableSize
+                    || navigation != lastDrawnNavigation else {
                 return
             }
 
@@ -202,6 +208,7 @@ struct PreviewSurfaceView: NSViewRepresentable {
                 surface.markPresentationSubmitted(revision: revision)
             }
             lastDrawnRevision = surface.revision
+            lastDrawnNavigation = navigation
             lastDrawableSize = drawableSize
         }
 

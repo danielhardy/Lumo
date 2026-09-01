@@ -1353,12 +1353,18 @@ public final class AppViewModel: ObservableObject {
         setCanvasZoom(canvasNavigation.zoom * factor)
     }
 
+    /// Pinch-zoom is presentation-only, unlike a slider drag, so this deliberately does not call
+    /// `beginPreviewInteraction`/`endPreviewInteraction`: those also open an undo grouping and
+    /// queue a document save, which would flash a "saving" status and grow the undo stack for a
+    /// gesture that never touches `document`.
     func beginCanvasInteraction() {
-        beginPreviewInteraction()
+        isPreviewInteractionActive = true
+        previewCoordinator.beginInteraction()
     }
 
     func endCanvasInteraction() {
-        endPreviewInteraction()
+        isPreviewInteractionActive = false
+        previewCoordinator.endInteraction()
     }
 
     /// Pan is a presentation-only operation. It updates the Metal transform immediately and does
