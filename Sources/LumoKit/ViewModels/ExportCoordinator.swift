@@ -30,6 +30,9 @@ final class ExportCoordinator: ObservableObject {
     @Published private(set) var isExporting: Bool = false
     /// Progress (0...1) during a multi-image "Export All" run.
     @Published private(set) var batchProgress: Double = 0
+    /// The format used by the most recently started export in this session.
+    /// Both export dialogs use this to seed their accessory view.
+    private(set) var lastUsedFormat: ExportFormat
 
     var onStatus: ((String) -> Void)?
     var onError: ((String) -> Void)?
@@ -41,6 +44,7 @@ final class ExportCoordinator: ObservableObject {
 
     init(engine: any RenderEngining = RenderEngine.shared) {
         self.engine = engine
+        self.lastUsedFormat = Self.defaultFormat
     }
 
     /// Quality for the lossy encoders. Hardcoded as it always was; a UI for it is Step 12's
@@ -101,7 +105,7 @@ final class ExportCoordinator: ObservableObject {
         suggestedBaseName: String
     ) {
         let panel = NSSavePanel()
-        let formatPicker = ExportFormatAccessoryView(selectedFormat: Self.defaultFormat)
+        let formatPicker = ExportFormatAccessoryView(selectedFormat: lastUsedFormat)
         panel.title = "Export"
         panel.nameFieldStringValue = suggestedBaseName + "." + formatPicker.selectedFormat.fileExtension
         panel.allowedContentTypes = [formatPicker.selectedFormat.utType]
@@ -130,6 +134,7 @@ final class ExportCoordinator: ObservableObject {
         format: ExportFormat,
         to url: URL
     ) {
+        lastUsedFormat = format
         isExporting = true
         onStatus?("Exporting...")
 
@@ -170,11 +175,13 @@ final class ExportCoordinator: ObservableObject {
         panel.canChooseDirectories = true
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        panel.accessoryView = ExportFormatAccessoryView(selectedFormat: Self.defaultFormat)
+        panel.accessoryView = ExportFormatAccessoryView(selectedFormat: lastUsedFormat)
         guard panel.runModal() == .OK, let folder = panel.url else { return }
 
         let format = (panel.accessoryView as? ExportFormatAccessoryView)?.selectedFormat
-            ?? Self.defaultFormat
+            ?? lastUsedFormat
+        // Record the choice as soon as the dialog completes, before the async batch starts.
+        lastUsedFormat = format
         Task { await performBatchExport(items, document: document, lut: lut, format: format, to: folder) }
     }
 
@@ -197,6 +204,7 @@ final class ExportCoordinator: ObservableObject {
         format: ExportFormat,
         to folder: URL
     ) async -> BatchOutcome {
+        lastUsedFormat = format
         isExporting = true
         batchProgress = 0
         let total = items.count

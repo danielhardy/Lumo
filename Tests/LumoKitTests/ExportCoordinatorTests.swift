@@ -57,6 +57,27 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
 
     // MARK: - Single export
 
+    func testLastUsedFormatPersistsAcrossSingleAndBatchExports() async throws {
+        let coordinator = ExportCoordinator()
+        XCTAssertEqual(coordinator.lastUsedFormat, .jpeg)
+
+        coordinator.performExport(
+            source: try makeSource(), document: EditDocument(), lut: nil,
+            format: .tiff, to: tempDirectory.appendingPathComponent("first.tif")
+        )
+        try await waitUntil { !coordinator.isExporting }
+        XCTAssertEqual(coordinator.lastUsedFormat, .tiff)
+
+        let batchItem = try XCTUnwrap(makeSources(["batch"]).first)
+        _ = await coordinator.performBatchExport(
+            [batchItem], document: EditDocument(), lut: nil,
+            format: .png, to: try destinationFolder()
+        )
+        XCTAssertEqual(coordinator.lastUsedFormat, .png)
+        XCTAssertEqual(ExportCoordinator().lastUsedFormat, .jpeg,
+                       "the remembered format belongs to one coordinator session")
+    }
+
     /// An `ImageSource` for a real file on disk, so the engine has something to decode.
     private func makeSource(width: Int = 16, height: Int = 16, named name: String = "src.png") throws -> ImageSource {
         let url = try Fixtures.writeGradientPNG(width: width, height: height, named: name, in: tempDirectory)
