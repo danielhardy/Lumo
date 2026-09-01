@@ -17,14 +17,14 @@ struct InfoInspectorView: View {
 
                 Divider()
 
-                switch viewModel.inspectorTab {
+                switch viewModel.inspectorTab.content {
                 case .info:
                     infoContent
                 case .light:
                     LightInspectorView(viewModel: viewModel)
                 case .develop:
                     DevelopInspectorView(viewModel: viewModel)
-                case .adjust:
+                case .color:
                     ColorInspectorView(viewModel: viewModel)
                 case .effects:
                     EffectsInspectorView(viewModel: viewModel)

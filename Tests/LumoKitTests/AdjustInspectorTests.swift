@@ -191,7 +191,9 @@ extension AdjustInspectorTests {
             AppViewModel.InspectorTab.allCases,
             [.info, .light, .develop, .adjust, .effects, .look]
         )
-        XCTAssertEqual(AppViewModel.InspectorTab.adjust.title, "Adjust")
+        XCTAssertEqual(AppViewModel.InspectorTab.adjust.rawValue, "adjust")
+        XCTAssertEqual(AppViewModel.InspectorTab.adjust.title, "Color")
+        XCTAssertEqual(AppViewModel.InspectorTab.adjust.content, .color)
         XCTAssertEqual(AppViewModel.InspectorTab.effects.title, "Effects")
         XCTAssertEqual(AppViewModel.InspectorTab.look.title, "Look")
     }

@@ -308,6 +308,23 @@ public final class AppViewModel: ObservableObject {
         case effects
         case look
 
+        /// The view surface selected by this tab. Keep `.adjust` as the stored compatibility case;
+        /// its photographer-facing name is Color.
+        enum Content: Equatable, Sendable {
+            case info, light, develop, color, effects, look
+        }
+
+        var content: Content {
+            switch self {
+            case .info: return .info
+            case .light: return .light
+            case .develop: return .develop
+            case .adjust: return .color
+            case .effects: return .effects
+            case .look: return .look
+            }
+        }
+
         var iconName: String {
             switch self {
             case .info: return "info.circle"
@@ -324,7 +341,7 @@ public final class AppViewModel: ObservableObject {
             case .info: return "Info"
             case .light: return "Light"
             case .develop: return "Develop"
-            case .adjust: return "Adjust"
+            case .adjust: return "Color"
             case .effects: return "Effects"
             case .look: return "Look"
             }
