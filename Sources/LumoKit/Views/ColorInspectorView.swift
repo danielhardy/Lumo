@@ -13,7 +13,6 @@ struct ColorInspectorView: View {
     @State private var colorExpanded = true
     @State private var mixerExpanded = false
     @State private var gradingExpanded = false
-    @State private var otherAdjustmentsExpanded = false
     @State private var expandedMixerChannels = Set(ColorMixerChannelName.allCases)
     @State private var expandedGradingZones = Set(ColorGradingZone.allCases)
 
@@ -25,7 +24,6 @@ struct ColorInspectorView: View {
                 colorSection
                 mixerSection
                 gradingSection
-                otherAdjustmentsSection
             }
             .padding(16)
         }
@@ -190,28 +188,6 @@ struct ColorInspectorView: View {
                         range: control.range,
                         readout: control == .blending ? unsignedWholeReadout : signedWholeReadout,
                         reset: { viewModel.resetGrading(control) }
-                    )
-                }
-            }
-            .padding(.top, 10)
-        }
-    }
-
-    /// Keep the pre-existing ordered adjustment nodes reachable while the newer photographer-facing
-    /// Color stage owns white balance, global saturation, and vibrance. These rows are retained for
-    /// old documents and for controls not represented by the MVP Color model.
-    private var otherAdjustmentsSection: some View {
-        DisclosureGroup("Other Adjustments", isExpanded: $otherAdjustmentsExpanded) {
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach(viewModel.visibleAdjustmentControls.filter {
-                    ![.temperature, .tint, .saturation, .vibrance].contains($0)
-                }, id: \.self) { control in
-                    valueRow(
-                        title: control.title,
-                        value: viewModel.adjustmentBinding(for: control),
-                        range: control.range,
-                        readout: { value in String(format: "%.2f", value) },
-                        reset: { viewModel.resetAdjustment(control) }
                     )
                 }
             }

@@ -72,6 +72,34 @@ final class ColorInspectorTests: TempDirectoryTestCase {
         XCTAssertFalse(viewModel.document.adjustments.isEmpty)
     }
 
+    func testColorResetsPreserveLegacyAdjustmentNodes() async throws {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        try await openStandardImage(viewModel)
+        let legacyNodes: [AdjustmentNode] = [
+            .exposure(ev: 0.8),
+            .colorControls(brightness: 0.1, contrast: 1.35, saturation: 0.75),
+            .highlightShadow(highlights: 0.65, shadows: 0.3),
+            .temperatureTint(temp: 7200, tint: 14),
+            .vibrance(amount: 0.25),
+        ]
+
+        viewModel.updateDocument {
+            $0.adjustments = legacyNodes
+            $0.color.vibrance = 35
+            $0.color.saturation = -20
+        }
+
+        viewModel.resetAllMixer()
+        viewModel.resetAllGrading()
+        viewModel.resetAllColor()
+
+        XCTAssertEqual(
+            viewModel.document.adjustments,
+            legacyNodes,
+            "resetting supported Color state must not discard hidden legacy adjustment nodes"
+        )
+    }
+
     func testRowResetsPreserveSiblingMixerAndGradingValues() async throws {
         let viewModel = AppViewModel(engine: FakeRenderEngine())
         try await openStandardImage(viewModel)

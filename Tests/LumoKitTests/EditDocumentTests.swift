@@ -87,6 +87,38 @@ final class EditDocumentTests: XCTestCase {
         XCTAssertEqual(decoded.version, EditDocument.currentVersion)
     }
 
+    func testLegacyDocumentKeepsAdjustmentNodesWhenNewColorFieldsAreAbsent() throws {
+        let legacyJSON = """
+        {
+          "version": 1,
+          "rawDevelop": {},
+          "adjustments": [
+            { "exposure": { "ev": 0.8 } },
+            { "colorControls": { "brightness": 0.1, "contrast": 1.35, "saturation": 0.75 } },
+            { "highlightShadow": { "highlights": 0.65, "shadows": 0.3 } },
+            { "temperatureTint": { "temp": 7200, "tint": 14 } },
+            { "vibrance": { "amount": 0.25 } }
+          ],
+          "lut": { "lutID": null, "intensity": 1.0 }
+        }
+        """
+        let expected: [AdjustmentNode] = [
+            .exposure(ev: 0.8),
+            .colorControls(brightness: 0.1, contrast: 1.35, saturation: 0.75),
+            .highlightShadow(highlights: 0.65, shadows: 0.3),
+            .temperatureTint(temp: 7200, tint: 14),
+            .vibrance(amount: 0.25),
+        ]
+
+        let decoded = try JSONDecoder().decode(EditDocument.self, from: Data(legacyJSON.utf8))
+        XCTAssertTrue(decoded.color.isIdentity, "missing photographer-facing Color state is neutral")
+        XCTAssertEqual(decoded.adjustments, expected)
+
+        let persistedAgain = try roundTrip(decoded)
+        XCTAssertEqual(persistedAgain.adjustments, expected,
+                       "hidden legacy nodes must survive a save/load cycle unchanged")
+    }
+
     /// The other half of versioning: a document from a *newer* build is refused rather than
     /// silently narrowed. Opening a v2 document in a v1 build would drop whatever v2 added, and the
     /// next save would write that loss back over the user's edit.
