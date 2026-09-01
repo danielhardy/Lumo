@@ -196,6 +196,9 @@ public final class AppViewModel: ObservableObject {
     private var sourceRevision: UInt64 = 0
     /// Document generation guards the primary visible render and histogram publications.
     private var documentRevision: UInt64 = 0
+    /// Display generation guards histogram work against a newer request, including comparison
+    /// mode and render-scale changes that do not change the edit document.
+    private var displayRevision: UInt64 = 0
     /// Baseline generation changes only when the source or RAW develop state changes. Look-stage
     /// edits must not invalidate an in-flight baseline that is still correct for comparison.
     private var comparisonRevision: UInt64 = 0
@@ -266,7 +269,13 @@ public final class AppViewModel: ObservableObject {
     /// Inspector visibility. Computing the histogram is gated on this — plus on the Info tab being
     /// the one on screen — so we don't tally pixels for a panel nobody's looking at.
     @Published var isInspectorPresented: Bool = false {
-        didSet { if isInspectorPresented { updateHistogram() } }
+        didSet {
+            if isInspectorPresented {
+                updateHistogram()
+            } else {
+                cancelHistogram(clear: true)
+            }
+        }
     }
 
     /// Which panel of the inspector is showing.
@@ -277,7 +286,13 @@ public final class AppViewModel: ObservableObject {
     /// Switching **back** recomputes, or the panel would return blank (or stale) after a detour
     /// through Develop.
     @Published var inspectorTab: InspectorTab = .info {
-        didSet { if inspectorTab == .info { updateHistogram() } }
+        didSet {
+            if isInspectorPresented, inspectorTab == .info {
+                updateHistogram()
+            } else {
+                cancelHistogram(clear: true)
+            }
+        }
     }
 
     enum InspectorTab: String, CaseIterable, Sendable {
@@ -360,6 +375,8 @@ public final class AppViewModel: ObservableObject {
     /// while comparing). `nil` until computed / when no image is loaded.
     @Published var histogram: HistogramData?
     private var histogramTask: Task<Void, Never>?
+    private var histogramTaskRevision: UInt64?
+    private var histogramTaskRequest: RenderRequest?
 
     @Published var isLoading: Bool = false
     @Published var statusMessage: String = "Open an image to get started"
@@ -588,6 +605,8 @@ public final class AppViewModel: ObservableObject {
 
         sourceRevision &+= 1
         comparisonRevision &+= 1
+        displayRevision &+= 1
+        cancelHistogram(clear: true)
         let sourceRevision = self.sourceRevision
         previewCoordinator.cancel()
         previewSurface.clear()
@@ -1070,6 +1089,8 @@ public final class AppViewModel: ObservableObject {
         guard updated != document else { return }
 
         let developChanged = updated.rawDevelop != document.rawDevelop
+        displayRevision &+= 1
+        cancelHistogram(clear: false)
         activeHistory.recordChange(from: document, to: updated)
         document = updated
         if !document.hasVisibleLookEdits { isShowingOriginal = false }
@@ -1178,6 +1199,8 @@ public final class AppViewModel: ObservableObject {
         let clamped = max(0, min(1, value))
         guard clamped != document.lut.intensity else { return }
         let oldDocument = document
+        displayRevision &+= 1
+        cancelHistogram(clear: false)
         document.lut.intensity = clamped
         activeHistory.recordChange(from: oldDocument, to: document)
         saveActiveDocument()
@@ -1237,6 +1260,9 @@ public final class AppViewModel: ObservableObject {
             return
         }
 
+        displayRevision &+= 1
+        cancelHistogram(clear: false)
+
         let (requested, look) = displayRequest
         previewCoordinator.submit(RenderRequest(
                 source: imageSource, document: requested, lut: look,
@@ -1248,6 +1274,8 @@ public final class AppViewModel: ObservableObject {
     /// promotes the last value to a normal `.preview` render after the quiet period.
     private func scheduleInteractivePreview() {
         guard let imageSource else { return }
+        displayRevision &+= 1
+        cancelHistogram(clear: false)
         let (requested, lut) = displayRequest
         previewCoordinator.submit(RenderRequest(
             source: imageSource, document: requested, lut: lut,
@@ -1317,6 +1345,8 @@ public final class AppViewModel: ObservableObject {
         let oldValue = canvasNavigation.zoom
         canvasNavigation.setZoom(value)
         guard canvasNavigation.zoom != oldValue else { return }
+        displayRevision &+= 1
+        cancelHistogram(clear: false)
         if isPreviewInteractionActive {
             scheduleInteractivePreview()
         } else {
@@ -1396,6 +1426,8 @@ public final class AppViewModel: ObservableObject {
 
     private func applyHistoryDocument(_ restored: EditDocument) {
         let developChanged = restored.rawDevelop != document.rawDevelop
+        displayRevision &+= 1
+        cancelHistogram(clear: false)
         document = restored
         refreshLUTResolutionStatus()
         saveActiveDocument()
@@ -1440,7 +1472,7 @@ public final class AppViewModel: ObservableObject {
                 pendingDevelopChange = false
                 scheduleOriginalPreview()
             }
-            updateHistogram()
+            updateHistogram(for: publication.request)
         }
     }
 
@@ -1492,6 +1524,8 @@ public final class AppViewModel: ObservableObject {
         }
         guard show != isShowingOriginal else { return }
         isShowingOriginal = show
+        displayRevision &+= 1
+        cancelHistogram(clear: false)
         schedulePreview()
     }
 
@@ -1525,31 +1559,69 @@ public final class AppViewModel: ObservableObject {
     /// Passing the preview box rather than a histogram-sized scale is deliberate — see
     /// `RenderEngine.histogram`, which shares the developed-source memo with the on-screen render
     /// instead of evicting it every tally.
-    private func updateHistogram() {
+    private func updateHistogram(for displayedRequest: RenderRequest? = nil) {
         // Both halves of the gate: an inspector parked on Develop shows no histogram, so tallying
         // one on every settled render of a slider drag is pure waste.
-        guard isInspectorPresented, inspectorTab == .info else { return }
-        guard let imageSource else {
-            histogram = nil
+        guard isInspectorPresented, inspectorTab == .info else {
+            cancelHistogram(clear: true)
             return
         }
-        let (requested, lut) = displayRequest
-        let box = previewBackingSize
-        let sourceRevision = self.sourceRevision
-        let documentRevision = self.documentRevision
+        guard let imageSource else {
+            cancelHistogram(clear: true)
+            return
+        }
+        let request: RenderRequest
+        if let displayedRequest {
+            request = displayedRequest
+        } else {
+            let (requested, lut) = displayRequest
+            request = RenderRequest(
+                source: imageSource, document: requested, lut: lut,
+                targetSize: previewRenderTargetSize, quality: .preview,
+                output: .raster, space: .current
+            )
+        }
+        guard request.source == imageSource else {
+            cancelHistogram(clear: true)
+            return
+        }
 
-        histogramTask?.cancel()
+        let sourceRevision = self.sourceRevision
+        let displayRevision = self.displayRevision
+
+        // Opening the Info tab can race the settled publication that is already on its way. Do not
+        // tally the same displayed request twice just because both paths noticed it.
+        if histogramTask != nil,
+           histogramTaskRevision == displayRevision,
+           histogramTaskRequest == request {
+            return
+        }
+        cancelHistogram(clear: false)
+        histogramTaskRevision = displayRevision
+        histogramTaskRequest = request
         histogramTask = Task { [engine] in
             let result = await engine.histogram(
-                source: imageSource, document: requested, lut: lut,
-                scale: .preview(maxSize: box), space: .current, maxDimension: 512
+                source: request.source, document: request.document, lut: request.lut,
+                scale: request.renderScale, space: request.space, maxDimension: 512
             )
             guard !Task.isCancelled,
+                  self.isInspectorPresented,
+                  self.inspectorTab == .info,
                   sourceRevision == self.sourceRevision,
-                  documentRevision == self.documentRevision,
-                  self.imageSource == imageSource else { return }
+                  displayRevision == self.displayRevision,
+                  self.imageSource == request.source else { return }
             self.histogram = result
         }
+    }
+
+    /// Cancel pending or in-flight histogram work. The revision check in the task remains necessary:
+    /// a renderer may be finishing a non-cancellable Core Image operation after its task is canceled.
+    private func cancelHistogram(clear: Bool) {
+        histogramTask?.cancel()
+        histogramTask = nil
+        histogramTaskRevision = nil
+        histogramTaskRequest = nil
+        if clear { histogram = nil }
     }
 
     /// Read EXIF/TIFF/GPS metadata off the main actor and publish it.

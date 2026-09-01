@@ -63,6 +63,10 @@ actor FakeRenderEngine: RenderEngining {
     private(set) var encodeRequests: [Request] = []
     /// Every `histogram` call, in order.
     private(set) var histogramRequests: [Request] = []
+    /// Whether histogram calls should pause before returning. This makes cancellation and
+    /// revision guards observable instead of letting a synchronous fake hide a late-result race.
+    private var histogramIsGated = false
+    private var parkedHistograms: [CheckedContinuation<Void, Never>] = []
 
     struct Request: Equatable {
         let document: EditDocument
@@ -146,16 +150,45 @@ actor FakeRenderEngine: RenderEngining {
         scale: RenderScale,
         space: WorkingSpace,
         maxDimension: Int
-    ) -> HistogramData? {
+    ) async -> HistogramData? {
         histogramRequests.append(Request(
             document: document, lutID: lut?.lutID, scale: scale, space: space, format: nil,
             source: source
         ))
+        if histogramIsGated {
+            await withCheckedContinuation { parkedHistograms.append($0) }
+        }
         // A recognisable tally rather than `nil`: a caller that drops the result would otherwise be
         // indistinguishable from one that publishes it.
         var bins = [Int](repeating: 0, count: 256)
-        bins[128] = 1
+        let adjustmentExposure = document.adjustments.reduce(0.0) { partial, node in
+            guard case .exposure(let ev) = node else { return partial }
+            return partial + ev
+        }
+        let marker = max(
+            0, min(255, Int(((document.rawDevelop.exposure ?? 0) + adjustmentExposure + 10) * 10))
+        )
+        bins[marker] = 1
         return HistogramData(red: bins, green: bins, blue: bins, luma: bins)
+    }
+
+    /// Hold histogram responses until the test has arranged a newer display revision.
+    func gateHistogram() { histogramIsGated = true }
+
+    /// Release only the oldest parked response while leaving the gate closed. This is useful for
+    /// proving that an obsolete response cannot publish over a newer request that is still running.
+    func releaseNextHistogram() {
+        guard !parkedHistograms.isEmpty else { return }
+        parkedHistograms.removeFirst().resume()
+    }
+
+    /// Release every response currently parked in the fake. New calls proceed immediately after
+    /// this point, so a test can release stale and current work together and inspect publication.
+    func releaseHistograms() {
+        histogramIsGated = false
+        let parked = parkedHistograms
+        parkedHistograms.removeAll()
+        parked.forEach { $0.resume() }
     }
 
     /// How many times the app asked for the cube-filter cache to be dropped.

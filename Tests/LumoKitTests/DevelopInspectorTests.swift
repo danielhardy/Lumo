@@ -510,6 +510,86 @@ final class DevelopInspectorTests: TempDirectoryTestCase {
         }
     }
 
+    /// Histogram work follows the settled preview, not every transient slider value. The gate keeps
+    /// the final tally in flight so the request count can be checked before any result is published.
+    func testRapidEditsCoalesceHistogramWorkAfterTheSettledPreview() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+
+        viewModel.isInspectorPresented = true
+        try await waitUntil("the opening histogram") { await fake.histogramRequests.count == 1 }
+        let beforeEdits = await fake.histogramRequests.count
+        await fake.gateHistogram()
+
+        for step in 1...20 {
+            viewModel.updateDocument(debounced: true) {
+                $0.adjustments = [.exposure(ev: Double(step) / 20)]
+            }
+        }
+
+        try await waitUntil("one histogram for the settled value") {
+            await fake.histogramRequests.count == beforeEdits + 1
+        }
+        let requests = await fake.histogramRequests
+        XCTAssertEqual(requests.last?.document.adjustments, [.exposure(ev: 1.0)],
+                       "the coalesced tally must use the final slider value")
+
+        await fake.releaseHistograms()
+        try await waitUntil("the final histogram") { viewModel.histogram != nil }
+    }
+
+    /// An in-flight tally from an earlier edit is allowed to finish, but it must not publish after a
+    /// newer displayed revision has taken its place.
+    func testLateHistogramResultCannotReplaceANewerEdit() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+
+        await fake.gateHistogram()
+        viewModel.isInspectorPresented = true
+        try await waitUntil("the first histogram") { await fake.histogramRequests.count == 1 }
+
+        viewModel.updateDocument { $0.adjustments = [.exposure(ev: 0.5)] }
+        try await waitUntil("the newer histogram request") { await fake.histogramRequests.count == 2 }
+
+        // Finish the old request first. The current request is still gated, so any publication here
+        // would prove that the revision guard is missing.
+        await fake.releaseNextHistogram()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(viewModel.histogram, "an obsolete histogram must not publish")
+
+        await fake.releaseHistograms()
+        try await waitUntil("the current histogram") { viewModel.histogram != nil }
+        XCTAssertEqual(viewModel.histogram?.red[105], 1,
+                       "the published tally must describe the newer 0.5 EV edit")
+    }
+
+    /// The tally receives the exact settled request used for the visible comparison image, including
+    /// the temporary developed-only before state while Space comparison is active.
+    func testHistogramFollowsTheDisplayedComparisonRequest() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+        viewModel.isInspectorPresented = true
+        try await waitUntil("the opening histogram") { await fake.histogramRequests.count == 1 }
+
+        viewModel.updateDocument { $0.adjustments = [.exposure(ev: 0.8)] }
+        try await waitUntil("the edited render") {
+            await fake.previewRequests.contains { !$0.document.adjustments.isEmpty }
+        }
+        try await waitUntil("the edited histogram") { await fake.histogramRequests.count == 2 }
+
+        viewModel.showOriginal(true)
+        try await waitUntil("the comparison histogram") { await fake.histogramRequests.count == 3 }
+        let comparison = await fake.histogramRequests.last
+        XCTAssertEqual(comparison?.document, viewModel.document.comparisonBaseline)
+        XCTAssertNil(comparison?.lutID)
+    }
+
     // MARK: - The ship gate: edits reach the renderer
 
     func testADevelopEditRendersTheChangedDocument() async throws {
