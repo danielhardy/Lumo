@@ -284,6 +284,20 @@ extension AppViewModel {
         )
     }
 
+    /// The visual wheel changes hue and saturation together, so it needs one binding rather than
+    /// composing the two numeric bindings. It still takes the normal debounced render path and
+    /// therefore remains pixel-identical to precise numeric entry.
+    func gradingWheelBinding(for zone: ColorGradingZone) -> Binding<ColorGradingWheel> {
+        Binding(
+            get: { self.gradingWheelValue(zone) },
+            set: { wheel in
+                self.updateDocument(debounced: true) { document in
+                    Self.setGradingWheel(zone, to: wheel, in: &document.color.grading)
+                }
+            }
+        )
+    }
+
     func gradingGlobalValue(for control: ColorGradingGlobalControl) -> Double {
         switch control {
         case .blending: return document.color.grading.blending

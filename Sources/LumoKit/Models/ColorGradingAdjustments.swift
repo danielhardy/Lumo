@@ -46,6 +46,52 @@ struct ColorGradingWheel: Codable, Equatable, Sendable {
     }
 }
 
+/// A point on a grading wheel, with its center at `(0, 0)` and its rim one unit away.
+///
+/// Keeping the interaction mapping in the model layer makes the wheel's behaviour independent of
+/// SwiftUI layout and lets the same conversion be regression-tested without synthesising a drag.
+struct ColorGradingWheelPoint: Equatable, Sendable {
+    let x: Double
+    let y: Double
+
+    init(x: Double, y: Double) {
+        self.x = x
+        self.y = y
+    }
+}
+
+/// Converts between a visual wheel position and the persisted hue/saturation representation.
+///
+/// The positive x axis is 0°, and the positive y axis is 90° (the view flips AppKit's downward y
+/// coordinate before calling this type). Positions beyond the rim retain their direction and clamp
+/// to 100% saturation, so a drag can always reach the edge without a discontinuity.
+enum ColorGradingWheelMapping {
+    static let accessibilityStep = 5.0
+
+    static func wheel(at point: ColorGradingWheelPoint) -> ColorGradingWheel {
+        let distance = hypot(point.x, point.y)
+        guard distance > 0 else { return .neutral }
+
+        let degrees = atan2(point.y, point.x) * 180 / .pi
+        let hue = degrees < 0 ? degrees + 360 : degrees
+        return ColorGradingWheel(hue: hue, saturation: min(distance, 1) * 100)
+    }
+
+    static func point(for wheel: ColorGradingWheel) -> ColorGradingWheelPoint {
+        let radius = wheel.saturation / 100
+        let radians = wheel.hue * .pi / 180
+        return ColorGradingWheelPoint(x: cos(radians) * radius, y: sin(radians) * radius)
+    }
+
+    static func adjustingSaturation(_ wheel: ColorGradingWheel, by amount: Double) -> ColorGradingWheel {
+        ColorGradingWheel(hue: wheel.hue, saturation: wheel.saturation + amount)
+    }
+
+    static func accessibilityValue(for wheel: ColorGradingWheel) -> String {
+        "Hue \(Int(wheel.hue.rounded())) degrees, Saturation \(Int(wheel.saturation.rounded())) percent"
+    }
+}
+
 /// Shadows, midtones, and highlights color grading controls.
 ///
 /// Blending widens the smooth overlap between tonal regions. Balance shifts the tonal center

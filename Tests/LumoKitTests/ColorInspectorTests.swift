@@ -116,6 +116,27 @@ final class ColorInspectorTests: TempDirectoryTestCase {
         XCTAssertEqual(viewModel.gradingWheelValue(.midtones), ColorGradingWheel(hue: 120))
     }
 
+    func testVisualWheelBindingMapsGestureValuesAndUsesInteractivePreview() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openStandardImage(viewModel)
+        try await waitUntil("the opening render") { await !fake.previewRequests.isEmpty }
+
+        viewModel.beginPreviewInteraction()
+        let wheel = ColorGradingWheelMapping.wheel(at: .init(x: 0, y: 0.6))
+        viewModel.gradingWheelBinding(for: .midtones).wrappedValue = wheel
+        viewModel.endPreviewInteraction()
+
+        try await waitUntil("the wheel preview") {
+            await fake.previewRequests.contains {
+                $0.document.color.grading.midtones == ColorGradingWheel(hue: 90, saturation: 60)
+            }
+        }
+        XCTAssertEqual(viewModel.gradingWheelValue(.midtones), wheel)
+        viewModel.resetGrading(.midtones)
+        XCTAssertEqual(viewModel.gradingWheelValue(.midtones), .neutral)
+    }
+
     func testColorSliderUsesInteractiveRenderAndSettlesLatestValue() async throws {
         let fake = FakeRenderEngine()
         let viewModel = AppViewModel(engine: fake)

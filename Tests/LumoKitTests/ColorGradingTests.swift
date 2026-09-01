@@ -80,6 +80,40 @@ final class ColorGradingTests: XCTestCase {
         XCTAssertTrue(oldColor.isIdentity)
     }
 
+    func testWheelMappingReachesNeutralRimAndEveryCardinalHue() {
+        XCTAssertEqual(ColorGradingWheelMapping.wheel(at: .init(x: 0, y: 0)), .neutral)
+        XCTAssertEqual(ColorGradingWheelMapping.wheel(at: .init(x: 1, y: 0)),
+                       ColorGradingWheel(hue: 0, saturation: 100))
+        XCTAssertEqual(ColorGradingWheelMapping.wheel(at: .init(x: 0, y: 1)),
+                       ColorGradingWheel(hue: 90, saturation: 100))
+        XCTAssertEqual(ColorGradingWheelMapping.wheel(at: .init(x: -1, y: 0)),
+                       ColorGradingWheel(hue: 180, saturation: 100))
+        XCTAssertEqual(ColorGradingWheelMapping.wheel(at: .init(x: 0, y: -1)),
+                       ColorGradingWheel(hue: 270, saturation: 100))
+        XCTAssertEqual(ColorGradingWheelMapping.wheel(at: .init(x: 4, y: 0)),
+                       ColorGradingWheel(hue: 0, saturation: 100),
+                       "a drag beyond the rim must still reach the maximum grade")
+    }
+
+    func testWheelMappingRoundTripsStoredValuesAndAccessibilityAdjustments() {
+        let original = ColorGradingWheel(hue: 217.25, saturation: 43.5)
+        let point = ColorGradingWheelMapping.point(for: original)
+        let restored = ColorGradingWheelMapping.wheel(at: point)
+
+        XCTAssertEqual(restored.hue, original.hue, accuracy: 1e-12)
+        XCTAssertEqual(restored.saturation, original.saturation, accuracy: 1e-12)
+        XCTAssertEqual(
+            ColorGradingWheelMapping.accessibilityValue(for: original),
+            "Hue 217 degrees, Saturation 44 percent"
+        )
+        XCTAssertEqual(
+            ColorGradingWheelMapping.adjustingSaturation(
+                ColorGradingWheel(hue: 10, saturation: 98), by: ColorGradingWheelMapping.accessibilityStep
+            ),
+            ColorGradingWheel(hue: 10, saturation: 100)
+        )
+    }
+
     func testZeroSaturationAcrossWheelsIsExactIdentityRegardlessOfHue() throws {
         let source = try image(levels: levels)
         let grading = ColorGradingAdjustments(

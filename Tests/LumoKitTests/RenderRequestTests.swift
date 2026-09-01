@@ -68,7 +68,14 @@ final class RenderRequestTests: TempDirectoryTestCase {
 
     func testPreviewAndExportParityUsesExplicitQualityAndOutputPolicies() async throws {
         let source = try makeSource()
-        let document = EditDocument(adjustments: [.vibrance(amount: 0.4)])
+        // Construct the grade through the same mapping a visual wheel uses. The request funnel must
+        // preserve that state identically for an on-screen preview and a lossless export.
+        let document = EditDocument(
+            color: ColorAdjustments(grading: ColorGradingAdjustments(
+                midtones: ColorGradingWheelMapping.wheel(at: .init(x: -0.4, y: 0.7))
+            )),
+            adjustments: [.vibrance(amount: 0.4)]
+        )
         let engine = RenderEngine()
 
         let preview = try await engine.render(RenderRequest(

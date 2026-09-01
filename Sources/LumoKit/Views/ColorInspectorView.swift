@@ -164,6 +164,13 @@ struct ColorInspectorView: View {
                         isExpanded: gradingExpansion(for: zone)
                     ) {
                         VStack(alignment: .leading, spacing: 10) {
+                            ColorGradingWheelControl(
+                                title: zone.title,
+                                wheel: viewModel.gradingWheelBinding(for: zone),
+                                reset: { viewModel.resetGrading(zone) },
+                                beginInteraction: viewModel.beginPreviewInteraction,
+                                endInteraction: viewModel.endPreviewInteraction
+                            )
                             ForEach(ColorGradingControl.allCases, id: \.self) { control in
                                 valueRow(
                                     title: "\(zone.title) \(control.title)",
@@ -313,6 +320,102 @@ private struct ColorValueRow: View {
             )
             .accessibilityLabel(title)
             .accessibilityValue(readout(value))
+            .accessibilityAction(named: Text(resetActionTitle), reset)
         }
+    }
+}
+
+/// A compact Resolve-inspired hue/saturation wheel. The model owns the polar conversion so the
+/// visual control and numeric fields always round-trip through precisely the same stored values.
+private struct ColorGradingWheelControl: View {
+    let title: String
+    @Binding var wheel: ColorGradingWheel
+    let reset: () -> Void
+    let beginInteraction: () -> Void
+    let endInteraction: () -> Void
+
+    @State private var isDragging = false
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Text("\(title) wheel")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            GeometryReader { proxy in
+                let diameter = min(proxy.size.width, proxy.size.height)
+                let indicatorPoint = ColorGradingWheelMapping.point(for: wheel)
+                let indicatorOffset = CGSize(
+                    width: indicatorPoint.x * diameter / 2,
+                    height: -indicatorPoint.y * diameter / 2
+                )
+
+                ZStack {
+                    Circle()
+                        .fill(AngularGradient(
+                            colors: [.red, .yellow, .green, .cyan, .blue, .purple, .red],
+                            center: .center
+                        ))
+                    Circle()
+                        .fill(RadialGradient(
+                            colors: [.white.opacity(0.94), .white.opacity(0.42), .clear],
+                            center: .center,
+                            startRadius: 0,
+                            endRadius: diameter / 2
+                        ))
+                    Circle()
+                        .fill(LumoTheme.controlBackground)
+                        .frame(width: 10, height: 10)
+                        .overlay(Circle().stroke(.primary.opacity(0.45), lineWidth: 1))
+                    Circle()
+                        .stroke(.primary, lineWidth: 2)
+                        .frame(width: 16, height: 16)
+                        .shadow(color: .black.opacity(0.35), radius: 1)
+                        .offset(indicatorOffset)
+                }
+                .frame(width: diameter, height: diameter)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Circle())
+                .gesture(
+                    DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                        .onChanged { value in
+                            if !isDragging {
+                                isDragging = true
+                                beginInteraction()
+                            }
+                            wheel = ColorGradingWheelMapping.wheel(
+                                at: point(for: value.location, in: proxy.size)
+                            )
+                        }
+                        .onEnded { _ in
+                            isDragging = false
+                            endInteraction()
+                        }
+                )
+                .accessibilityElement()
+                .accessibilityLabel("\(title) color grading wheel")
+                .accessibilityValue(ColorGradingWheelMapping.accessibilityValue(for: wheel))
+                .accessibilityHint("Drag from the neutral center toward a color to set hue and saturation.")
+                .accessibilityAdjustableAction { direction in
+                    beginInteraction()
+                    let amount = direction == .increment
+                        ? ColorGradingWheelMapping.accessibilityStep
+                        : -ColorGradingWheelMapping.accessibilityStep
+                    wheel = ColorGradingWheelMapping.adjustingSaturation(wheel, by: amount)
+                    endInteraction()
+                }
+                .accessibilityAction(named: Text("Reset to neutral"), reset)
+            }
+            .frame(width: 132, height: 132)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func point(for location: CGPoint, in size: CGSize) -> ColorGradingWheelPoint {
+        let radius = max(min(size.width, size.height) / 2, 1)
+        return ColorGradingWheelPoint(
+            x: (location.x - size.width / 2) / radius,
+            y: (size.height / 2 - location.y) / radius
+        )
     }
 }
