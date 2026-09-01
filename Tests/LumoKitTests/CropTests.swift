@@ -99,6 +99,19 @@ final class CropWorkflowTests: TempDirectoryTestCase {
         }
     }
 
+    /// A bounded wait for the fake engine's actor-isolated request log, mirroring `waitUntil`'s
+    /// deadline so a regression (a call site that stops asking for a render) fails the assertion
+    /// below instead of hanging the test run.
+    private func waitUntilRequestCount(exceeds count: Int, on engine: FakeRenderEngine) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while await engine.previewRequests.count <= count {
+            if Date() > deadline {
+                return XCTFail("timed out waiting for a new render request")
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     func testDraftIsTransientCancelIsFreeAndCommitIsUndoable() async throws {
         let url = try Fixtures.writeGradientPNG(width: 32, height: 24, named: "workflow.png", in: tempDirectory)
         let viewModel = AppViewModel(
@@ -128,6 +141,50 @@ final class CropWorkflowTests: TempDirectoryTestCase {
         XCTAssertTrue(viewModel.document.crop.isIdentity)
         viewModel.redo()
         XCTAssertEqual(viewModel.document.crop, committed)
+    }
+
+    /// Covers the LUMO-115 fix directly: while Crop is open, the pixels under the full-source
+    /// overlay must come from the same adjusted stage with the composition crop stripped, not the
+    /// already-cropped committed render. Asserting on the render *request* handed to the engine
+    /// (rather than only `document.crop`) is what the issue's verification plan means by testing
+    /// geometry/UI behavior instead of only the normalized rectangle.
+    func testReenteringCropRequestsTheFullUncroppedStageAndRestoresOnExit() async throws {
+        let url = try Fixtures.writeGradientPNG(width: 32, height: 24, named: "reentry.png", in: tempDirectory)
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(
+            engine: fake,
+            editStore: EditDocumentStore(fileURL: tempDirectory.appendingPathComponent("edits.json"))
+        )
+        viewModel.openImage(url: url)
+        try await waitUntil("the source image") { viewModel.sourceImage != nil }
+
+        let committedRect = CGRect(x: 0.1, y: 0.2, width: 0.5, height: 0.4)
+        viewModel.beginCrop()
+        viewModel.updateCropDraft(committedRect)
+        viewModel.commitCrop()
+        let committed = CropAdjustments(normalizedRect: committedRect)
+        XCTAssertEqual(viewModel.document.crop, committed)
+
+        let requestsBeforeReentry = await fake.previewRequests.count
+        viewModel.beginCrop()
+        try await waitUntilRequestCount(exceeds: requestsBeforeReentry, on: fake)
+        let reentryRequests = await fake.previewRequests
+        let reentryRequest = try XCTUnwrap(reentryRequests.last)
+        XCTAssertTrue(
+            reentryRequest.document.crop.isIdentity,
+            "reopening Crop must render the full source stage, not the already-cropped committed frame"
+        )
+        XCTAssertEqual(viewModel.document.crop, committed, "the committed document must be untouched while editing")
+
+        let requestsBeforeCancel = await fake.previewRequests.count
+        viewModel.cancelCrop()
+        try await waitUntilRequestCount(exceeds: requestsBeforeCancel, on: fake)
+        let cancelRequests = await fake.previewRequests
+        let cancelRequest = try XCTUnwrap(cancelRequests.last)
+        XCTAssertEqual(
+            cancelRequest.document.crop, committed,
+            "Cancel must restore the committed framing under the overlay"
+        )
     }
 
     func testCommittedCropSurvivesRelaunch() async throws {
