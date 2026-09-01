@@ -22,6 +22,19 @@ struct FilmstripView: View {
                             )
                         }
                         .buttonStyle(.plain)
+                        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
+                            let direction: FilmstripNavigation.Direction =
+                                press.key == .leftArrow ? .previous : .next
+                            guard let adjacentIndex = FilmstripNavigation.adjacentIndex(
+                                in: collection.filteredIndices,
+                                selectedIndex: collection.selectedIndex,
+                                direction: direction
+                            ) else {
+                                return .ignored
+                            }
+                            onSelect(adjacentIndex, false)
+                            return .handled
+                        }
                         .id(item.id)
                         .onAppear {
                             // Child appearance can precede the scroll view's callback, so opt into
@@ -47,6 +60,29 @@ struct FilmstripView: View {
                     proxy.scrollTo(collection.items[newIndex].id, anchor: .center)
                 }
             }
+        }
+    }
+}
+
+/// Computes filmstrip navigation in display order rather than underlying collection order. This
+/// keeps keyboard stepping aligned with filtered thumbnails and gives the view a small, pure seam
+/// for testing without synthesizing AppKit focus.
+enum FilmstripNavigation {
+    enum Direction {
+        case previous
+        case next
+    }
+
+    static func adjacentIndex(
+        in filteredIndices: [Int],
+        selectedIndex: Int,
+        direction: Direction
+    ) -> Int? {
+        switch direction {
+        case .previous:
+            return filteredIndices.last { $0 < selectedIndex }
+        case .next:
+            return filteredIndices.first { $0 > selectedIndex }
         }
     }
 }
