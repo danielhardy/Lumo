@@ -307,6 +307,18 @@ public final class AppViewModel: ObservableObject {
         case info, light, develop, adjust
         case effects
         case look
+
+        var iconName: String {
+            switch self {
+            case .info: return "info.circle"
+            case .light: return "sun.max"
+            case .develop: return "camera.aperture"
+            case .adjust: return "paintpalette"
+            case .effects: return "sparkles"
+            case .look: return "wand.and.stars"
+            }
+        }
+
         var title: String {
             switch self {
             case .info: return "Info"
@@ -317,6 +329,20 @@ public final class AppViewModel: ObservableObject {
             case .look: return "Look"
             }
         }
+
+        /// Describes the panel's purpose for compact icon-only navigation controls.
+        var purpose: String {
+            switch self {
+            case .info: return "Histogram and photo metadata"
+            case .light: return "Tone and RGB curve adjustments"
+            case .develop: return "RAW decoder controls"
+            case .adjust: return "Color adjustments"
+            case .effects: return "Texture, clarity, and dehaze effects"
+            case .look: return "Browse and apply a Look"
+            }
+        }
+
+        var helpText: String { "\(title): \(purpose)" }
 
         static func availableTabs(
             hasImage: Bool,

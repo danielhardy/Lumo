@@ -196,6 +196,23 @@ extension AdjustInspectorTests {
         XCTAssertEqual(AppViewModel.InspectorTab.look.title, "Look")
     }
 
+    func testInspectorTabsExposeCompactSymbolsAndAccessiblePurposes() {
+        let expected: [AppViewModel.InspectorTab: (icon: String, purpose: String)] = [
+            .info: ("info.circle", "Histogram and photo metadata"),
+            .light: ("sun.max", "Tone and RGB curve adjustments"),
+            .develop: ("camera.aperture", "RAW decoder controls"),
+            .adjust: ("paintpalette", "Color adjustments"),
+            .effects: ("sparkles", "Texture, clarity, and dehaze effects"),
+            .look: ("wand.and.stars", "Browse and apply a Look")
+        ]
+
+        for tab in AppViewModel.InspectorTab.allCases {
+            XCTAssertEqual(tab.iconName, expected[tab]?.icon)
+            XCTAssertEqual(tab.purpose, expected[tab]?.purpose)
+            XCTAssertEqual(tab.helpText, "\(tab.title): \(tab.purpose)")
+        }
+    }
+
     /// The histogram is gated on the Info tab being on screen. Adjust is as much "a panel nobody is
     /// looking at" as Develop is, so switching to it must not start tallying pixels — the same
     /// finding `testNoHistogramIsTalliedWhileTheDevelopTabIsShowing` pins for the other tab.

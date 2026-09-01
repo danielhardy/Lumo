@@ -38,13 +38,23 @@ struct InfoInspectorView: View {
     }
 
     private var tabSwitcher: some View {
-        Picker("", selection: $viewModel.inspectorTab) {
+        Picker("Inspector view", selection: $viewModel.inspectorTab) {
             ForEach(viewModel.availableInspectorTabs, id: \.self) { tab in
-                Text(tab.title).tag(tab)
+                Label(tab.title, systemImage: tab.iconName)
+                    // Keep the full title in the semantic label while showing only the compact
+                    // symbol in the segmented control.
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel(tab.title)
+                    .accessibilityHint(tab.purpose)
+                    .accessibilityValue(viewModel.inspectorTab == tab ? "Selected" : "Not selected")
+                    .help(tab.helpText)
+                    .tag(tab)
             }
         }
         .pickerStyle(.segmented)
+        .controlSize(.large)
         .labelsHidden()
+        .frame(minHeight: 32)
         .padding(.horizontal, 12)
         .padding(.top, 10)
         .padding(.bottom, 6)
