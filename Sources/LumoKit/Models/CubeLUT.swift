@@ -4,6 +4,15 @@ import CryptoKit
 
 /// Parses a .cube 3D LUT file and creates a CIFilter for GPU-accelerated color grading.
 struct CubeLUT: Identifiable, Hashable, Sendable {
+    /// Core Image handles the common 3D cube resolutions through 65³ reliably. Larger files are
+    /// valid according to the interchange specification, but expanding them into a
+    /// `CIColorCubeWithColorSpace` table is not a practical macOS editor operation (and would let
+    /// an accidentally huge file allocate unbounded memory). The supported boundary is deliberately
+    /// explicit so an unsupported file fails before any large allocation.
+    static let minimumSupportedSize = 2
+    static let maximumSupportedSize = 65
+    static let supportedFileExtensions = Set(["cube", "look"])
+
     let id: String          // full file path (or a synthetic id for in-memory LUTs)
     let name: String        // display name (cleaned)
     let category: String    // folder name or "General"
@@ -93,39 +102,131 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
         }
         self.name = cleaned
 
-        let content = try String(contentsOf: url, encoding: .utf8)
+        let content: String
+        do {
+            content = try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            throw LUTError.unreadable(error.localizedDescription)
+        }
         let lines = content.components(separatedBy: .newlines)
 
         var lutSize = 0
         var domainMin: SIMD3<Float> = .zero
         var domainMax: SIMD3<Float> = .one
         var rows: [(Float, Float, Float)] = []
+        var sawSize = false
+        var sawOneDimensionalSize = false
+        var sawTableData = false
 
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+        for (lineNumber, rawLine) in lines.enumerated() {
+            // A UTF-8 BOM is legal in files emitted by some Windows tools. It is metadata, not part
+            // of the first keyword. The parser otherwise treats the file as ordinary UTF-8 text.
+            let line = lineNumber == 0
+                ? rawLine.replacingOccurrences(of: "\u{FEFF}", with: "")
+                : rawLine
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
 
-            if trimmed.hasPrefix("LUT_3D_SIZE") {
-                let parts = trimmed.split(separator: " ")
-                guard parts.count >= 2, let s = Int(parts[1]) else { continue }
-                lutSize = s
-            } else if trimmed.hasPrefix("DOMAIN_MIN") {
-                let parts = trimmed.split(separator: " ").compactMap { Float($0) }
-                if parts.count >= 3 { domainMin = SIMD3(parts[0], parts[1], parts[2]) }
-            } else if trimmed.hasPrefix("DOMAIN_MAX") {
-                let parts = trimmed.split(separator: " ").compactMap { Float($0) }
-                if parts.count >= 3 { domainMax = SIMD3(parts[0], parts[1], parts[2]) }
-            } else if !trimmed.hasPrefix("TITLE") {
-                let parts = trimmed.split(separator: " ")
-                if parts.count == 3,
-                   let r = Float(parts[0]),
-                   let g = Float(parts[1]),
-                   let b = Float(parts[2]) {
-                    rows.append((r, g, b))
+            // Vendors commonly put a trailing comment after a data row. The `TITLE` value is not
+            // used as the identity, so treating a # in metadata as a comment is harmless here.
+            let withoutComment = trimmed.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
+                .trimmingCharacters(in: .whitespaces)
+            if withoutComment.isEmpty { continue }
+            let parts = withoutComment.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            guard let first = parts.first else { continue }
+
+            if first == "LUT_3D_SIZE" {
+                guard !sawTableData else {
+                    throw LUTError.invalidFormat("LUT_3D_SIZE must appear before table data (line \(lineNumber + 1))")
                 }
+                guard !sawSize else {
+                    throw LUTError.invalidFormat("LUT_3D_SIZE appears more than once")
+                }
+                guard parts.count == 2, let s = Int(parts[1]) else {
+                    throw LUTError.invalidFormat("invalid LUT_3D_SIZE on line \(lineNumber + 1)")
+                }
+                guard s >= Self.minimumSupportedSize, s <= Self.maximumSupportedSize else {
+                    throw LUTError.invalidFormat(
+                        "3D size \(s) is unsupported; use a size from \(Self.minimumSupportedSize) through \(Self.maximumSupportedSize)"
+                    )
+                }
+                lutSize = s
+                sawSize = true
+                continue
+            }
+
+            if first == "LUT_1D_SIZE" {
+                sawOneDimensionalSize = true
+                continue
+            }
+
+            if first == "DOMAIN_MIN" || first == "DOMAIN_MAX" {
+                guard !sawTableData else {
+                    throw LUTError.invalidFormat("\(first) must appear before table data (line \(lineNumber + 1))")
+                }
+                guard parts.count == 4,
+                      let r = Float(parts[1]), let g = Float(parts[2]), let b = Float(parts[3]),
+                      r.isFinite, g.isFinite, b.isFinite
+                else {
+                    throw LUTError.invalidFormat("\(first) requires three finite numbers (line \(lineNumber + 1))")
+                }
+                let value = SIMD3(r, g, b)
+                if first == "DOMAIN_MIN" {
+                    domainMin = value
+                } else {
+                    domainMax = value
+                }
+                continue
+            }
+
+            // `LUT_3D_INPUT_RANGE` is a widely emitted compatibility spelling for a uniform
+            // DOMAIN_MIN/DOMAIN_MAX pair. It is not needed for files using the standard keywords,
+            // but accepting it makes vendor exports interoperable without changing the render path.
+            if first == "LUT_3D_INPUT_RANGE" {
+                guard !sawTableData, parts.count == 3,
+                      let minimum = Float(parts[1]), let maximum = Float(parts[2]),
+                      minimum.isFinite, maximum.isFinite
+                else {
+                    throw LUTError.invalidFormat("LUT_3D_INPUT_RANGE requires two finite numbers (line \(lineNumber + 1))")
+                }
+                domainMin = SIMD3(repeating: minimum)
+                domainMax = SIMD3(repeating: maximum)
+                continue
+            }
+
+            if first == "TITLE" {
+                // TITLE is display metadata. Lumo keeps the filename as the stable, predictable
+                // browser name because it must not change when a vendor rewrites metadata in place.
+                continue
+            }
+
+            let numericValues = parts.compactMap { Float($0) }
+            if numericValues.count == parts.count {
+                if sawOneDimensionalSize && !sawSize {
+                    throw LUTError.unsupported("1D .cube LUTs are not supported; import a 3D LUT")
+                }
+                guard sawSize else {
+                    throw LUTError.invalidFormat("table data appears before LUT_3D_SIZE (line \(lineNumber + 1))")
+                }
+                guard parts.count == 3,
+                      numericValues.allSatisfy(\.isFinite)
+                else {
+                    throw LUTError.invalidFormat("table row must contain three finite numbers (line \(lineNumber + 1))")
+                }
+                rows.append((numericValues[0], numericValues[1], numericValues[2]))
+                sawTableData = true
+            } else if numericValues.isEmpty {
+                // Unknown vendor metadata is safe to ignore. Numeric-looking malformed rows are
+                // rejected above so a broken LUT cannot be silently shortened or partially applied.
+                continue
+            } else {
+                throw LUTError.invalidFormat("unrecognized numeric line (line \(lineNumber + 1))")
             }
         }
 
+        if sawOneDimensionalSize {
+            throw LUTError.unsupported("1D .cube LUTs are not supported; import a 3D LUT")
+        }
         guard lutSize > 0 else {
             throw LUTError.invalidFormat("LUT_3D_SIZE not found")
         }
@@ -141,6 +242,10 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
         // Normalize from domain to [0,1] if needed. A degenerate domain (min ==
         // max on any axis) would divide by zero and fill the table with NaN, so
         // treat that axis as the default 0…1 range instead.
+        for axis in 0..<3 where domainMax[axis] < domainMin[axis] {
+            throw LUTError.invalidFormat("DOMAIN_MAX must not be below DOMAIN_MIN")
+        }
+
         var scale = domainMax - domainMin
         for axis in 0..<3 where !(scale[axis] > 0) {
             domainMin[axis] = 0
@@ -284,10 +389,14 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
 
 enum LUTError: LocalizedError, Sendable {
     case invalidFormat(String)
+    case unsupported(String)
+    case unreadable(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidFormat(let msg): return "Invalid .cube file: \(msg)"
+        case .unsupported(let msg): return "Unsupported LUT file: \(msg)"
+        case .unreadable(let msg): return "Could not read LUT file: \(msg)"
         }
     }
 }

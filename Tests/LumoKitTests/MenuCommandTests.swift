@@ -16,5 +16,6 @@ final class MenuCommandTests: XCTestCase {
 
     func testLookFolderMenuUsesTheCanonicalLookRoute() {
         XCTAssertEqual(Notification.Name.chooseLookFolder.rawValue, "Lumo.chooseLookFolder")
+        XCTAssertEqual(Notification.Name.importLook.rawValue, "Lumo.importLook")
     }
 }

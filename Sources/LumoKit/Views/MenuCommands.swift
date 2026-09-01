@@ -32,6 +32,9 @@ public struct LumoCommands: Commands {
             Button("Choose Look Folder...") { post(.chooseLookFolder) }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
 
+            Button("Import Look...") { post(.importLook) }
+                .keyboardShortcut("l", modifiers: [.command, .option])
+
             Divider()
 
             Button("Import from Photos...") { post(.importFromPhotos) }
@@ -105,6 +108,9 @@ struct MenuCommandReceivers: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: .chooseLookFolder)) { _ in
                 viewModel.chooseLookFolder()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .importLook)) { _ in
+                viewModel.chooseLookFile()
+            }
             .onReceive(NotificationCenter.default.publisher(for: .importFromPhotos)) { _ in
                 viewModel.importFromPhotos()
             }
@@ -142,6 +148,7 @@ extension Notification.Name {
     static let exportImage = Notification.Name("Lumo.exportImage")
     static let exportAll = Notification.Name("Lumo.exportAll")
     static let chooseLookFolder = Notification.Name("Lumo.chooseLookFolder")
+    static let importLook = Notification.Name("Lumo.importLook")
     static let importFromPhotos = Notification.Name("Lumo.importFromPhotos")
     static let openSourceFolder = Notification.Name("Lumo.openSourceFolder")
     static let refreshSourceFolder = Notification.Name("Lumo.refreshSourceFolder")

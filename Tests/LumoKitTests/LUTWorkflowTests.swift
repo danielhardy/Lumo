@@ -142,6 +142,44 @@ final class LUTWorkflowTests: TempDirectoryTestCase {
         XCTAssertEqual(viewModel.selectedLookID, first.lutID)
     }
 
+    func testExternalImportSelectsTheLookAndSendsItThroughPreviewRequest() async throws {
+        let source = try Fixtures.writeGradientPNG(
+            width: 24, height: 16, named: "import-source.png", in: tempDirectory
+        )
+        let lookURL = try Fixtures.writeCube(
+            Fixtures.identityCubeText(size: 2), named: "External Look.cube", in: tempDirectory
+        )
+        let storeURL = tempDirectory.appendingPathComponent("import-edits.json")
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(
+            engine: fake, editStore: EditDocumentStore(fileURL: storeURL)
+        )
+        viewModel.openImage(url: source)
+        try await waitUntil("the source image") { viewModel.sourceName == "import-source.png" }
+
+        viewModel.importLook(from: lookURL)
+        while viewModel.library.isImporting { try await Task.sleep(for: .milliseconds(10)) }
+        let imported = try XCTUnwrap(viewModel.library.allLUTs.first { $0.url == lookURL })
+
+        XCTAssertEqual(viewModel.selectedLookID, imported.lutID)
+        XCTAssertEqual(viewModel.selectedLook, imported)
+        try await waitForLUTRequest(fake, id: imported.lutID, intensity: 1)
+
+        viewModel.setLookIntensity(0.35)
+        await viewModel.flushPendingWrites()
+        let relaunched = AppViewModel(
+            engine: FakeRenderEngine(), editStore: EditDocumentStore(fileURL: storeURL)
+        )
+        while relaunched.library.isImporting { try await Task.sleep(for: .milliseconds(10)) }
+        relaunched.openImage(url: source)
+        try await waitUntil("the persisted imported Look") {
+            relaunched.sourceName == "import-source.png"
+                && relaunched.selectedLookID == imported.lutID
+                && relaunched.selectedLook != nil
+                && relaunched.lookIntensity == 0.35
+        }
+    }
+
     func testCopyPasteTransfersLUTToExactlySelectedPhotosAndUndoRestoresEach() async throws {
         let (first, second) = try makePhotoFolder()
         let third = try Fixtures.writeGradientPNG(width: 24, height: 16, named: "three.png", in: first.deletingLastPathComponent())

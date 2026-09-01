@@ -74,6 +74,81 @@ final class CubeLUTTests: TempDirectoryTestCase {
         XCTAssertEqual(try CubeLUT(url: url).size, 2)
     }
 
+    func testParsesBOMTabsInlineCommentsAndVendorMetadata() throws {
+        let text = """
+            \u{FEFF}# metadata emitted by a vendor
+            TITLE "A look with spaces"
+            VENDOR "Example"
+            LUT_3D_INPUT_RANGE -1 3
+            LUT_3D_SIZE 2
+            0 0 0 # black corner
+            2 0 0
+            0\t2\t0
+            2\t2\t0
+            0 0 2
+            2 0 2
+            0 2 2
+            2 2 2
+            """
+        let url = try Fixtures.writeCube(text, named: "vendor.look", in: tempDirectory)
+        let lut = try CubeLUT(url: url)
+
+        XCTAssertEqual(lut.size, 2)
+        XCTAssertEqual(lut.tableFloats[0], 0.25, accuracy: 0.0001)
+        XCTAssertEqual(lut.tableFloats[4], 0.75, accuracy: 0.0001)
+        XCTAssertNotNil(lut.makeFilter(), "a text-based .look should use the same GPU cube path")
+    }
+
+    func testRejectsUnsupportedOneDimensionalCubeClearly() throws {
+        let text = """
+            TITLE "one dimensional"
+            LUT_1D_SIZE 2
+            0 0 0
+            1 1 1
+            """
+        let url = try Fixtures.writeCube(text, named: "one-dimensional.cube", in: tempDirectory)
+
+        XCTAssertThrowsError(try CubeLUT(url: url)) { error in
+            guard case LUTError.unsupported(let message) = error else {
+                return XCTFail("expected an explicit unsupported-format error, got \(error)")
+            }
+            XCTAssertTrue(message.contains("1D"), message)
+        }
+    }
+
+    func testRejectsOversizedCubeBeforeAllocatingTable() throws {
+        let url = try Fixtures.writeCube(
+            "LUT_3D_SIZE \(CubeLUT.maximumSupportedSize + 1)\n",
+            named: "too-large.cube", in: tempDirectory
+        )
+
+        XCTAssertThrowsError(try CubeLUT(url: url)) { error in
+            guard case LUTError.invalidFormat(let message) = error else {
+                return XCTFail("expected an invalid-format error, got \(error)")
+            }
+            XCTAssertTrue(message.contains("unsupported"), message)
+        }
+    }
+
+    func testRejectsReversedDomain() throws {
+        let text = """
+            LUT_3D_SIZE 2
+            DOMAIN_MIN 1 0 0
+            DOMAIN_MAX 0 1 1
+            """ + Fixtures.identityCubeText(size: 2)
+                .split(separator: "\n")
+                .filter { !$0.hasPrefix("#") && !$0.hasPrefix("TITLE") && !$0.hasPrefix("LUT_3D_SIZE") }
+                .joined(separator: "\n")
+        let url = try Fixtures.writeCube(text, named: "reversed-domain.cube", in: tempDirectory)
+
+        XCTAssertThrowsError(try CubeLUT(url: url)) { error in
+            guard case LUTError.invalidFormat(let message) = error else {
+                return XCTFail("expected an invalid-format error, got \(error)")
+            }
+            XCTAssertTrue(message.contains("DOMAIN_MAX"), message)
+        }
+    }
+
     // MARK: - Domain handling
 
     func testDomainIsNormalizedToUnitRange() throws {

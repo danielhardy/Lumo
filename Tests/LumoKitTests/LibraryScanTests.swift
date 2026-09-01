@@ -78,6 +78,83 @@ final class LibraryScanTests: TempDirectoryTestCase {
         XCTAssertEqual(library.allLUTs.count, 1)
     }
 
+    func testScanDiscoversCubeAndTextBasedLookFiles() async throws {
+        try Fixtures.writeCube(Fixtures.identityCubeText(size: 2), named: "plain.cube", in: tempDirectory)
+        try Fixtures.writeCube(Fixtures.identityCubeText(size: 2), named: "vendor.LOOK", in: tempDirectory)
+
+        let library = LUTLibrary()
+        library.scan(tempDirectory)
+        try await waitForScan(library)
+
+        XCTAssertEqual(library.allLUTs.count, 2)
+        XCTAssertEqual(library.categories.first?.name, "General")
+        XCTAssertEqual(Set(library.allLUTs.map(\.name)), Set(["plain", "vendor"]))
+    }
+
+    func testExternalImportAppearsInCanonicalBrowserAndReportsMalformedFiles() async throws {
+        let good = try Fixtures.writeCube(
+            Fixtures.identityCubeText(size: 2), named: "outside.cube", in: tempDirectory
+        )
+        let bad = try Fixtures.writeCube("not a LUT", named: "broken.look", in: tempDirectory)
+        let library = LUTLibrary()
+
+        library.importLUT(from: good)
+        while library.isImporting { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(library.allLUTs.map(\.name), ["outside"])
+        XCTAssertEqual(library.categories.map(\.name), ["Imported"])
+
+        library.importLUT(from: bad)
+        while library.isImporting { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(library.allLUTs.map(\.name), ["outside"], "a bad import must not remove good looks")
+        XCTAssertTrue(library.importError?.contains("broken.look") == true)
+    }
+
+    func testRefreshingAnImportedFileReplacesItsTableAtTheSameStablePath() async throws {
+        let url = try Fixtures.writeCube(
+            Fixtures.identityCubeText(size: 2), named: "external-replace.cube", in: tempDirectory
+        )
+        let library = LUTLibrary()
+        library.importLUT(from: url)
+        while library.isImporting { try await Task.sleep(for: .milliseconds(10)) }
+        let original = try XCTUnwrap(library.allLUTs.first { $0.url == url })
+
+        try CubeLUT.write(
+            cube: [SIMD3<Float>](repeating: SIMD3(0.1, 0.2, 0.3), count: 8),
+            size: 2,
+            title: "replacement",
+            to: url
+        )
+        library.refresh()
+        while library.isImporting { try await Task.sleep(for: .milliseconds(10)) }
+
+        let refreshed = try XCTUnwrap(library.allLUTs.first { $0.lutID == original.lutID })
+        XCTAssertEqual(refreshed.id, original.id)
+        XCTAssertNotEqual(refreshed.tableFloats, original.tableFloats)
+        XCTAssertEqual(refreshed.tableFloats[0], 0.1, accuracy: 0.0001)
+    }
+
+    func testRescanReplacesAFileBackedTableAtTheSameStablePath() async throws {
+        let url = try Fixtures.writeCube(
+            Fixtures.identityCubeText(size: 2), named: "replace-me.cube", in: tempDirectory
+        )
+        let library = LUTLibrary()
+        library.scan(tempDirectory)
+        try await waitForScan(library)
+        XCTAssertEqual(try XCTUnwrap(library.allLUTs.first?.tableFloats[4]), Float(1), accuracy: Float(0.0001))
+
+        let black = CubeLUT.cubeFileContents(
+            cube: [SIMD3<Float>](repeating: SIMD3(0.25, 0.5, 0.75), count: 8),
+            size: 2,
+            title: "replacement"
+        )
+        try black.write(to: url, atomically: true, encoding: .utf8)
+        library.scan(tempDirectory)
+        try await waitForScan(library)
+
+        XCTAssertEqual(library.allLUTs.first?.id, url.path)
+        XCTAssertEqual(try XCTUnwrap(library.allLUTs.first?.tableFloats[0]), Float(0.25), accuracy: Float(0.0001))
+    }
+
     /// A missing folder is the likeliest failure, since the folder is restored
     /// from a bookmark every launch. `FileManager.enumerator(at:)` hands back a
     /// live-but-empty enumerator for one, so a nil check alone reported "no

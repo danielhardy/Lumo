@@ -69,6 +69,24 @@ struct LookInspectorView: View {
             }
 
             Button {
+                viewModel.chooseLookFile()
+            } label: {
+                Image(systemName: "plus")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("Import a Look file")
+
+            Button {
+                viewModel.refreshLooks()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("Refresh Look files")
+
+            Button {
                 viewModel.presentRecipeExtractor()
             } label: {
                 Image(systemName: "wand.and.stars")

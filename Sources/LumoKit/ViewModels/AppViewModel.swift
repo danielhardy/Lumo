@@ -514,6 +514,17 @@ public final class AppViewModel: ObservableObject {
             }
         }
 
+        library.onImported = { [weak self] lut in
+            // Importing is also an audition action when an image is open. With no active image the
+            // file still appears in the browser, but must not become a document default that could
+            // accidentally leak into a later per-photo session.
+            guard let self, self.sourceImage != nil else { return }
+            self.selectLook(lut)
+        }
+        library.onImportError = { [weak self] message in
+            self?.presentError(message)
+        }
+
         export.onStatus = { [weak self] in self?.statusMessage = $0 }
         export.onError = { [weak self] in self?.presentError($0) }
 
@@ -1807,6 +1818,38 @@ public final class AppViewModel: ObservableObject {
         if panel.runModal() == .OK, let url = panel.url {
             library.setFolder(url)
         }
+    }
+
+    /// Import one or more external `.cube`/text-based `.look` files from ordinary Finder locations.
+    /// The library owns parsing, security-scoped access, and persistence; this method only owns the
+    /// AppKit panel and the user-facing entry point.
+    func chooseLookFile() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Look"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "cube"),
+            UTType(filenameExtension: "look"),
+        ].compactMap { $0 }
+
+        if panel.runModal() == .OK {
+            for url in panel.urls {
+                library.importLUT(from: url)
+            }
+        }
+    }
+
+    /// Testable/non-panel seam for importing a file selected by another UI surface.
+    func importLook(from url: URL) {
+        library.importLUT(from: url)
+    }
+
+    /// Re-read configured and imported Look files. This is also the explicit user action for an
+    /// external editor that replaced a file in place.
+    func refreshLooks() {
+        library.refresh()
     }
 
     func chooseLUTFolder() { chooseLookFolder() }
