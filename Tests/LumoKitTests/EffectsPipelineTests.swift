@@ -356,6 +356,12 @@ final class EffectsPipelineTests: XCTestCase {
             byAtLeast: 2,
             "different source seeds should produce different fields"
         )
+        assertPixelsDiffer(
+            try Pixels.bytes(of: first),
+            try Pixels.bytes(of: RenderPipeline.applyGrain(grain, to: source, seed: 0xDEADBEEF + 100)),
+            byAtLeast: 2,
+            "seeds that differ only in low bits should produce different fields"
+        )
 
         let asset = ImageSource(data: Data("same asset".utf8), nativeExtent: source.extent.size)
         let sameAsset = ImageSource(data: Data("same asset".utf8), nativeExtent: source.extent.size)

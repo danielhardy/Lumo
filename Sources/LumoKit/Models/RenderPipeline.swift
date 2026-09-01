@@ -27,8 +27,9 @@ enum RenderPipeline {
     /// v9 adds three-way color grading. v10 replaces the master curve's 64³ cube with a sampled
     /// 1D Core Image kernel while preserving the piecewise-linear transfer function. v11 adds the
     /// GPU-backed Texture, Clarity, and Dehaze Effects stage. v12 adds the post-LUT vignette stage.
-    /// v13 adds deterministic, resolution-aware post-LUT grain.
-    static let cacheVersion = 13
+    /// v13 adds deterministic, resolution-aware post-LUT grain. v14 preserves the grain seed's
+    /// full 32-bit entropy when passing it to the GPU kernel.
+    static let cacheVersion = 14
 
     /// Build the graph for `document` over `source`.
     ///
@@ -364,10 +365,14 @@ enum RenderPipeline {
             w: 0
         )
         let geometry = CIVector(x: extent.midX, y: extent.midY, z: shortestSide, w: 0)
+        // UInt16 values are exactly representable by Float. Passing the halves independently keeps
+        // the low 16 bits from being rounded away when the original UInt32 is near 2^32.
+        let seedHigh = Float(seed >> 16)
+        let seedLow = Float(seed & 0xffff)
         return kernel.apply(
             extent: extent,
             roiCallback: { _, rect in rect },
-            arguments: [image, geometry, controls, Float(seed)]
+            arguments: [image, geometry, controls, seedHigh, seedLow]
         )?.cropped(to: extent) ?? image
     }
 
@@ -592,20 +597,28 @@ enum RenderPipeline {
     """)
 
     private static let grainKernel = CIKernel(source: """
-    float grainHash(vec2 point, float seed) {
-        float stableSeed = fract(seed * 0.0000000002328306436538696);
-        return fract(sin(dot(point + vec2(stableSeed * 17.13, stableSeed * 31.71),
+    float grainHash(vec2 point, float seedHigh, float seedLow) {
+        // Each seed component is a UInt16 supplied as a Float, so both components retain all
+        // their bits exactly. Keep them as separate phase offsets: recombining them into a single
+        // value near 2^32 would recreate the Float mantissa collision this kernel is avoiding.
+        float highPhase = seedHigh * 0.0000152587890625;
+        float lowPhase = seedLow * 0.0000152587890625;
+        vec2 seedOffset = vec2(
+            highPhase * 17.13 + lowPhase * 53.17,
+            highPhase * 31.71 + lowPhase * 97.23
+        );
+        return fract(sin(dot(point + seedOffset,
                              vec2(127.1, 311.7))) * 43758.5453);
     }
 
-    float grainValueNoise(vec2 point, float seed) {
+    float grainValueNoise(vec2 point, float seedHigh, float seedLow) {
         vec2 cell = floor(point);
         vec2 local = fract(point);
         local = local * local * (3.0 - 2.0 * local);
-        float lowerLeft = grainHash(cell, seed);
-        float lowerRight = grainHash(cell + vec2(1.0, 0.0), seed);
-        float upperLeft = grainHash(cell + vec2(0.0, 1.0), seed);
-        float upperRight = grainHash(cell + vec2(1.0, 1.0), seed);
+        float lowerLeft = grainHash(cell, seedHigh, seedLow);
+        float lowerRight = grainHash(cell + vec2(1.0, 0.0), seedHigh, seedLow);
+        float upperLeft = grainHash(cell + vec2(0.0, 1.0), seedHigh, seedLow);
+        float upperRight = grainHash(cell + vec2(1.0, 1.0), seedHigh, seedLow);
         float lower = mix(lowerLeft, lowerRight, local.x);
         float upper = mix(upperLeft, upperRight, local.x);
         return mix(lower, upper, local.y);
@@ -615,7 +628,8 @@ enum RenderPipeline {
         sampler image,
         vec4 geometry,
         vec4 controls,
-        float seed
+        float seedHigh,
+        float seedLow
     ) {
         vec2 coordinate = samplerCoord(image);
         vec4 pixel = sample(image, coordinate);
@@ -630,10 +644,10 @@ enum RenderPipeline {
         // A broad octave creates clumps; blending in finer octaves makes Roughness visibly change
         // the grain's character. Pairing noise fields keeps the result closer to a bell-shaped
         // photographic distribution than a flat, independently random digital field.
-        float broad = grainValueNoise(grainCoordinate * 0.45, seed + 1.0);
-        float medium = grainValueNoise(grainCoordinate, seed + 7.0);
-        float fine = grainValueNoise(grainCoordinate * 2.4, seed + 19.0);
-        float paired = grainValueNoise(grainCoordinate * 1.35, seed + 43.0);
+        float broad = grainValueNoise(grainCoordinate * 0.45, seedHigh, seedLow + 1.0);
+        float medium = grainValueNoise(grainCoordinate, seedHigh, seedLow + 7.0);
+        float fine = grainValueNoise(grainCoordinate * 2.4, seedHigh, seedLow + 19.0);
+        float paired = grainValueNoise(grainCoordinate * 1.35, seedHigh, seedLow + 43.0);
         float shaped = mix(broad, fine, roughness);
         shaped = mix(shaped, medium, 0.35);
         shaped = (shaped * 0.72 + paired * 0.28 - 0.5) * 2.0;
