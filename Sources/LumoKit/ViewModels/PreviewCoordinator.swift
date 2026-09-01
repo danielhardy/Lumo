@@ -252,6 +252,7 @@ final class PreviewCoordinator {
             lut: request.lut,
             targetSize: request.targetSize,
             quality: quality,
+            frameBudgetMilliseconds: request.frameBudgetMilliseconds,
             output: .raster,
             space: request.space
         )

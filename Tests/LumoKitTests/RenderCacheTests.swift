@@ -110,6 +110,52 @@ final class RenderCacheTests: TempDirectoryTestCase {
         XCTAssertEqual(stats.developedSource.hits, 1)
     }
 
+    func testEffectiveInteractiveScaleCannotReuseSettledDevelopedSource() async throws {
+        let url = try Fixtures.writeGradientPNG(
+            width: 3_000, height: 2_000, named: "above-cap-cache.png", in: tempDirectory
+        )
+        let source = ImageSource(url: url, nativeExtent: CGSize(width: 3_000, height: 2_000))
+        let engine = RenderEngine()
+        let settled = request(source: source, targetSize: CGSize(width: 2_400, height: 1_600))
+        let interactive = request(
+            source: source, targetSize: CGSize(width: 2_400, height: 1_600), quality: .interactive
+        )
+
+        func extent(of image: CIImage?) -> CGSize {
+            image?.extent.integral.size ?? .zero
+        }
+
+        let interactiveFirst = await engine.makeCIImage(interactive)
+        let settledSecond = await engine.makeCIImage(settled)
+        XCTAssertEqual(extent(of: interactiveFirst), CGSize(width: 1_500, height: 1_000))
+        XCTAssertEqual(extent(of: settledSecond), CGSize(width: 2_400, height: 1_600))
+
+        let reverseEngine = RenderEngine()
+        let settledFirst = await reverseEngine.makeCIImage(settled)
+        let interactiveSecond = await reverseEngine.makeCIImage(interactive)
+        XCTAssertEqual(extent(of: settledFirst), CGSize(width: 2_400, height: 1_600))
+        XCTAssertEqual(extent(of: interactiveSecond), CGSize(width: 1_500, height: 1_000))
+    }
+
+    func testInteractiveBudgetsWithDifferentEffectiveScalesDoNotCollide() async throws {
+        let url = try Fixtures.writeGradientPNG(
+            width: 3_000, height: 2_000, named: "budget-cache.png", in: tempDirectory
+        )
+        let source = ImageSource(url: url, nativeExtent: CGSize(width: 3_000, height: 2_000))
+        let engine = RenderEngine()
+        let request = { (budget: Double) in
+            RenderRequest(
+                source: source, document: EditDocument(), targetSize: CGSize(width: 2_400, height: 1_600),
+                quality: .interactive, frameBudgetMilliseconds: budget
+            )
+        }
+
+        let short = await engine.makeCIImage(request(16.7))
+        let generous = await engine.makeCIImage(request(33.4))
+        XCTAssertEqual(short?.extent.integral.size, CGSize(width: 1_500, height: 1_000))
+        XCTAssertEqual(generous?.extent.integral.size, CGSize(width: 2_122, height: 1_415))
+    }
+
     func testSourceContentFingerprintSeparatesDataBackedImages() async throws {
         let firstURL = try Fixtures.writeGradientPNG(width: 96, height: 64, named: "first.png", in: tempDirectory)
         let secondURL = try Fixtures.writeGradientPNG(width: 64, height: 96, named: "second.png", in: tempDirectory)

@@ -554,7 +554,7 @@ actor RenderEngine: RenderEngining {
         let key = DevelopedSourceCacheKey(
             source: RenderSourceFingerprint(source),
             developHash: RenderCacheHash.digest(rawDevelop),
-            scale: RenderScaleKey(scale),
+            scale: RenderScaleKey(scale, nativeExtent: source.nativeExtent),
             pipelineVersion: RenderPipeline.cacheVersion
         )
         var cacheInterval = LumoObservability.begin(.cache, source: source, quality: .preview)
@@ -697,7 +697,7 @@ actor RenderEngine: RenderEngining {
             source: RenderSourceFingerprint(request.source),
             documentHash: RenderCacheHash.digest(request.document),
             lutFingerprint: request.lut?.cacheFingerprint ?? "none",
-            targetScale: RenderScaleKey(scale),
+            targetScale: RenderScaleKey(scale, nativeExtent: request.source.nativeExtent),
             quality: request.quality,
             space: request.space,
             pipelineVersion: RenderPipeline.cacheVersion

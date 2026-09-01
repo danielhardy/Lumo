@@ -14,24 +14,45 @@ struct RenderSourceFingerprint: Hashable, Sendable {
     }
 }
 
-/// The exact scale dimensions used by a render. `RenderScale` is intentionally a small policy enum,
-/// not a cache key, because it is not `Hashable` and because quality remains meaningful even when
-/// two tiers happen to use the same pixel box.
+/// The effective source dimensions and scale used by a render. `RenderScale` is intentionally a
+/// small policy enum, not a cache key, because its requested box is not necessarily the pixel box
+/// it produces (interactive rendering applies a frame-budget cap).
 struct RenderScaleKey: Hashable, Sendable {
     let isFull: Bool
     let widthBits: UInt64
     let heightBits: UInt64
+    let factorBits: UInt64
 
-    init(_ scale: RenderScale) {
+    init(_ scale: RenderScale, nativeExtent: CGSize? = nil) {
+        guard let nativeExtent, nativeExtent.width > 0, nativeExtent.height > 0,
+              nativeExtent.width.isFinite, nativeExtent.height.isFinite else {
+            switch scale {
+            case .full:
+                isFull = true
+                widthBits = 0
+                heightBits = 0
+                factorBits = Double(1).bitPattern
+            case .preview(let size), .interactive(let size, _):
+                isFull = false
+                widthBits = Double(size.width).bitPattern
+                heightBits = Double(size.height).bitPattern
+                factorBits = Double(scale.factor(for: size)).bitPattern
+            }
+            return
+        }
+
         switch scale {
         case .full:
             isFull = true
             widthBits = 0
             heightBits = 0
-        case .preview(let size), .interactive(let size, _):
+            factorBits = Double(1).bitPattern
+        case .preview, .interactive:
             isFull = false
-            widthBits = Double(size.width).bitPattern
-            heightBits = Double(size.height).bitPattern
+            let factor = scale.factor(for: nativeExtent)
+            widthBits = Double(nativeExtent.width * factor).bitPattern
+            heightBits = Double(nativeExtent.height * factor).bitPattern
+            factorBits = Double(factor).bitPattern
         }
     }
 }

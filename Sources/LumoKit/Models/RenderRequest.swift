@@ -27,6 +27,7 @@ struct RenderRequest: Sendable, Equatable {
     /// Maximum output dimensions for downsampled tiers. Full-resolution and export ignore it.
     let targetSize: CGSize?
     let quality: RenderQuality
+    let frameBudgetMilliseconds: Double
     let output: Output
     let space: WorkingSpace
 
@@ -36,6 +37,7 @@ struct RenderRequest: Sendable, Equatable {
         lut: CubeLUT? = nil,
         targetSize: CGSize? = nil,
         quality: RenderQuality,
+        frameBudgetMilliseconds: Double = 16.7,
         output: Output = .raster,
         space: WorkingSpace = .current
     ) {
@@ -44,6 +46,7 @@ struct RenderRequest: Sendable, Equatable {
         self.lut = lut
         self.targetSize = targetSize
         self.quality = quality
+        self.frameBudgetMilliseconds = frameBudgetMilliseconds
         self.output = output
         self.space = space
     }
@@ -58,7 +61,10 @@ struct RenderRequest: Sendable, Equatable {
         case .thumbnail, .preview:
             return .preview(maxSize: targetSize ?? source.nativeExtent)
         case .interactive:
-            return .interactive(maxSize: targetSize ?? source.nativeExtent)
+            return .interactive(
+                maxSize: targetSize ?? source.nativeExtent,
+                frameBudgetMilliseconds: frameBudgetMilliseconds
+            )
         case .fullResolution, .export:
             return .full
         }
