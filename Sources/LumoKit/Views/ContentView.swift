@@ -206,11 +206,12 @@ public struct ContentView: View {
             viewModel.toggleSideBySide()
         } label: {
             Label(
-                viewModel.isSideBySide ? "Single View" : "Side by Side",
-                systemImage: viewModel.isSideBySide ? "rectangle" : "rectangle.split.2x1"
+                viewModel.isSideBySideVisible ? "Single View" : "Side by Side",
+                systemImage: viewModel.isSideBySideVisible ? "rectangle" : "rectangle.split.2x1"
             )
         }
         .help("Toggle side-by-side comparison (V)")
+        .disabled(!viewModel.isComparisonAvailable)
 
         // Canvas navigation is presentation-only; these controls never touch the edit document.
         Menu {

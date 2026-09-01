@@ -402,4 +402,42 @@ extension AdjustInspectorTests {
         XCTAssertNotNil(viewModel.document.lut.lutID, "the LUT is still selected, just at zero strength")
         XCTAssertFalse(viewModel.isComparisonAvailable)
     }
+
+    func testComparisonAvailabilityCoversEveryVisibleLookStage() async throws {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        try await openStandardImage(viewModel)
+
+        let cases: [(String, EditDocument)] = [
+            ("Light", EditDocument(light: LightAdjustments(exposure: 1))),
+            ("Color", EditDocument(color: ColorAdjustments(vibrance: 25))),
+            ("Effects", EditDocument(effects: EffectsAdjustments(texture: 25))),
+            ("adjustment", EditDocument(adjustments: [.exposure(ev: 0.5)])),
+            ("LUT", EditDocument(lut: LUTSettings(
+                lutID: TestImages.warmLUT().lutID, intensity: 1
+            ))),
+        ]
+
+        for (stage, edited) in cases {
+            viewModel.updateDocument { $0 = edited }
+            XCTAssertTrue(viewModel.isComparisonAvailable, "\(stage) should enable comparison")
+
+            viewModel.updateDocument { $0 = EditDocument() }
+            XCTAssertFalse(viewModel.isComparisonAvailable, "\(stage) reset should withdraw comparison")
+        }
+    }
+
+    func testSpaceCannotEnterOriginalModeWithoutAVisibleLookEdit() async throws {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        try await openStandardImage(viewModel)
+
+        viewModel.showOriginal(true)
+        XCTAssertFalse(viewModel.isShowingOriginal)
+
+        viewModel.updateDocument { $0.adjustments = [.exposure(ev: 1)] }
+        viewModel.showOriginal(true)
+        XCTAssertTrue(viewModel.isShowingOriginal)
+
+        viewModel.updateDocument { $0 = EditDocument() }
+        XCTAssertFalse(viewModel.isShowingOriginal)
+    }
 }

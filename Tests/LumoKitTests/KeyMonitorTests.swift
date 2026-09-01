@@ -71,4 +71,19 @@ final class KeyMonitorTests: XCTestCase {
         // an arbitrary thread is what Swift 6 was objecting to.
         XCTAssertTrue(true)
     }
+
+    func testGlobalShortcutsDeferToTextInputAndSystemModifiers() {
+        XCTAssertTrue(KeyMonitorPolicy.textInputOwnsKeyboard(NSText()))
+        XCTAssertFalse(KeyMonitorPolicy.textInputOwnsKeyboard(NSView()))
+
+        XCTAssertTrue(KeyMonitorPolicy.isPlainSpace(modifiers: []))
+        XCTAssertFalse(KeyMonitorPolicy.isPlainSpace(modifiers: .shift))
+        XCTAssertFalse(KeyMonitorPolicy.isPlainSpace(modifiers: .option))
+        XCTAssertFalse(KeyMonitorPolicy.isPlainSpace(modifiers: .control))
+
+        XCTAssertFalse(KeyMonitorPolicy.hasSystemModifier(.shift))
+        XCTAssertTrue(KeyMonitorPolicy.hasSystemModifier(.option))
+        XCTAssertTrue(KeyMonitorPolicy.hasSystemModifier(.control))
+        XCTAssertTrue(KeyMonitorPolicy.hasSystemModifier(.command))
+    }
 }

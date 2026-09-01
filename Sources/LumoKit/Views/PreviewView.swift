@@ -19,7 +19,7 @@ struct PreviewView: View {
             bgColor
 
             if viewModel.sourceImage != nil {
-                if viewModel.isSideBySide && viewModel.isComparisonAvailable {
+                if viewModel.isSideBySideVisible {
                     sideBySideView
                 } else {
                     singleView

@@ -26,6 +26,29 @@ final class EditDocumentTests: XCTestCase {
         XCTAssertEqual(try roundTrip(document), document)
     }
 
+    func testComparisonBaselineKeepsDevelopAndStripsEveryVisibleLookStage() {
+        let document = EditDocument(
+            rawDevelop: RAWDevelopSettings(exposure: 0.75),
+            light: LightAdjustments(exposure: 1),
+            color: ColorAdjustments(vibrance: 25),
+            effects: EffectsAdjustments(texture: 30),
+            adjustments: [.exposure(ev: 0.5)],
+            lut: LUTSettings(lutID: LUTID(raw: "/Looks/warm.cube"), intensity: 0.8)
+        )
+
+        let baseline = document.comparisonBaseline
+
+        XCTAssertEqual(baseline.rawDevelop, document.rawDevelop)
+        XCTAssertTrue(baseline.light.isIdentity)
+        XCTAssertTrue(baseline.color.isIdentity)
+        XCTAssertTrue(baseline.effects.isIdentity)
+        XCTAssertTrue(baseline.adjustments.isEmpty)
+        XCTAssertTrue(baseline.lut.isIdentity)
+        XCTAssertTrue(document.hasVisibleLookEdits)
+        XCTAssertFalse(baseline.hasVisibleLookEdits)
+        XCTAssertEqual(baseline, document.originalForComparison)
+    }
+
     func testFullyPopulatedDocumentRoundTrips() throws {
         let document = EditDocument(
             rawDevelop: RAWDevelopSettings(

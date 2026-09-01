@@ -66,6 +66,14 @@ struct EditDocument: Codable, Sendable, Equatable {
             adjustments.allSatisfy(\.isIdentity) && lut.isIdentity
     }
 
+    /// True when the document contains an edit that changes the photographer-facing look.
+    /// RAW develop settings intentionally do not count: the comparison baseline keeps the
+    /// developed source, so a develop-only comparison would show identical pixels.
+    var hasVisibleLookEdits: Bool {
+        !light.isIdentity || !color.isIdentity || !effects.isIdentity ||
+            !adjustments.allSatisfy(\.isIdentity) || !lut.isIdentity
+    }
+
     /// Stable SHA-256 identity for caches, undo diagnostics, and persistence comparisons.
     /// `RenderCacheHash` uses sorted JSON keys, so this does not depend on dictionary iteration order.
     var editHash: String { RenderCacheHash.digest(self) }
@@ -90,6 +98,9 @@ struct EditDocument: Codable, Sendable, Equatable {
             adjustments: [], lut: .none
         )
     }
+
+    /// The explicit before-image state used by both Space-hold and side-by-side comparison.
+    var comparisonBaseline: EditDocument { originalForComparison }
 
     // MARK: - Codable
 

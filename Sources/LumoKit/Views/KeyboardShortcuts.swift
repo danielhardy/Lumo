@@ -28,6 +28,23 @@ struct KeyboardShortcuts: ViewModifier {
     }
 }
 
+/// Keyboard routing rules that do not depend on the view model. Keeping these small policies pure
+/// makes the focus and system-shortcut contract testable without synthesizing an AppKit window.
+enum KeyMonitorPolicy {
+    static func textInputOwnsKeyboard(_ responder: NSResponder?) -> Bool {
+        responder is NSText
+    }
+
+    static func isPlainSpace(modifiers: NSEvent.ModifierFlags) -> Bool {
+        modifiers.intersection(.deviceIndependentFlagsMask).isEmpty
+    }
+
+    static func hasSystemModifier(_ modifiers: NSEvent.ModifierFlags) -> Bool {
+        let system = modifiers.intersection(.deviceIndependentFlagsMask)
+        return system.contains(.command) || system.contains(.option) || system.contains(.control)
+    }
+}
+
 /// Owns an NSEvent local monitor for the lifetime of the main content view.
 @MainActor
 final class KeyMonitor {
@@ -80,7 +97,9 @@ final class KeyMonitor {
         // Don't hijack keys while editing text (the search field, etc.) — a
         // focused SwiftUI TextField makes the window's field editor (an NSText)
         // the first responder.
-        if NSApp.keyWindow?.firstResponder is NSText { return event }
+        if KeyMonitorPolicy.textInputOwnsKeyboard(NSApp.keyWindow?.firstResponder) {
+            return event
+        }
 
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let isDown = event.type == .keyDown
@@ -110,10 +129,15 @@ final class KeyMonitor {
             return event
         }
 
+        // Option- and Control-modified keys belong to AppKit, input sources, or accessibility
+        // tools. They are never Lumo's global navigation/comparison shortcuts.
+        if KeyMonitorPolicy.hasSystemModifier(mods) { return event }
+
         // Hardware key codes (US layout independent for arrows/space).
         // ↑/↓ audition Looks; ←/→ step through the source files.
         switch event.keyCode {
         case 49:  // Space — hold to compare original
+            guard KeyMonitorPolicy.isPlainSpace(modifiers: mods) else { return event }
             vm.showOriginal(isDown)
             return nil
         case 126: // Up arrow — previous Look

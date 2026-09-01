@@ -194,9 +194,11 @@ public final class AppViewModel: ObservableObject {
     /// Source generation prevents delayed work from a previous navigation selection from publishing
     /// into the new image, even if the source values happen to compare equal.
     private var sourceRevision: UInt64 = 0
-    /// Document generation guards the side-by-side baseline, whose request is managed separately
-    /// from the primary visible render.
+    /// Document generation guards the primary visible render and histogram publications.
     private var documentRevision: UInt64 = 0
+    /// Baseline generation changes only when the source or RAW develop state changes. Look-stage
+    /// edits must not invalidate an in-flight baseline that is still correct for comparison.
+    private var comparisonRevision: UInt64 = 0
     private var isPreviewInteractionActive = false
 
     /// Whether any call since the last fired render changed `rawDevelop`.
@@ -244,43 +246,14 @@ public final class AppViewModel: ObservableObject {
     @Published private(set) var lutResolutionStatus: String?
 
     /// Whether the A/B comparison — the split view and the Space-hold — has anything to show.
+    /// The document owns the exact visible-stage rule and the matching `comparisonBaseline`, so
+    /// Light, Color, Effects, adjustment nodes, and LUT intensity cannot drift apart at this gate.
     ///
-    /// **Not `selectedLUT != nil`**, which is what this was until Step 10b. That was defensible while
-    /// a LUT was the only thing that could change the picture; the Adjust panel made it wrong, and an
-    /// image with exposure pushed two stops and no LUT selected had a dead V key and a dead Space bar.
-    /// `docs/PHASE2_SPEC.md` §8.5 recorded this as open.
-    ///
-    /// **Not `document != document.originalForComparison` either**, which is what Step 10b first
-    /// reached for: compare the document against its own baseline rather than enumerate the
-    /// look-bearing fields, and the rule "stays correct the next time the document grows a field."
-    /// That reasoning is wrong for a LUT at 0% intensity — `LUTSettings.isIdentity` treats it as
-    /// contributing nothing, but the plain `!=` sees `lutID` still set and calls the document
-    /// non-neutral, so the gate opened a split view of two pixel-identical halves. Exactness beat the
-    /// "survives a new field" property. The cost is real: the next look-bearing field added to
-    /// `EditDocument` must be added to this expression by hand, or this comment starts lying the same
-    /// way the old one did.
-    ///
-    /// A **develop-only** edit correctly reads `false` — `originalForComparison` keeps `rawDevelop`
-    /// and strips Light, Color, adjustments, and the LUT, so both halves would render the same
-    /// picture.
-    ///
-    /// `adjustments.isEmpty` would have been a sound stand-in for "no adjustment is active" only
-    /// because the array is sparse — `AdjustmentControl.setting(_:in:)` never stores an identity node, a
-    /// claim `AdjustmentControlTests` pins. `adjustments.allSatisfy(\.isIdentity)` needs no such
-    /// precondition: a stray identity node reads exactly the same as no node at all, so it is written
-    /// this exact way, rather than the cheaper `isEmpty`, for the same exactness reason as the
-    /// paragraph above — it stays correct even if the sparse invariant is ever violated, which matters
-    /// once Step 11's undo path can restore a document that arrived by decoding rather than by a
-    /// slider write.
-    var isComparisonAvailable: Bool {
-        !document.light.isIdentity ||
-            !document.color.isIdentity ||
-            !document.effects.isIdentity ||
-            !document.adjustments.allSatisfy(\.isIdentity) || !document.lut.isIdentity
-    }
+    var isComparisonAvailable: Bool { document.hasVisibleLookEdits }
 
     @Published var isShowingOriginal: Bool = false
     @Published var isSideBySide: Bool = true
+    var isSideBySideVisible: Bool { isSideBySide && isComparisonAvailable }
 
     /// The visible render is owned by these surfaces, not published image values on this model.
     let previewSurface = PreviewSurface()
@@ -614,6 +587,7 @@ public final class AppViewModel: ObservableObject {
         refreshLUTResolutionStatus()
 
         sourceRevision &+= 1
+        comparisonRevision &+= 1
         let sourceRevision = self.sourceRevision
         previewCoordinator.cancel()
         previewSurface.clear()
@@ -1098,13 +1072,17 @@ public final class AppViewModel: ObservableObject {
         let developChanged = updated.rawDevelop != document.rawDevelop
         activeHistory.recordChange(from: document, to: updated)
         document = updated
+        if !document.hasVisibleLookEdits { isShowingOriginal = false }
         refreshLUTResolutionStatus()
         saveActiveDocument()
         documentRevision &+= 1
-        // A supporting baseline from the previous state is no longer useful once the document
-        // changes. Cancel it before the new visible request is submitted; a develop edit will queue
-        // the correct baseline after its settled visible result publishes.
-        originalPreviewTask?.cancel()
+        // Look edits leave the baseline unchanged, so an in-flight baseline remains useful. A RAW
+        // develop edit changes the explicit before-image and must invalidate that work; it will be
+        // queued again after the new visible result publishes.
+        if developChanged {
+            comparisonRevision &+= 1
+            originalPreviewTask?.cancel()
+        }
         // OR'd in rather than assigned: a call earlier in a coalesced burst may have changed
         // `rawDevelop` even though *this* call didn't, and only the last call's task survives to
         // fire (see `pendingDevelopChange`'s doc comment).
@@ -1204,8 +1182,6 @@ public final class AppViewModel: ObservableObject {
         activeHistory.recordChange(from: oldDocument, to: document)
         saveActiveDocument()
         documentRevision &+= 1
-        originalPreviewTask?.cancel()
-
         if isPreviewInteractionActive {
             scheduleInteractivePreview()
         } else {
@@ -1246,7 +1222,7 @@ public final class AppViewModel: ObservableObject {
     /// describe the pixels on screen, and it stopped doing so precisely because it derived its image
     /// separately. Reading the request from one place is what makes that structural.
     private var displayRequest: (document: EditDocument, lut: CubeLUT?) {
-        isShowingOriginal ? (document.originalForComparison, nil) : (document, selectedLook)
+        isShowingOriginal ? (document.comparisonBaseline, nil) : (document, selectedLook)
     }
 
     /// Render the document for display.
@@ -1423,9 +1399,12 @@ public final class AppViewModel: ObservableObject {
         document = restored
         refreshLUTResolutionStatus()
         saveActiveDocument()
-        originalPreviewTask?.cancel()
-        pendingDevelopChange = false
-        if developChanged { scheduleOriginalPreview() }
+        documentRevision &+= 1
+        if developChanged {
+            comparisonRevision &+= 1
+            originalPreviewTask?.cancel()
+        }
+        pendingDevelopChange = developChanged
         schedulePreview()
     }
 
@@ -1473,10 +1452,10 @@ public final class AppViewModel: ObservableObject {
             originalPreviewSurface.clear()
             return
         }
-        let baseline = document.originalForComparison
+        let baseline = document.comparisonBaseline
         let box = previewRenderTargetSize
         let sourceRevision = self.sourceRevision
-        let documentRevision = self.documentRevision
+        let comparisonRevision = self.comparisonRevision
 
         originalPreviewTask = Task { [engine] in
             let request = RenderRequest(
@@ -1487,7 +1466,7 @@ public final class AppViewModel: ObservableObject {
             if let gpuImage {
                 guard !Task.isCancelled,
                       sourceRevision == self.sourceRevision,
-                      documentRevision == self.documentRevision,
+                      comparisonRevision == self.comparisonRevision,
                       self.imageSource == imageSource else { return }
                 self.originalPreviewSurface.present(gpuImage, space: request.space)
                 return
@@ -1495,7 +1474,7 @@ public final class AppViewModel: ObservableObject {
             let cgImage = await engine.makeCGImage(request)
             guard !Task.isCancelled,
                   sourceRevision == self.sourceRevision,
-                  documentRevision == self.documentRevision,
+                  comparisonRevision == self.comparisonRevision,
                   self.imageSource == imageSource,
                   let cgImage else { return }
             self.originalPreviewSurface.present(CIImage(cgImage: cgImage), space: request.space)
@@ -1504,12 +1483,20 @@ public final class AppViewModel: ObservableObject {
 
     /// Toggle between original and LUT preview (for Space-hold comparison).
     func showOriginal(_ show: Bool) {
+        guard !show || isComparisonAvailable else {
+            if isShowingOriginal {
+                isShowingOriginal = false
+                schedulePreview()
+            }
+            return
+        }
         guard show != isShowingOriginal else { return }
         isShowingOriginal = show
         schedulePreview()
     }
 
     func toggleSideBySide() {
+        guard isComparisonAvailable else { return }
         isSideBySide.toggle()
     }
 
