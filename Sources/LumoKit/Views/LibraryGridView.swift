@@ -12,6 +12,7 @@ struct LibraryGridView: View {
     let onOpen: () -> Void
 
     private let layout = LibraryGridLayout()
+    @State private var mosaicCache = LibraryMosaicLayoutCache()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,9 +26,14 @@ struct LibraryGridView: View {
                 } else {
                     ScrollView {
                         let indices = collection.filteredIndices
-                        let rows = layout.mosaicRows(
-                            aspectRatios: indices.map { collection.items[$0].libraryAspectRatio },
-                            width: max(1, geometry.size.width - 32)
+                        let rows = mosaicCache.rows(
+                            revision: collection.libraryLayoutRevision,
+                            itemCount: indices.count,
+                            width: max(1, geometry.size.width - 32),
+                            layout: layout,
+                            aspectRatioAt: { offset in
+                                collection.items[indices[offset]].libraryAspectRatio
+                            }
                         )
                         LazyVStack(alignment: .leading, spacing: CGFloat(layout.spacing)) {
                             ForEach(rows) { row in

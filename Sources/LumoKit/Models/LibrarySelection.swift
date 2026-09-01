@@ -255,3 +255,40 @@ struct LibraryGridLayout: Sendable, Equatable {
         return start..<max(start, end)
     }
 }
+
+/// Retains mosaic geometry across item mutations that do not change the filtered collection.
+///
+/// Metadata arrives after discovery and changes an item's aspect ratio from the photographic
+/// fallback to its real value. Rebuilding rows for that mutation would move every later item in
+/// the collection. The cache therefore treats geometry as a snapshot of the current collection
+/// structure: rows are rebuilt only when the structure or viewport width changes, and metadata
+/// updates reuse the already-placed rows. The row snapshot is still value data, so the lazy stack
+/// keeps virtualizing the hosted cells as before.
+@MainActor
+final class LibraryMosaicLayoutCache {
+    private var cachedRevision: UInt64?
+    private var cachedWidth: Double?
+    private var cachedRows: [LibraryGridLayout.MosaicRow] = []
+
+    /// Exposed for regression tests and performance instrumentation.
+    private(set) var recomputeCount = 0
+
+    func rows(
+        revision: UInt64,
+        itemCount: Int,
+        width: Double,
+        layout: LibraryGridLayout,
+        aspectRatioAt: (Int) -> Double
+    ) -> [LibraryGridLayout.MosaicRow] {
+        guard cachedRevision != revision || cachedWidth != width else {
+            return cachedRows
+        }
+
+        let aspectRatios = (0..<max(0, itemCount)).map(aspectRatioAt)
+        cachedRows = layout.mosaicRows(aspectRatios: aspectRatios, width: width)
+        cachedRevision = revision
+        cachedWidth = width
+        recomputeCount += 1
+        return cachedRows
+    }
+}

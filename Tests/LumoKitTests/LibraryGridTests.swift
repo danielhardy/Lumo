@@ -44,6 +44,30 @@ final class LibraryGridTests: TempDirectoryTestCase {
         XCTAssertEqual(LibraryGridLayout.normalizedAspectRatio(10), 3.0)
     }
 
+    func testMosaicCacheFreezesPlacedRowsWhenDeferredAspectRatioArrives() {
+        let cache = LibraryMosaicLayoutCache()
+        let layout = LibraryGridLayout()
+        let fallback = [4.0 / 3.0, 4.0 / 3.0, 4.0 / 3.0]
+
+        let initial = cache.rows(
+            revision: 1,
+            itemCount: fallback.count,
+            width: 900,
+            layout: layout,
+            aspectRatioAt: { fallback[$0] }
+        )
+        let resolved = cache.rows(
+            revision: 1,
+            itemCount: fallback.count,
+            width: 900,
+            layout: layout,
+            aspectRatioAt: { $0 == 0 ? 1.0 / 3.0 : fallback[$0] }
+        )
+
+        XCTAssertEqual(resolved, initial, "metadata must not move already-placed mosaic rows")
+        XCTAssertEqual(cache.recomputeCount, 1, "a metadata update must not redo full-collection row math")
+    }
+
     func testDemandDrivenGridWaitsForMaterializedCellsBeforeDecoding() async throws {
         for index in 0..<64 {
             try Fixtures.writeJPEG(
