@@ -151,6 +151,7 @@ final class PreviewCoordinator {
 
     private func settleLatest() {
         guard let request = latestRequest else { return }
+        let originatingRevision = latestToken?.revision
         nextRevision &+= 1
         let token = Token(source: request.source, revision: nextRevision)
         latestToken = token
@@ -158,7 +159,14 @@ final class PreviewCoordinator {
         interactiveTask = nil
         settleTask = nil
         pendingInteractive = nil
-        scheduleSettled(Self.request(request, quality: .preview), token: token)
+        let settledRequest = Self.request(request, quality: .preview)
+        if let originatingRevision {
+            telemetry.promote(from: originatingRevision, to: token.revision,
+                              source: settledRequest.source, request: settledRequest)
+        } else {
+            telemetry.input(source: settledRequest.source, request: settledRequest, revision: token.revision)
+        }
+        scheduleSettled(settledRequest, token: token)
     }
 
     private func scheduleInteractive(_ request: RenderRequest, token: Token) {
@@ -232,6 +240,7 @@ final class PreviewCoordinator {
             return
         }
         guard image != nil || gpuImage != nil else {
+            telemetry.discard(token.revision)
             onFailure?(request)
             return
         }

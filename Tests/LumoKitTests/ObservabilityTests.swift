@@ -71,4 +71,26 @@ final class ObservabilityTests: XCTestCase {
         XCTAssertNil(telemetry.report().p50InputToPresentMS)
         XCTAssertEqual(telemetry.report().deliveredFPS, 0)
     }
+
+    @MainActor
+    func testLiveEditRetentionIsBoundedAndEffectiveDimensionsAreRecorded() {
+        let source = ImageSource(url: URL(fileURLWithPath: "/tmp/telemetry.png"),
+                                 nativeExtent: CGSize(width: 4000, height: 3000))
+        let request = RenderRequest(source: source, document: EditDocument(),
+                                    targetSize: CGSize(width: 640, height: 480),
+                                    quality: .interactive, output: .raster)
+        let telemetry = LiveEditTelemetry()
+        for revision in 1...300 {
+            telemetry.input(source: source, request: request, revision: UInt64(revision), time: 10)
+        }
+        telemetry.setEffectiveDimensions(300, width: 1280, height: 720)
+
+        let samples = telemetry.report().samples
+        XCTAssertEqual(samples.count, LiveEditTelemetry.maximumRetainedSamples)
+        XCTAssertNil(samples.first(where: { $0.revision == 1 }))
+        XCTAssertEqual(samples.last?.requestedWidth, 640)
+        XCTAssertEqual(samples.last?.requestedHeight, 480)
+        XCTAssertEqual(samples.last?.effectiveWidth, 1280)
+        XCTAssertEqual(samples.last?.effectiveHeight, 720)
+    }
 }

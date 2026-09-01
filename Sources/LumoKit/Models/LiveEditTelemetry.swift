@@ -13,6 +13,10 @@ struct LiveEditMeasurement: Sendable, Equatable {
     let quality: RenderQuality
     let renderWidth: Int
     let renderHeight: Int
+    let requestedWidth: Int
+    let requestedHeight: Int
+    var effectiveWidth: Int
+    var effectiveHeight: Int
     var inputTime: TimeInterval
     var renderStart: TimeInterval?
     var renderEnd: TimeInterval?
@@ -66,20 +70,41 @@ struct LiveEditReport: Sendable, Equatable {
 /// timestamped by Metal's presented callback.
 @MainActor
 final class LiveEditTelemetry {
+    static let maximumRetainedSamples = 256
     private(set) var measurements: [LiveEditMeasurement] = []
     private var index: [UInt64: Int] = [:]
 
     func input(source: ImageSource, request: RenderRequest, revision: UInt64,
                time: TimeInterval = LiveEditTelemetryClock.now) {
+        let width = Int(request.targetSize?.width ?? source.nativeExtent.width)
+        let height = Int(request.targetSize?.height ?? source.nativeExtent.height)
         measurements.append(LiveEditMeasurement(
             sourceToken: LumoTraceContext(source: source, quality: request.quality).sourceToken,
             revision: revision, quality: request.quality,
-            renderWidth: Int(request.targetSize?.width ?? source.nativeExtent.width),
-            renderHeight: Int(request.targetSize?.height ?? source.nativeExtent.height),
+            renderWidth: width, renderHeight: height,
+            requestedWidth: width, requestedHeight: height,
+            effectiveWidth: width, effectiveHeight: height,
             inputTime: time, renderStart: nil, renderEnd: nil, gpuCompletion: nil,
             drawablePresentation: nil, cpuTimeMS: nil, gpuTimeMS: nil,
             allocationBytes: nil, memoryGrowthBytes: nil))
+        trimIfNeeded()
         index[revision] = measurements.count - 1
+    }
+
+    func promote(from sourceRevision: UInt64, to revision: UInt64, source: ImageSource,
+                 request: RenderRequest, time: TimeInterval = LiveEditTelemetryClock.now) {
+        let inputTime = index[sourceRevision].map { measurements[$0].inputTime } ?? time
+        input(source: source, request: request, revision: revision, time: inputTime)
+    }
+
+    func setEffectiveDimensions(_ revision: UInt64, width: Int, height: Int) {
+        guard let i = index[revision] else { return }
+        measurements[i].effectiveWidth = width
+        measurements[i].effectiveHeight = height
+    }
+
+    func discard(_ revision: UInt64) {
+        index.removeValue(forKey: revision)
     }
 
     func mark(_ revision: UInt64, renderStart: TimeInterval? = nil, renderEnd: TimeInterval? = nil,
@@ -103,4 +128,11 @@ final class LiveEditTelemetry {
 
     func report() -> LiveEditReport { .make(from: measurements) }
     func reset() { measurements.removeAll(); index.removeAll() }
+
+    private func trimIfNeeded() {
+        guard measurements.count > Self.maximumRetainedSamples else { return }
+        let removeCount = measurements.count - Self.maximumRetainedSamples
+        measurements.removeFirst(removeCount)
+        index = Dictionary(uniqueKeysWithValues: measurements.enumerated().map { ($0.element.revision, $0.offset) })
+    }
 }

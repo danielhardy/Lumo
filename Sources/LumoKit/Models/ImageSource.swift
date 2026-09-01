@@ -45,6 +45,9 @@ struct ImageSource: Sendable, Equatable {
     /// without decoding the image again.
     let nativeExtent: CGSize
     private let dataFingerprint: String?
+    /// Captured when this source session is created. This is for observability grouping only;
+    /// cache identity must continue to use the dynamic `cacheFingerprint` below.
+    let traceToken: String
 
     init(backing: Backing, kind: Kind, nativeExtent: CGSize) {
         self.backing = backing
@@ -55,6 +58,10 @@ struct ImageSource: Sendable, Equatable {
         } else {
             self.dataFingerprint = nil
         }
+        self.traceToken = Self.makeTraceToken(from: Self.fingerprintForTrace(backing: backing,
+                                                                              kind: kind,
+                                                                              nativeExtent: nativeExtent,
+                                                                              dataFingerprint: self.dataFingerprint))
     }
 
     /// A file-backed source, classified by extension — the same rule `ImageDecoder.load` uses,
@@ -124,5 +131,30 @@ struct ImageSource: Sendable, Equatable {
             }
             return "url:\(url.standardizedFileURL.path):\(size):\(modified):\(resourceID):\(posixFingerprint):\(kind):\(extent)"
         }
+    }
+
+    private static func fingerprintForTrace(backing: Backing, kind: Kind, nativeExtent: CGSize,
+                                            dataFingerprint: String?) -> String {
+        let extent = "\(Double(nativeExtent.width).bitPattern):\(Double(nativeExtent.height).bitPattern)"
+        switch backing {
+        case .data:
+            return "data:\(dataFingerprint ?? "missing"):\(kind):\(extent)"
+        case .url(let url):
+            // This is intentionally performed once, at source-session creation. Subsequent event
+            // logging uses the stored token, while cache/source replacement checks remain dynamic.
+            let values = try? url.resourceValues(forKeys: [
+                .fileSizeKey, .contentModificationDateKey, .fileResourceIdentifierKey
+            ])
+            let size = values?.fileSize.map(String.init) ?? "missing"
+            let modified = values?.contentModificationDate?.timeIntervalSince1970.description ?? "missing"
+            let resourceID = values?.fileResourceIdentifier.map { String(describing: $0) } ?? "missing"
+            return "url:\(url.standardizedFileURL.path):\(size):\(modified):\(resourceID):\(kind):\(extent)"
+        }
+    }
+
+    private static func makeTraceToken(from fingerprint: String) -> String {
+        let digest = SHA256.hash(data: Data(fingerprint.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        return String(digest.prefix(16))
     }
 }

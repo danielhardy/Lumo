@@ -78,7 +78,7 @@ struct LumoTraceContext: Sendable, Equatable {
     let quality: String
 
     init(source: ImageSource, quality: RenderQuality) {
-        self.init(sourceFingerprint: source.cacheFingerprint, quality: quality.rawValue)
+        self.init(sourceToken: source.traceToken, quality: quality.rawValue)
     }
 
     init(sourceFingerprint: String, quality: String) {
@@ -86,6 +86,11 @@ struct LumoTraceContext: Sendable, Equatable {
             .map { String(format: "%02x", $0) }
             .joined()
         self.sourceToken = String(digest.prefix(16))
+        self.quality = quality
+    }
+
+    init(sourceToken: String, quality: String) {
+        self.sourceToken = sourceToken
         self.quality = quality
     }
 

@@ -9,9 +9,11 @@ and coalesced work is counted by `Cancellation` and `Coalesced` events. LiveEdit
 `PointerInput`, `RenderStart`, `RenderEnd`, `GPUComplete`, `DrawablePresented`, and
 `StaleRevision`. Each carries a privacy-safe source token, quality, and document revision.
 
-The `source` argument is a 16-character SHA-256 token derived from the source's
-existing cache fingerprint. It is useful for grouping one photo's intervals but
-does not contain a path, filename, or metadata. `quality` is one of
+The `source` argument is a 16-character SHA-256 token captured once when the source
+session is created. Event logging reuses that token and does not query URL metadata
+or recompute a source digest. It is useful for grouping one photo's intervals but
+does not contain a path, filename, or metadata. Cache/source-replacement identity is
+still refreshed independently at validated cache boundaries. `quality` is one of
 `thumbnail`, `interactive`, `preview`, `fullResolution`, or `export`, which
 keeps live editing separate from settled preview and export work.
 
@@ -47,7 +49,9 @@ keeps live editing separate from settled preview and export work.
 
 Use the **Points of Interest** detail view to inspect interval duration and event count.
 `PreviewCoordinator.telemetry.report()` supplies p50/p95/p99 input-to-present latency,
-delivered FPS, frame gaps, coalescing, stale-revision age, and render dimensions.
+delivered FPS, frame gaps, coalescing, stale-revision age, and requested/effective
+render dimensions. Effective dimensions are updated from the drawable backing pixels;
+requested dimensions are the render request's target size.
 Use Metal System Trace for GPU time and Allocations/VM Tracker for allocations and memory growth.
 Save the `.trace` and this value-only summary with the scenario notes.
 
@@ -64,9 +68,10 @@ Run each row cold and warm on the reference Apple Silicon Mac, using representat
 | Adjust | Every visible adjustment control | 24 MP RAW, 40–60 MP RAW, large standard |
 | Effects | Texture, Clarity, Dehaze, Vignette, Grain | 24 MP RAW, 40–60 MP RAW, large standard |
 
-Store Mac/chip/memory, OS, commit, source dimensions, render dimensions, decoder name/version,
-warm/cold state, trace path, telemetry summary, and dropped/coalesced values. XCTest orchestration
-is deterministic coverage, not a hardware-gate result. If a decoder-specific control misses its
+Store Mac/chip/memory, OS, commit, source dimensions, requested/effective render dimensions, decoder name/version,
+warm/cold state, trace path, telemetry summary, and dropped/coalesced values. XCTest fake-renderer
+cases are deterministic orchestration coverage, not a hardware-gate result; the real Metal
+presentation scenario is the hardware measurement. If a decoder-specific control misses its
 threshold, record its source, decoder, and bottleneck and file a targeted blocker.
 
 ## Initial targets to validate

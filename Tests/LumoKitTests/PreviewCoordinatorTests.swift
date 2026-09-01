@@ -148,6 +148,24 @@ final class PreviewCoordinatorTests: XCTestCase {
         XCTAssertEqual(publications[1].request.quality, .preview)
     }
 
+    func testSettledPromotionRetainsTheOriginatingInputTimestamp() async throws {
+        let fake = FakeRenderEngine()
+        let coordinator = PreviewCoordinator(engine: fake, settleDelay: .seconds(10))
+        let source = makeSource()
+        coordinator.beginInteraction()
+        coordinator.submit(request(source: source, exposure: 0.5), phase: .interactive)
+        try await waitUntil("interactive telemetry") {
+            coordinator.telemetry.report().samples.contains { $0.revision == 1 }
+        }
+
+        coordinator.endInteraction()
+        try await waitUntil("settled telemetry") { coordinator.telemetry.report().samples.count == 2 }
+        let samples = coordinator.telemetry.report().samples
+        XCTAssertEqual(samples.count, 2)
+        XCTAssertEqual(samples[0].inputTime, samples[1].inputTime)
+        XCTAssertEqual(samples[1].quality, .preview)
+    }
+
     /// Opt-in smoke benchmark for the pointer-to-pixel path using a 60 MP-class source extent.
     /// The fake renderer keeps this repeatable in CI; the Instruments recipe remains the source of
     /// truth for hardware measurements with a real RAW and GPU.

@@ -42,6 +42,7 @@ final class PreviewSurface: ObservableObject {
             pendingGPURevision = revision
             telemetryByRevision[revision] = PendingTelemetry(telemetry: telemetry, source: source,
                                                              quality: quality)
+            trimTelemetry()
         } else {
             pendingGPURevision = nil
         }
@@ -71,6 +72,19 @@ final class PreviewSurface: ObservableObject {
         if pendingGPURevision == revision { pendingGPURevision = nil }
     }
 
+    fileprivate func setEffectiveDimensions(revision: UInt64, width: Int, height: Int) {
+        telemetryByRevision[revision]?.telemetry.setEffectiveDimensions(revision, width: width, height: height)
+    }
+
+    private func trimTelemetry() {
+        guard telemetryByRevision.count > LiveEditTelemetry.maximumRetainedSamples else { return }
+        let revisions = telemetryByRevision.keys.sorted()
+        for revision in revisions.prefix(telemetryByRevision.count - LiveEditTelemetry.maximumRetainedSamples) {
+            telemetryByRevision.removeValue(forKey: revision)
+            submittedTelemetryRevisions.remove(revision)
+        }
+    }
+
     fileprivate func markGPUCompletion(revision: UInt64, time: TimeInterval) {
         guard let pending = telemetryByRevision[revision] else { return }
         pending.telemetry.mark(revision, gpuCompletion: time)
@@ -78,6 +92,12 @@ final class PreviewSurface: ObservableObject {
             LumoObservability.liveEdit(.gpuComplete, source: source, quality: pending.quality,
                                        revision: revision)
         }
+    }
+
+    fileprivate func markPresentationFailed(revision: UInt64) {
+        telemetryByRevision.removeValue(forKey: revision)
+        submittedTelemetryRevisions.remove(revision)
+        if pendingGPURevision == revision { pendingGPURevision = nil }
     }
 
     fileprivate func markDrawablePresented(revision: UInt64, time: TimeInterval) {
@@ -203,6 +223,10 @@ struct PreviewSurfaceView: NSViewRepresentable {
             ).cropped(to: destination)
             let output = displayed.composited(over: background)
             let presentationRevision = surface.pendingPresentationRevision()
+            if let presentationRevision {
+                surface.setEffectiveDimensions(revision: presentationRevision,
+                                               width: drawableSize.0, height: drawableSize.1)
+            }
             let displayRevision = surface.pendingDisplayRevision()
             let drawRevision = surface.revision
             let drawNavigation = navigation
@@ -229,6 +253,7 @@ struct PreviewSurfaceView: NSViewRepresentable {
                             surface.rejectPresentation(displayRevision: displayRevision)
                         }
                         if let revision = presentationRevision {
+                            if !succeeded { surface.markPresentationFailed(revision: revision) }
                             surface.markGPUCompletion(revision: revision, time: gpuCompletion)
                         }
                     }
