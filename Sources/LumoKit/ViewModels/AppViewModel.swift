@@ -190,6 +190,18 @@ public final class AppViewModel: ObservableObject {
     private var activeSourceReference: EditSourceReference?
     private var persistenceTask: Task<Void, Never>?
     private var persistenceGeneration = 0
+    private struct PendingPersistence: Equatable {
+        let document: EditDocument
+        let reference: EditSourceReference
+        let reportsStatus: Bool
+        let force: Bool
+    }
+    private var pendingPersistence: [PhotoAssetID: PendingPersistence] = [:]
+    /// A gesture is checkpointed at most 250 ms apart. This bounds the amount of recent work that
+    /// can be lost while retaining immediate live document/render updates.
+    private static let persistenceCheckpoint: Duration = .milliseconds(250)
+
+    var pendingPersistenceCount: Int { pendingPersistence.count }
 
     /// Source generation prevents delayed work from a previous navigation selection from publishing
     /// into the new image, even if the source values happen to compare equal.
@@ -638,7 +650,9 @@ public final class AppViewModel: ObservableObject {
     ) {
         let assetID = assetID ?? (url.map(PhotoAssetID.file) ?? data.map(PhotoAssetID.data) ?? .data(Data()))
         endUndoGrouping()
-        saveActiveDocument()
+        // Discrete edits are queued normally; switching sources is a durability boundary for them.
+        // Do not rewrite an unchanged document merely because navigation occurred.
+        requestPersistenceFlush()
         activeAssetID = assetID
         let sourceReference = EditSourceReference(assetID: assetID, url: url)
         activeSourceReference = sourceReference
@@ -999,7 +1013,8 @@ public final class AppViewModel: ObservableObject {
                 queuePersistence(
                     updated,
                     for: EditSourceReference(assetID: assetID, url: item.url),
-                    reportsStatus: false
+                    reportsStatus: false,
+                    force: true
                 )
             }
             pastedCount += 1
@@ -1008,6 +1023,7 @@ public final class AppViewModel: ObservableObject {
         statusMessage = pastedCount == 1
             ? "Pasted edits to 1 photo"
             : pastedCount > 1 ? "Pasted edits to \(pastedCount) photos" : "Pasted edits"
+        requestPersistenceFlush()
     }
 
     /// Select a grid cell without leaving the grid. This is what makes a multi-selection useful:
@@ -1508,8 +1524,9 @@ public final class AppViewModel: ObservableObject {
 
     /// Finish a continuous gesture. A gesture that did not change the document is not recorded.
     func endUndoGrouping() {
+        let wasGrouping = activeHistory.isGrouping
         activeHistory.endGrouping(document: document)
-        saveActiveDocument()
+        if wasGrouping { saveActiveDocument(force: true) }
     }
 
     var canUndo: Bool { activeHistory.canUndo }
@@ -1560,7 +1577,7 @@ public final class AppViewModel: ObservableObject {
         cancelHistogram(clear: false)
         document = restored
         refreshLUTResolutionStatus()
-        saveActiveDocument()
+        saveActiveDocument(force: true)
         documentRevision &+= 1
         if developChanged {
             comparisonRevision &+= 1
@@ -1938,11 +1955,11 @@ public final class AppViewModel: ObservableObject {
 
     func chooseLUTFolder() { chooseLookFolder() }
 
-    private func saveActiveDocument() {
+    private func saveActiveDocument(force: Bool = false) {
         guard let activeAssetID, let activeSourceReference else { return }
         editSessions[activeAssetID] = PhotoEditSession(document: document, history: activeHistory)
 
-        queuePersistence(document, for: activeSourceReference, reportsStatus: true)
+        queuePersistence(document, for: activeSourceReference, reportsStatus: true, force: force)
     }
 
     /// Serialize disk snapshots in edit order. This is shared with multi-photo paste because a
@@ -1950,38 +1967,62 @@ public final class AppViewModel: ObservableObject {
     private func queuePersistence(
         _ document: EditDocument,
         for reference: EditSourceReference,
-        reportsStatus: Bool
+        reportsStatus: Bool,
+        force: Bool = false
     ) {
-        let store = editStore
-        let previous = persistenceTask
-        persistenceGeneration += 1
+        let assetID = reference.assetID
+        let priorForce = pendingPersistence[assetID]?.force ?? false
+        pendingPersistence[assetID] = PendingPersistence(
+            document: document, reference: reference,
+            reportsStatus: reportsStatus || (pendingPersistence[assetID]?.reportsStatus ?? false),
+            force: force || priorForce
+        )
+        if force { persistenceTask?.cancel() }
+        guard persistenceTask == nil || force else { return }
+        startPersistenceWorker(force: force)
+    }
+
+    private func startPersistenceWorker(force: Bool) {
+        persistenceGeneration &+= 1
         let generation = persistenceGeneration
         persistenceTask = Task { [weak self] in
-            _ = await previous?.value
-            defer {
-                if self?.persistenceGeneration == generation {
-                    self?.persistenceTask = nil
-                }
-            }
+            guard let self else { return }
+            if !force { try? await Task.sleep(for: Self.persistenceCheckpoint) }
+            await self.drainPersistence(generation: generation)
+        }
+    }
+
+    private func drainPersistence(generation: Int) async {
+        while !Task.isCancelled, let assetID = pendingPersistence.keys.sorted(by: { $0.description < $1.description }).first,
+              let snapshot = pendingPersistence[assetID] {
             do {
-                try await store.save(document, for: reference)
-                guard !Task.isCancelled, reportsStatus,
-                      self?.persistenceGeneration == generation else { return }
-                self?.editStoreStatus = nil
+                try await editStore.save(snapshot.document, for: snapshot.reference)
+                if pendingPersistence[assetID] == snapshot { pendingPersistence.removeValue(forKey: assetID) }
+                if snapshot.reportsStatus { editStoreStatus = nil }
             } catch {
-                guard !Task.isCancelled, reportsStatus,
-                      self?.persistenceGeneration == generation else { return }
-                let message = error.localizedDescription
-                self?.editStoreStatus = message
-                self?.statusMessage = message
+                // Keep the snapshot dirty. A later edit or termination flush retries it rather than
+                // falsely presenting a durable state that never reached disk.
+                editStoreStatus = error.localizedDescription
+                statusMessage = error.localizedDescription
+                break
+            }
+            if !snapshot.force, !pendingPersistence.isEmpty {
+                try? await Task.sleep(for: Self.persistenceCheckpoint)
             }
         }
+        if persistenceGeneration == generation { persistenceTask = nil }
+    }
+
+    private func requestPersistenceFlush() {
+        guard !pendingPersistence.isEmpty else { return }
+        persistenceTask?.cancel()
+        persistenceTask = nil
+        startPersistenceWorker(force: true)
     }
 
     /// Wait for queued snapshots before clean application termination.
     public func flushPendingWrites() async {
-        while let pending = persistenceTask {
-            await pending.value
-        }
+        requestPersistenceFlush()
+        while let pending = persistenceTask { await pending.value }
     }
 }

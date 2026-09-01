@@ -91,6 +91,35 @@ final class EditPersistenceIntegrationTests: TempDirectoryTestCase {
         }
     }
 
+    func testRapidEditsCoalesceToOneLatestSnapshotPerAsset() async throws {
+        let imageURL = try Fixtures.writeGradientPNG(
+            width: 32, height: 24, named: "coalesced.png", in: tempDirectory
+        )
+        let store = EditDocumentStore(
+            fileURL: tempDirectory.appendingPathComponent("coalesced-edits.json")
+        )
+        let viewModel = AppViewModel(engine: FakeRenderEngine(), editStore: store)
+        viewModel.openImage(url: imageURL)
+        try await waitUntil("the coalesced image") { viewModel.sourceImage != nil }
+
+        for value in stride(from: 0.0, through: 1.0, by: 0.05) {
+            viewModel.updateDocument { $0.adjustments = [.exposure(ev: value)] }
+        }
+
+        XCTAssertLessThanOrEqual(viewModel.pendingPersistenceCount, 1)
+        await viewModel.flushPendingWrites()
+
+        let restored = EditDocumentStore(
+            fileURL: tempDirectory.appendingPathComponent("coalesced-edits.json")
+        )
+        let result = await restored.load(
+            for: EditSourceReference(assetID: .file(imageURL), url: imageURL)
+        )
+        XCTAssertEqual(result.document.adjustments, [.exposure(ev: 1.0)])
+        let writeCount = await store.writeCount
+        XCTAssertEqual(writeCount, 1)
+    }
+
     func testMissingSourceStillReportsAnActionableLoadError() async throws {
         let viewModel = AppViewModel(
             engine: FakeRenderEngine(),

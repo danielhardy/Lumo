@@ -121,6 +121,10 @@ actor EditDocumentStore {
     private(set) var status: Status = .notLoaded
     /// Testable evidence that persistence work ran on the actor executor, not the main actor.
     private(set) var lastIOWasMainThread = false
+    /// Durable-write counters are intentionally small and actor-isolated so performance tests can
+    /// verify coalescing without depending on filesystem tracing.
+    private(set) var writeCount = 0
+    private(set) var bytesWritten = 0
 
     init(fileURL: URL = EditDocumentStore.defaultFileURL, backupURL: URL? = nil) {
         self.fileURL = fileURL
@@ -205,7 +209,7 @@ actor EditDocumentStore {
 
         records[source.assetID.description] = Record(
             document: document,
-            source: makeLocator(for: source.url)
+            source: locator(for: source.url, existing: records[source.assetID.description]?.source)
         )
         do {
             try persist()
@@ -336,6 +340,8 @@ actor EditDocumentStore {
                 try oldData.write(to: backupURL, options: .atomic)
             }
             try data.write(to: fileURL, options: .atomic)
+            writeCount += 1
+            bytesWritten += data.count
         } catch {
             throw StoreError.cannotWrite(error.localizedDescription)
         }
@@ -350,6 +356,16 @@ actor EditDocumentStore {
             relativeTo: nil
         )) ?? (try? url.bookmarkData())
         return SourceLocator(path: canonical.path, fileName: canonical.lastPathComponent, bookmarkData: bookmark)
+    }
+
+    /// Bookmark creation can be surprisingly expensive and is unnecessary when a source path has
+    /// not changed. Keep the old locator for pointer-event checkpoints; a move or a newly supplied
+    /// URL still gets a fresh canonical path/bookmark.
+    private func locator(for url: URL?, existing: SourceLocator?) -> SourceLocator {
+        guard let url else { return existing ?? makeLocator(for: nil) }
+        let canonicalPath = url.standardizedFileURL.resolvingSymlinksInPath().path
+        if let existing, existing.path == canonicalPath { return existing }
+        return makeLocator(for: url)
     }
 
     private func matches(_ locator: SourceLocator, url: URL) -> Bool {
