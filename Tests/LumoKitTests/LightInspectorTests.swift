@@ -175,6 +175,26 @@ final class LightInspectorTests: TempDirectoryTestCase {
                        "a drag must not invert the tone curve past its upper neighbor")
     }
 
+    func testCurveDragPublishesAnIntermediatePreviewBeforeRelease() async throws {
+        let image = try Fixtures.writeGradientPNG(
+            width: 16, height: 12, named: "curve-drag.png", in: tempDirectory
+        )
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        viewModel.openImage(url: image)
+        try await waitUntil { viewModel.previewSurface.image != nil }
+        let initialSurfaceRevision = viewModel.previewSurface.revision
+
+        viewModel.beginPreviewInteraction()
+        viewModel.moveToneCurvePoint(fromInput: 0.5, input: 0.5, output: 0.8)
+
+        try await waitUntil {
+            viewModel.previewSurface.revision > initialSurfaceRevision
+        }
+        XCTAssertEqual(viewModel.document.light.toneCurve.value(at: 0.5), 0.8, accuracy: 0.000_001)
+
+        viewModel.endPreviewInteraction()
+    }
+
     private func waitUntil(
         timeout: TimeInterval = 2,
         _ condition: @escaping @MainActor () -> Bool

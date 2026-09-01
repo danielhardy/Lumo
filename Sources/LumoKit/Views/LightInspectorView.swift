@@ -196,16 +196,17 @@ private struct ToneCurveEditor: View {
     }
 
     private func pointHandle(_ point: LightCurvePoint, size: CGSize) -> some View {
-        Button(action: {}) {
-            Circle()
-                .fill(Color.accentColor)
-                .overlay(Circle().stroke(.white, lineWidth: 1))
-                .frame(width: 12, height: 12)
-                .shadow(radius: 1)
-        }
-        .buttonStyle(.plain)
+        // This is deliberately not a `Button`: AppKit's button recognizer owns the mouse-down
+        // until its primary action resolves on mouse-up. That can leave a handle drag dependent
+        // on the release path instead of publishing its changing location immediately.
+        Circle()
+            .fill(Color.accentColor)
+            .overlay(Circle().stroke(.white, lineWidth: 1))
+            .frame(width: 12, height: 12)
+            .shadow(radius: 1)
+            .contentShape(Circle())
         .position(position(for: point, in: size))
-        .gesture(
+        .highPriorityGesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
                     if draggingInput == nil {
@@ -228,6 +229,7 @@ private struct ToneCurveEditor: View {
                 .onEnded { _ in removePoint(point) }
         )
         .focusable()
+        .accessibilityAddTraits(.isButton)
         .accessibilityLabel("Tone curve point")
         .accessibilityValue(String(format: "Input %.2f, output %.2f", point.input, point.output))
         .accessibilityHint("Drag or use adjustment keys to change this point")

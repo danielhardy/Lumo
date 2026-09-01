@@ -56,8 +56,18 @@ enum RenderScale: Sendable, Equatable {
         switch self {
         case .full:
             return 1.0
-        case .preview(let maxSize), .interactive(let maxSize, _):
+        case .preview(let maxSize):
             guard nativeExtent.width > 0, nativeExtent.height > 0,
+                  nativeExtent.width.isFinite, nativeExtent.height.isFinite,
+                  maxSize.width > 0, maxSize.height > 0
+            else { return 1.0 }
+            return min(maxSize.width / nativeExtent.width, maxSize.height / nativeExtent.height, 1.0)
+        case .interactive:
+            // `targetSize` applies the interactive pixel budget. Using the unbounded drawable
+            // size here made the cap advisory only: RAW development still ran at the full backing
+            // resolution, so a rapid curve drag could fill the presentation queue.
+            guard let maxSize = targetSize,
+                  nativeExtent.width > 0, nativeExtent.height > 0,
                   nativeExtent.width.isFinite, nativeExtent.height.isFinite,
                   maxSize.width > 0, maxSize.height > 0
             else { return 1.0 }

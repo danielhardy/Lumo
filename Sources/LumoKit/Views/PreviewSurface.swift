@@ -115,10 +115,18 @@ struct PreviewSurfaceView: NSViewRepresentable {
         let device: MTLDevice = RenderEngine.presentationDevice
         let commandQueue: MTLCommandQueue = RenderEngine.presentationDevice.makeCommandQueue()!
         weak var surface: PreviewSurface?
+        weak var view: MTKView?
         private var lastDrawnRevision: UInt64?
         private var lastDrawableSize: (width: Int, height: Int)?
+        /// `makeCIImage` builds a lazy Core Image graph, so its completion is not the same thing
+        /// as its GPU work finishing. Keep one drawable submission in flight and redraw only the
+        /// newest surface state when it completes; otherwise a drag queues old curve revisions
+        /// faster than the GPU can present them.
+        private var isDrawing = false
 
         func draw(in view: MTKView) {
+            self.view = view
+            guard !isDrawing else { return }
             guard let surface, let image = surface.image,
                   let drawable = view.currentDrawable,
                   let commandBuffer = commandQueue.makeCommandBuffer()
@@ -157,6 +165,8 @@ struct PreviewSurfaceView: NSViewRepresentable {
                 color: CIColor(red: 0.07, green: 0.07, blue: 0.08, alpha: 1)
             ).cropped(to: destination)
             let output = fitted.composited(over: background)
+            let presentationRevision = surface.pendingPresentationRevision()
+            isDrawing = true
             context.render(output, to: drawable.texture, commandBuffer: commandBuffer,
                            bounds: destination, colorSpace: surface.space.cgColorSpace)
 
@@ -164,14 +174,19 @@ struct PreviewSurfaceView: NSViewRepresentable {
             // drawable is on us. The drawable is submitted only after the complete fitted frame is
             // encoded, so a new frame cannot expose Core Image's intermediate tiles.
             commandBuffer.present(drawable)
-            if let revision = surface.pendingPresentationRevision() {
-                commandBuffer.addCompletedHandler { [weak surface] commandBuffer in
+            commandBuffer.addCompletedHandler { [weak self, weak surface] commandBuffer in
+                if let revision = presentationRevision {
                     let gpuCompletion = commandBuffer.gpuEndTime > 0
                         ? commandBuffer.gpuEndTime : LiveEditTelemetryClock.now
                     Task { @MainActor in
                         surface?.markGPUCompletion(revision: revision, time: gpuCompletion)
+                        self?.drawingFinished()
                     }
+                } else {
+                    Task { @MainActor in self?.drawingFinished() }
                 }
+            }
+            if let revision = presentationRevision {
                 drawable.addPresentedHandler { [weak surface] drawable in
                     let presentationTime = drawable.presentedTime
                     Task { @MainActor in
@@ -180,11 +195,18 @@ struct PreviewSurfaceView: NSViewRepresentable {
                 }
             }
             commandBuffer.commit()
-            if let revision = surface.pendingPresentationRevision() {
+            if let revision = presentationRevision {
                 surface.markPresentationSubmitted(revision: revision)
             }
             lastDrawnRevision = surface.revision
             lastDrawableSize = drawableSize
+        }
+
+        private func drawingFinished() {
+            isDrawing = false
+            // The surface may have advanced while this buffer evaluated. One redraw now consumes
+            // that latest revision rather than replaying every superseded pointer update.
+            if let view { view.setNeedsDisplay(view.bounds) }
         }
 
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {

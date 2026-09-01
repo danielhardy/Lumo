@@ -112,6 +112,18 @@ final class ImageSourceTests: TempDirectoryTestCase {
         XCTAssertLessThanOrEqual(target.height, drawable.height)
     }
 
+    func testInteractiveFactorUsesItsPixelBudgetForA60MPSource() {
+        let source = CGSize(width: 9_504, height: 6_336)
+        let scale = RenderScale.interactive(maxSize: CGSize(width: 2_400, height: 1_600))
+        let factor = scale.factor(for: source)
+        let renderedPixels = source.width * factor * source.height * factor
+
+        XCTAssertLessThanOrEqual(renderedPixels, 1_500_001,
+                                 "interactive RAW development must honor its pixel budget")
+        XCTAssertLessThan(factor, 2_400 / source.width,
+                          "the interactive tier must be smaller than the full drawable when capped")
+    }
+
     /// Degenerate inputs return 1.0 rather than 0 or NaN. A zero scale reaches `Int(width)` as a
     /// zero-sized raster; a NaN one traps there. Both are the caller's extent check to reject, not
     /// this function's to produce.
