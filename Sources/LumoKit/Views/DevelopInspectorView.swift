@@ -8,13 +8,14 @@ import SwiftUI
 /// limitation from a control that is missing from the product, without being offered a control that
 /// the decoder would silently ignore.
 ///
-/// **Three states, and the middle one is why this switches on `developPanelState`.** This used to be
+/// **Four states, and the middle two are why this switches on `developPanelState`.** This used to be
 /// `if let capabilities = viewModel.rawCapabilities { … } else { notRAW }`, which read the probe's
 /// in-flight `nil` as "this file has no develop stage" and said exactly that, out loud, about a RAW —
 /// for the 25–170 ms the probe takes, on every ←/→ step through a folder of them, since
-/// The active tab is repaired when a new source makes Develop unavailable. The distinction is drawn in the view model
-/// (`AppViewModel.DevelopPanelState`) rather than here: this repo has no SwiftUI view tests, so a
-/// state that exists only inside a `ViewBuilder` cannot be asserted.
+/// `inspectorTab` was not reset on open. The active tab is now repaired when a new source makes
+/// Develop unavailable. The distinction is drawn in the view model (`AppViewModel.DevelopPanelState`)
+/// rather than here: this repo has no SwiftUI view tests, so a state that exists only inside a
+/// `ViewBuilder` cannot be asserted.
 struct DevelopInspectorView: View {
     @ObservedObject var viewModel: AppViewModel
 
