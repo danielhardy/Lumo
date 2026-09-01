@@ -255,7 +255,15 @@ public final class AppViewModel: ObservableObject {
     var isComparisonAvailable: Bool { document.hasVisibleLookEdits }
 
     @Published var isShowingOriginal: Bool = false
-    @Published var isSideBySide: Bool = true
+    /// The user's preferred comparison presentation. This is a display preference rather than
+    /// per-photo edit state, so changing photos does not reset it and a new view model can restore
+    /// it from `UserDefaults`.
+    @Published var isSideBySide: Bool = false {
+        didSet {
+            guard isSideBySide != oldValue else { return }
+            preferences.set(isSideBySide, forKey: Self.comparisonModeKey)
+        }
+    }
     var isSideBySideVisible: Bool { isSideBySide && isComparisonAvailable }
 
     /// The visible render is owned by these surfaces, not published image values on this model.
@@ -414,6 +422,7 @@ public final class AppViewModel: ObservableObject {
     /// The renderer. An `any RenderEngining` rather than the concrete actor so a test can drive the
     /// preview flow without a GPU — the reason Step 4 introduced the protocol.
     private let engine: any RenderEngining
+    private let preferences: UserDefaults
     private let previewCoordinator: PreviewCoordinator
     private var loadTask: Task<Void, Never>?
     private var metadataTask: Task<Void, Never>?
@@ -429,17 +438,26 @@ public final class AppViewModel: ObservableObject {
 
     init(
         engine: any RenderEngining = RenderEngine.shared,
-        editStore: EditDocumentStore = EditDocumentStore()
+        editStore: EditDocumentStore = EditDocumentStore(),
+        preferences: UserDefaults = .standard
     ) {
         var interval = LumoSignpostInterval(.launch, context: .unknown)
         defer { interval.end() }
 
         self.engine = engine
+        self.preferences = preferences
         self.editStore = editStore
         self.workScheduler = ImageWorkScheduler()
         self.collection = ImageCollection(scheduler: workScheduler)
         self.export = ExportCoordinator(engine: engine)
         self.previewCoordinator = PreviewCoordinator(engine: engine)
+
+        // A missing value is the first-launch state: single-photo editing is the primary surface.
+        // Read this after all stored properties are initialized because the published property's
+        // observer persists later user changes through `preferences`.
+        if let storedMode = preferences.object(forKey: Self.comparisonModeKey) as? Bool {
+            self.isSideBySide = storedMode
+        }
 
         // A Core Image graph is lazy: a publication can be accepted while its drawable command
         // buffer is still able to fail. Keep the previous surface image in that case and surface a
@@ -488,6 +506,8 @@ public final class AppViewModel: ObservableObject {
             openFirstImageWhenScanned()
         }
     }
+
+    private static let comparisonModeKey = "Lumo.editor.comparisonMode.sideBySide"
 
     /// Point the coordinators' status/error output at this view model, which
     /// owns the status bar and the alert. They report *what* happened; deciding
@@ -644,6 +664,9 @@ public final class AppViewModel: ObservableObject {
         sourceURL = nil
         sourceSize = .zero
         isPreviewInteractionActive = false
+        // Space comparison is transient and belongs to the source being left. The user's
+        // single-vs-side-by-side preference intentionally remains intact across photo switches.
+        isShowingOriginal = false
         loadTask?.cancel()
         metadataTask?.cancel()
         metadata = ImageMetadata()
@@ -1557,24 +1580,28 @@ public final class AppViewModel: ObservableObject {
     }
 
     /// Toggle between original and LUT preview (for Space-hold comparison).
-    func showOriginal(_ show: Bool) {
+    @discardableResult
+    func showOriginal(_ show: Bool) -> Bool {
         guard !show || isComparisonAvailable else {
             if isShowingOriginal {
                 isShowingOriginal = false
                 schedulePreview()
             }
-            return
+            return false
         }
-        guard show != isShowingOriginal else { return }
+        guard show != isShowingOriginal else { return true }
         isShowingOriginal = show
         displayRevision &+= 1
         cancelHistogram(clear: false)
         schedulePreview()
+        return true
     }
 
-    func toggleSideBySide() {
-        guard isComparisonAvailable else { return }
+    @discardableResult
+    func toggleSideBySide() -> Bool {
+        guard isComparisonAvailable else { return false }
         isSideBySide.toggle()
+        return true
     }
 
     // MARK: - Info inspector (EXIF + histogram)

@@ -93,5 +93,9 @@ final class KeyMonitorTests: XCTestCase {
         XCTAssertTrue(KeyMonitorPolicy.hasSystemModifier(.option))
         XCTAssertTrue(KeyMonitorPolicy.hasSystemModifier(.control))
         XCTAssertTrue(KeyMonitorPolicy.hasSystemModifier(.command))
+
+        XCTAssertTrue(KeyMonitorPolicy.isPlainCharacterShortcut(modifiers: []))
+        XCTAssertFalse(KeyMonitorPolicy.isPlainCharacterShortcut(modifiers: .shift))
+        XCTAssertFalse(KeyMonitorPolicy.isPlainCharacterShortcut(modifiers: .command))
     }
 }

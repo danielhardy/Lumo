@@ -201,17 +201,23 @@ public struct ContentView: View {
 
         Divider()
 
-        // Side-by-side toggle
-        Button {
-            viewModel.toggleSideBySide()
-        } label: {
-            Label(
-                viewModel.isSideBySideVisible ? "Single View" : "Side by Side",
-                systemImage: viewModel.isSideBySideVisible ? "rectangle" : "rectangle.split.2x1"
-            )
+        // Side-by-side is only meaningful when the LUMO-047 comparison gate has something to show.
+        // Removing the control in the unsupported state keeps every visible view affordance
+        // actionable and keeps its label aligned with the rendered mode.
+        if viewModel.isComparisonAvailable {
+            Button {
+                viewModel.toggleSideBySide()
+            } label: {
+                Label(
+                    viewModel.isSideBySide ? "Single View" : "Side by Side",
+                    systemImage: viewModel.isSideBySide ? "rectangle" : "rectangle.split.2x1"
+                )
+            }
+            .accessibilityLabel("Comparison view")
+            .accessibilityValue(viewModel.isSideBySide ? "Side by side" : "Single photo")
+            .accessibilityHint("Switch comparison view (V)")
+            .help("Switch between single-photo and side-by-side comparison (V)")
         }
-        .help("Toggle side-by-side comparison (V)")
-        .disabled(!viewModel.isComparisonAvailable)
 
         // Canvas navigation is presentation-only; these controls never touch the edit document.
         Menu {

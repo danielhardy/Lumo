@@ -55,6 +55,12 @@ enum KeyMonitorPolicy {
         let system = modifiers.intersection(.deviceIndependentFlagsMask)
         return system.contains(.command) || system.contains(.option) || system.contains(.control)
     }
+
+    /// Character shortcuts are deliberately plain-key gestures. Shift/Command/Option/Control
+    /// combinations belong to the system or the focused control and must reach AppKit unchanged.
+    static func isPlainCharacterShortcut(modifiers: NSEvent.ModifierFlags) -> Bool {
+        modifiers.intersection(.deviceIndependentFlagsMask).isEmpty && !modifiers.contains(.shift)
+    }
 }
 
 /// Owns an NSEvent local monitor for the lifetime of the main content view.
@@ -150,7 +156,10 @@ final class KeyMonitor {
         switch event.keyCode {
         case 49:  // Space — hold to compare original
             guard KeyMonitorPolicy.isPlainSpace(modifiers: mods) else { return event }
-            vm.showOriginal(isDown)
+            // A one-off or untouched photo has no meaningful before/after surface. Let Space
+            // continue through in that state instead of consuming a key that did nothing.
+            guard vm.isComparisonAvailable else { return event }
+            _ = vm.showOriginal(isDown)
             return nil
         case 126: // Up arrow — previous Look
             if isDown { vm.selectPreviousLook() }
@@ -218,8 +227,8 @@ final class KeyMonitor {
             if vm.navigate(to: .edit) { return nil }
             return event
         case "v":
-            vm.toggleSideBySide()
-            return nil
+            guard KeyMonitorPolicy.isPlainCharacterShortcut(modifiers: mods) else { return event }
+            return vm.toggleSideBySide() ? nil : event
         case "[":
             guard vm.collection.isActive else { return event }
             if vm.navigation.isGrid {
