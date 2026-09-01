@@ -188,6 +188,32 @@ final class AppViewModelTests: TempDirectoryTestCase {
                        "the registry has to cover the save the rescan cannot see")
     }
 
+    func testARescanReplacesARegisteredSavedCubeAtTheSamePath() async throws {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        viewModel.library.setFolder(tempDirectory)
+        while viewModel.library.isScanning { try await Task.sleep(for: .milliseconds(10)) }
+
+        _ = try deriveAndSelect(on: viewModel)
+        let destination = tempDirectory.appendingPathComponent("Keeper.cube")
+        try viewModel.derive.performSave(to: destination)
+        viewModel.derive.onSaved?(destination)
+        while viewModel.library.isScanning { try await Task.sleep(for: .milliseconds(10)) }
+
+        let oldContents = try XCTUnwrap(viewModel.selectedLUT?.tableFloats)
+        try CubeLUT.write(
+            cube: TestImages.toBlackCube(size: 2), size: 2, title: "Keeper", to: destination
+        )
+        viewModel.library.scan(tempDirectory)
+        while viewModel.library.isScanning { try await Task.sleep(for: .milliseconds(10)) }
+
+        let newContents = try XCTUnwrap(viewModel.selectedLUT?.tableFloats)
+        XCTAssertNotEqual(oldContents, newContents,
+                          "a rescanned file must replace the registry's earlier saved value")
+        XCTAssertEqual(newContents[0], 0)
+        XCTAssertEqual(newContents[1], 0)
+        XCTAssertEqual(newContents[2], 0)
+    }
+
     /// Re-pointing has to reach the screen.
     ///
     /// The saved file is the `%.6f`-rounded copy of the in-memory cube, so the moment the document
@@ -246,6 +272,41 @@ final class AppViewModelTests: TempDirectoryTestCase {
             if Date() > deadline { return XCTFail("a failed scan did not invalidate the LUT cache") }
             try await Task.sleep(for: .milliseconds(10))
         }
+    }
+
+    func testACompletedScanReResolvesTheOpenDocumentAndReportsMissingLUTsOnce() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        viewModel.openImage(url: try Fixtures.writeGradientPNG(
+            width: 8, height: 8, named: "source.png", in: tempDirectory
+        ))
+        let opened = Date().addingTimeInterval(2)
+        while viewModel.sourceImage == nil {
+            if Date() > opened { return XCTFail("the image never opened") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let missing = LUTID(raw: tempDirectory.appendingPathComponent("Gone.cube").path)
+        viewModel.updateDocument { $0.lut.lutID = missing }
+        XCTAssertEqual(viewModel.lutResolutionStatus,
+                       "LUT “Gone.cube” is unavailable; the stored reference was kept.")
+        let requestsBeforeRescan = await fake.previewRequests.count
+
+        let url = try Fixtures.writeCube(
+            Fixtures.identityCubeText(size: 2), named: "Gone.cube", in: tempDirectory
+        )
+        viewModel.library.setFolder(tempDirectory)
+        while viewModel.library.isScanning { try await Task.sleep(for: .milliseconds(10)) }
+
+        XCTAssertEqual(viewModel.document.lut.lutID, LUTID(raw: url.path),
+                       "resolving a missing LUT must not rewrite its stored reference")
+        XCTAssertNil(viewModel.lutResolutionStatus)
+        let deadline = Date().addingTimeInterval(2)
+        while await fake.previewRequests.count <= requestsBeforeRescan {
+            if Date() > deadline { return XCTFail("the scan did not trigger a resolved preview") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(viewModel.selectedLUT?.id, url.path)
     }
 
     /// Saving one derive must not re-point a document that is showing a *different* LUT. The user

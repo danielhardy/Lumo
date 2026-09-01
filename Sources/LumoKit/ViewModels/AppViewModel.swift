@@ -128,6 +128,10 @@ final class AppViewModel: ObservableObject {
     /// **Shim.** Reads through to the document so the toolbar slider keeps working unchanged.
     var lutIntensity: Double { document.lut.intensity }
 
+    /// A missing LUT never prevents the source image from rendering. Keep the warning separate from
+    /// the transient image status so the stored `LUTID` remains visible to callers and recoverable.
+    @Published private(set) var lutResolutionStatus: String?
+
     /// Whether the A/B comparison — the split view and the Space-hold — has anything to show.
     ///
     /// **Not `selectedLUT != nil`**, which is what this was until Step 10b. That was defensible while
@@ -307,8 +311,20 @@ final class AppViewModel: ObservableObject {
         // than go on serving the old cube. Wired here, before `restoreFolder()` runs below, so the
         // launch scan is covered too.
         library.onScanned = { [weak self] in
-            guard let engine = self?.engine else { return }
-            Task { await engine.invalidateLUTCache() }
+            guard let self else { return }
+            self.refreshLUTResolutionStatus()
+            guard self.sourceImage != nil else {
+                Task { await self.engine.invalidateLUTCache() }
+                return
+            }
+            // A render submitted before the asynchronous scan may have been safely ungraded. Flush
+            // first, then submit again, so an old cached cube cannot win the race with publication.
+            let engine = self.engine
+            Task { [weak self] in
+                await engine.invalidateLUTCache()
+                guard let self, self.sourceImage != nil else { return }
+                self.schedulePreview()
+            }
         }
 
         export.onStatus = { [weak self] in self?.statusMessage = $0 }
@@ -399,6 +415,9 @@ final class AppViewModel: ObservableObject {
         let session = editSessions[assetID] ?? PhotoEditSession()
         document = session.document
         activeHistory = session.history
+        lastReportedMissingLUT = nil
+        lutResolutionStatus = nil
+        refreshLUTResolutionStatus()
 
         sourceRevision &+= 1
         previewCoordinator.cancel()
@@ -634,6 +653,7 @@ final class AppViewModel: ObservableObject {
         if let lut, lut.lutID.isDerived { derivedRegistry.register(lut) }
         endUndoGrouping()
         updateDocument { $0.lut.lutID = lut?.lutID }
+        refreshLUTResolutionStatus()
     }
 
     /// Mutate the document and re-render.
@@ -667,6 +687,7 @@ final class AppViewModel: ObservableObject {
         let developChanged = updated.rawDevelop != document.rawDevelop
         activeHistory.recordChange(from: document, to: updated)
         document = updated
+        refreshLUTResolutionStatus()
         saveActiveDocument()
         documentRevision &+= 1
         // A supporting baseline from the previous state is no longer useful once the document
@@ -690,17 +711,38 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Resolve a document's LUT reference: the registry first, then the library. A miss returns
-    /// `nil`, and the render simply comes out ungraded — see `RenderPipeline.buildImage`.
-    ///
-    /// Registry first because it is the narrower answer. Its only entries are derived LUTs and the
-    /// files they were saved to, so a hit there is always the more specific one; for a saved LUT the
-    /// library holds an identical value under the same ID, and `CubeLUT` compares by ID, so which
-    /// copy wins is not observable.
+    /// Resolve a document's LUT reference: prefer the latest library scan, then the in-memory
+    /// registry. The library must win for file-backed IDs: the registry retains saved derived LUTs
+    /// so they work outside the library folder, but must not mask a replacement found by a scan.
     private func resolvedLUT(_ id: LUTID?) -> CubeLUT? {
         guard let id else { return nil }
-        if let registered = derivedRegistry.lut(for: id) { return registered }
-        return library.allLUTs.first(matching: id)
+        if let scanned = library.allLUTs.first(matching: id) { return scanned }
+        return derivedRegistry.lut(for: id)
+    }
+
+    /// Report one missing-reference transition at a time. Waiting for scan completion avoids a false
+    /// warning while the library is still assembling, while the document retains the unresolved ID.
+    private var lastReportedMissingLUT: LUTID?
+
+    private func refreshLUTResolutionStatus() {
+        guard let id = document.lut.lutID else {
+            lastReportedMissingLUT = nil
+            lutResolutionStatus = nil
+            return
+        }
+        guard !library.isScanning else { return }
+        guard resolvedLUT(id) == nil else {
+            lastReportedMissingLUT = nil
+            lutResolutionStatus = nil
+            return
+        }
+        guard lastReportedMissingLUT != id else { return }
+
+        let name = id.isDerived ? "derived look" : URL(fileURLWithPath: id.raw).lastPathComponent
+        let message = "LUT “\(name)” is unavailable; the stored reference was kept."
+        lastReportedMissingLUT = id
+        lutResolutionStatus = message
+        statusMessage = message
     }
 
     func selectPreviousLUT() {
@@ -880,6 +922,7 @@ final class AppViewModel: ObservableObject {
     private func applyHistoryDocument(_ restored: EditDocument) {
         let developChanged = restored.rawDevelop != document.rawDevelop
         document = restored
+        refreshLUTResolutionStatus()
         saveActiveDocument()
         originalPreviewTask?.cancel()
         pendingDevelopChange = false

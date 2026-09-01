@@ -34,6 +34,17 @@ final class LUTIDTests: TempDirectoryTestCase {
         XCTAssertFalse(first.lutID.isDerived)
     }
 
+    func testFileIDUsesTheCanonicalPath() throws {
+        let folder = tempDirectory.appendingPathComponent("Looks")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = try Fixtures.writeCube(
+            Fixtures.identityCubeText(size: 2), named: "Canonical.cube", in: folder
+        )
+        let alternate = folder.appendingPathComponent(".").appendingPathComponent("Canonical.cube")
+
+        XCTAssertEqual(try CubeLUT(url: url).lutID, try CubeLUT(url: alternate).lutID)
+    }
+
     /// A LUT that exists only in memory gets a `derived://` ID, and that ID follows its **contents**.
     ///
     /// **Step 9 reversed this property, deliberately.** It used to be a `UUID`, so constructing the

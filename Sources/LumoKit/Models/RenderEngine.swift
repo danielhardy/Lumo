@@ -427,10 +427,13 @@ actor RenderEngine: RenderEngining {
 
     // MARK: - Cache
 
-    /// Drop every cached cube filter. For a library rescan: a `LUTID` is a file path, so a `.cube`
-    /// edited in place keeps its ID and would otherwise keep serving the old cube.
+    /// Drop every cached LUT-dependent render resource. For a library rescan: a `LUTID` is a file
+    /// path, so a `.cube` edited in place keeps its ID and would otherwise keep serving the old cube.
     func invalidateLUTCache() {
         lutCache.removeAll()
+        // A preview submitted while a scan was unresolved has no LUT fingerprint. Clear it too so
+        // the scan completion can safely publish a newly resolved render.
+        previewCache.removeAll()
     }
 
     /// Snapshot cache counters for instrumentation and performance diagnostics.

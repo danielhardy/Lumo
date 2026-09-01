@@ -64,11 +64,47 @@ struct LUTSettings: Codable, Sendable, Equatable {
     var lutID: LUTID?
     /// 0…1. Values outside that range are clamped where the LUT is applied
     /// (`CubeLUT.apply(to:intensity:)`), so a corrupt document cannot produce a nonsense render.
-    var intensity: Double = 1.0
+    var intensity: Double = 1.0 {
+        didSet { intensity = Self.normalizedIntensity(intensity) }
+    }
 
     /// No LUT. The starting state of every document.
     static let none = LUTSettings(lutID: nil, intensity: 1.0)
 
     /// True when this contributes nothing to the render — no LUT set, or a LUT at zero strength.
-    var isIdentity: Bool { lutID == nil || intensity <= 0 }
+    var isIdentity: Bool { lutID == nil || !intensity.isFinite || intensity <= 0 }
+
+    init(lutID: LUTID? = nil, intensity: Double = 1.0) {
+        self.lutID = lutID
+        // Keep malformed persisted values from escaping into the render graph. Non-finite strength
+        // is safest as off; ordinary out-of-range values are normalized at the document boundary.
+        self.intensity = Self.normalizedIntensity(intensity)
+    }
+
+    private static func normalizedIntensity(_ value: Double) -> Double {
+        guard value.isFinite else { return 0 }
+        return max(0, min(1, value))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case lutID, intensity
+    }
+
+    /// Decode each field independently. An older or hand-authored record that omits the optional
+    /// `lutID` must mean "no LUT" rather than fail the whole edit.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            lutID: try container.decodeIfPresent(LUTID.self, forKey: .lutID),
+            intensity: try container.decodeIfPresent(Double.self, forKey: .intensity) ?? 1.0
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        // Preserve the explicit null for None in the persisted shape while still accepting records
+        // from older writers that omitted the optional key entirely.
+        try container.encode(lutID, forKey: .lutID)
+        try container.encode(intensity, forKey: .intensity)
+    }
 }

@@ -336,6 +336,24 @@ final class RenderEngineTests: TempDirectoryTestCase {
         XCTAssertEqual(afterFlush, 0, "a rescan must be able to drop stale cubes")
     }
 
+    func testInvalidatingLUTsAlsoDropsAResolvedPreview() async throws {
+        let engine = RenderEngine()
+        let lut = TestImages.warmLUT()
+        let request = RenderRequest(
+            source: source, document: EditDocument(lut: LUTSettings(lutID: lut.lutID)),
+            lut: lut, targetSize: CGSize(width: 32, height: 32), quality: .preview
+        )
+
+        _ = try await engine.render(request)
+        let before = await engine.cacheStatistics()
+        XCTAssertEqual(before.preview.count, 1)
+
+        await engine.invalidateLUTCache()
+        let after = await engine.cacheStatistics()
+        XCTAssertEqual(after.preview.count, 0,
+                       "a LUT refresh must not leave an old final preview cached")
+    }
+
     /// The staleness the cache flush exists to prevent, asserted in **pixels** rather than in counts.
     ///
     /// A `LUTID` is a file path, so replacing a `.cube` in place gives a different cube under an

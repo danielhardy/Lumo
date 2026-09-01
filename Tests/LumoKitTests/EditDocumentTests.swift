@@ -185,6 +185,22 @@ final class EditDocumentTests: XCTestCase {
         XCTAssertEqual(LUTSettings.none.intensity, 1.0, "the default strength is full, not zero")
     }
 
+    func testLUTSettingsMissingIDAndInvalidIntensityAreSafe() throws {
+        let decoded = try JSONDecoder().decode(
+            LUTSettings.self,
+            from: Data("{\"intensity\": 0}".utf8)
+        )
+        XCTAssertNil(decoded.lutID)
+        XCTAssertTrue(decoded.isIdentity)
+
+        XCTAssertEqual(LUTSettings(lutID: LUTID(raw: "/a.cube"), intensity: -1).intensity, 0)
+        XCTAssertEqual(LUTSettings(lutID: LUTID(raw: "/a.cube"), intensity: 2).intensity, 1)
+        var mutated = LUTSettings(lutID: LUTID(raw: "/a.cube"))
+        mutated.intensity = .nan
+        XCTAssertEqual(mutated.intensity, 0)
+        XCTAssertTrue(mutated.isIdentity)
+    }
+
     func testDocumentIdentityTracksEveryComponent() {
         XCTAssertFalse(
             EditDocument(rawDevelop: RAWDevelopSettings(exposure: 0.5)).isIdentity,

@@ -51,7 +51,7 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
         let table = floats.withUnsafeBufferPointer { Data(buffer: $0) }
         self.tableData = table
         // The table has to be built before the ID, because the ID is made from it.
-        self.id = sourceURL?.path ?? Self.derivedID(name: name, table: table)
+        self.id = sourceURL.map(Self.canonicalPath) ?? Self.derivedID(name: name, table: table)
     }
 
     /// The identity of a LUT that exists only in memory: `derived://<name>/<hash of the table>`.
@@ -82,7 +82,7 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
 
     init(url: URL, category: String = "General") throws {
         self.url = url
-        self.id = url.path
+        self.id = Self.canonicalPath(url)
         self.category = category
 
         let rawName = url.deletingPathExtension().lastPathComponent
@@ -162,6 +162,10 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
         self.tableData = floats.withUnsafeBufferPointer { buffer in
             Data(buffer: buffer)
         }
+    }
+
+    private static func canonicalPath(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     // MARK: - Inspection
