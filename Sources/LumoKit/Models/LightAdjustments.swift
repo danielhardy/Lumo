@@ -64,9 +64,12 @@ struct LightToneCurve: Codable, Equatable, Sendable {
 
     /// Interpolate the curve at a normalized input.
     ///
-    /// Piecewise-linear interpolation is deliberate: unlike an unconstrained cubic spline it
-    /// cannot overshoot between monotonic control points. Inputs outside the normalized domain are
-    /// clamped, and a non-finite input is treated as zero so callers always receive a finite result.
+    /// This is a piecewise cubic Hermite interpolation with PCHIP-style slopes. It is C1 smooth at
+    /// interior control points, preserves every control-point value, and does not overshoot between
+    /// monotonic control points. Keeping the interpolation here is important: the graph and the
+    /// renderer both sample this value function, so they cannot drift into showing and exporting
+    /// different transfer functions. Inputs outside the normalized domain are clamped, and a
+    /// non-finite input is treated as zero so callers always receive a finite result.
     func value(at input: Double) -> Double {
         let x = input.isFinite ? min(max(input, 0), 1) : 0
         guard let upperIndex = points.firstIndex(where: { $0.input >= x }) else {
@@ -78,8 +81,74 @@ struct LightToneCurve: Codable, Equatable, Sendable {
         let upper = points[upperIndex]
         let span = upper.input - lower.input
         guard span > 0 else { return upper.output }
+        if x == upper.input { return upper.output }
+
         let fraction = (x - lower.input) / span
-        return lower.output + (upper.output - lower.output) * fraction
+        let leftSlope = Self.slope(at: upperIndex - 1, points: points)
+        let rightSlope = Self.slope(at: upperIndex, points: points)
+        let t = fraction
+        let t2 = t * t
+        let t3 = t2 * t
+        let h00 = 2 * t3 - 3 * t2 + 1
+        let h10 = t3 - 2 * t2 + t
+        let h01 = -2 * t3 + 3 * t2
+        let h11 = t3 - t2
+        let interpolated = h00 * lower.output + h10 * span * leftSlope
+            + h01 * upper.output + h11 * span * rightSlope
+
+        // PCHIP's slope limiter guarantees this mathematically. The final clamp also protects
+        // against a tiny floating-point excursion, which matters when a sampled texture is used
+        // to evaluate a monotonic curve on the GPU.
+        return min(max(interpolated, min(lower.output, upper.output)),
+                   max(lower.output, upper.output))
+    }
+
+    private static func slope(at index: Int, points: [LightCurvePoint]) -> Double {
+        guard points.count > 1 else { return 0 }
+        if index == 0 {
+            let firstSpan = points[1].input - points[0].input
+            let secondSpan = points.count > 2 ? points[2].input - points[1].input : firstSpan
+            let firstDelta = (points[1].output - points[0].output) / firstSpan
+            guard points.count > 2 else { return firstDelta }
+            let secondDelta = (points[2].output - points[1].output) / secondSpan
+            return endpointSlope(firstSpan, secondSpan, firstDelta, secondDelta)
+        }
+        if index == points.count - 1 {
+            let lastSpan = points[index].input - points[index - 1].input
+            let lastDelta = (points[index].output - points[index - 1].output) / lastSpan
+            guard points.count > 2 else { return lastDelta }
+            let previousSpan = points[index - 1].input - points[index - 2].input
+            let previousDelta = (points[index - 1].output - points[index - 2].output) / previousSpan
+            return endpointSlope(lastSpan, previousSpan, lastDelta, previousDelta)
+        }
+
+        let previousSpan = points[index].input - points[index - 1].input
+        let nextSpan = points[index + 1].input - points[index].input
+        let previousDelta = (points[index].output - points[index - 1].output) / previousSpan
+        let nextDelta = (points[index + 1].output - points[index].output) / nextSpan
+        guard previousDelta != 0, nextDelta != 0,
+              (previousDelta < 0) == (nextDelta < 0) else { return 0 }
+
+        let weightPrevious = 2 * nextSpan + previousSpan
+        let weightNext = nextSpan + 2 * previousSpan
+        return (weightPrevious + weightNext) /
+            (weightPrevious / previousDelta + weightNext / nextDelta)
+    }
+
+    private static func endpointSlope(
+        _ endpointSpan: Double,
+        _ adjacentSpan: Double,
+        _ endpointDelta: Double,
+        _ adjacentDelta: Double
+    ) -> Double {
+        let slope = ((2 * endpointSpan + adjacentSpan) * endpointDelta
+            - endpointSpan * adjacentDelta) / (endpointSpan + adjacentSpan)
+        guard slope != 0 else { return 0 }
+        guard (slope < 0) == (endpointDelta < 0) else { return 0 }
+        if (endpointDelta < 0) != (adjacentDelta < 0), abs(slope) > 3 * abs(endpointDelta) {
+            return 3 * endpointDelta
+        }
+        return slope
     }
 
     /// Return a curve with an interior point sampled from the current transfer function.

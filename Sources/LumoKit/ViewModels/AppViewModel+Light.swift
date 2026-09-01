@@ -62,23 +62,32 @@ extension AppViewModel {
         }
     }
 
-    func moveToneCurvePoint(fromInput: Double, input: Double, output: Double) {
+    @discardableResult
+    func moveToneCurvePoint(fromInput: Double, input: Double, output: Double) -> Double? {
         let points = document.light.toneCurve.points
         guard let point = points.dropFirst().dropLast().min(by: {
             abs($0.input - fromInput) < abs($1.input - fromInput)
         }) else {
             addToneCurvePoint(input: input, output: output)
-            return
+            return min(max(input, 0.001), 0.999)
         }
 
         let index = points.firstIndex(of: point)!
         let lower = points[index - 1].input + 0.001
         let upper = points[index + 1].input - 0.001
+        let constrainedInput = min(max(input, lower), upper)
+        let constrainedOutput: Double
+        if document.light.toneCurve.isMonotonic {
+            constrainedOutput = min(max(output, points[index - 1].output), points[index + 1].output)
+        } else {
+            constrainedOutput = output
+        }
         setToneCurvePoint(
             point,
-            input: min(max(input, lower), upper),
-            output: output
+            input: constrainedInput,
+            output: constrainedOutput
         )
+        return constrainedInput
     }
 
     /// Add a point to the master curve, keeping endpoint points and deterministic ordering intact.

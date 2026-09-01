@@ -128,7 +128,10 @@ private struct ToneCurveEditor: View {
                             SpatialTapGesture(count: 1)
                                 .onEnded { value in addPoint(at: value.location, in: size) }
                         )
-                    ForEach(editablePoints, id: \.input) { point in
+                    // Keep the handle view's identity tied to its slot, not its changing input.
+                    // Re-keying by input while a drag is in flight can tear down the gesture as
+                    // soon as the handle follows the pointer.
+                    ForEach(Array(editablePoints.enumerated()), id: \.offset) { _, point in
                         pointHandle(point, size: size)
                     }
                 }
@@ -211,8 +214,9 @@ private struct ToneCurveEditor: View {
                     let input = min(max(value.location.x / max(size.width, 1), 0.001), 0.999)
                     let output = min(max(1 - value.location.y / max(size.height, 1), 0), 1)
                     let sourceInput = draggingInput ?? point.input
-                    viewModel.moveToneCurvePoint(fromInput: sourceInput, input: input, output: output)
-                    draggingInput = input
+                    draggingInput = viewModel.moveToneCurvePoint(
+                        fromInput: sourceInput, input: input, output: output
+                    ) ?? input
                 }
                 .onEnded { _ in
                     draggingInput = nil

@@ -152,6 +152,29 @@ final class LightInspectorTests: TempDirectoryTestCase {
         XCTAssertFalse(viewModel.canUndo)
     }
 
+    func testCurveDragKeepsMonotonicControlPointsOrderedAndBounded() {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        viewModel.updateDocument {
+            $0.light.toneCurve = LightToneCurve(points: [
+                LightCurvePoint(input: 0.25, output: 0.25),
+                LightCurvePoint(input: 0.5, output: 0.5),
+                LightCurvePoint(input: 0.75, output: 0.75),
+            ])
+        }
+
+        viewModel.beginPreviewInteraction()
+        let actualInput = viewModel.moveToneCurvePoint(fromInput: 0.5, input: 0.99, output: 1)
+        viewModel.endPreviewInteraction()
+
+        XCTAssertNotNil(actualInput)
+        XCTAssertEqual(actualInput ?? -1, 0.749, accuracy: 0.000_001)
+        let points = viewModel.document.light.toneCurve.points
+        XCTAssertTrue(zip(points, points.dropFirst()).allSatisfy { $0.input < $1.input })
+        XCTAssertTrue(viewModel.document.light.toneCurve.isMonotonic)
+        XCTAssertEqual(points[2].output, 0.75, accuracy: 0.000_001,
+                       "a drag must not invert the tone curve past its upper neighbor")
+    }
+
     private func waitUntil(
         timeout: TimeInterval = 2,
         _ condition: @escaping @MainActor () -> Bool

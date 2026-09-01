@@ -87,6 +87,51 @@ final class LightAdjustmentsTests: XCTestCase {
         XCTAssertTrue(curve.isMonotonic)
     }
 
+    func testToneCurveUsesSmoothShapePreservingInterpolation() {
+        let curve = LightToneCurve(points: [
+            LightCurvePoint(input: 0.25, output: 0.2),
+            LightCurvePoint(input: 0.5, output: 0.8),
+        ])
+
+        // A straight segment would return 0.5 here. The smooth curve bends locally toward the
+        // moved middle control point while still passing through every control-point value.
+        XCTAssertEqual(curve.value(at: 0.25), 0.2, accuracy: 0.000_001)
+        XCTAssertEqual(curve.value(at: 0.5), 0.8, accuracy: 0.000_001)
+        XCTAssertGreaterThan(curve.value(at: 0.375), 0.505,
+                             "the moved handle should create a local smooth bend")
+        XCTAssertLessThan(curve.value(at: 0.375), 0.53)
+
+        let epsilon = 0.0001
+        let leftDerivative = (curve.value(at: 0.25) - curve.value(at: 0.25 - epsilon)) / epsilon
+        let rightDerivative = (curve.value(at: 0.25 + epsilon) - curve.value(at: 0.25)) / epsilon
+        XCTAssertEqual(leftDerivative, rightDerivative, accuracy: 0.01,
+                       "the interpolation should not introduce a visible kink at a handle")
+    }
+
+    func testToneCurveNeverOvershootsMonotonicControlPoints() {
+        let curve = LightToneCurve(points: [
+            LightCurvePoint(input: 0.11, output: 0.08),
+            LightCurvePoint(input: 0.42, output: 0.36),
+            LightCurvePoint(input: 0.77, output: 0.91),
+        ])
+        let values = (0...1_000).map { curve.value(at: Double($0) / 1_000) }
+
+        for index in 1..<values.count {
+            XCTAssertTrue(values[index].isFinite)
+            XCTAssertGreaterThanOrEqual(values[index], values[index - 1] - 0.000_001,
+                                        "a monotonic curve must not invert at sample \(index)")
+        }
+
+        for pair in zip(curve.points, curve.points.dropFirst()) {
+            let samples = (0...100).map {
+                let t = Double($0) / 100
+                return curve.value(at: pair.0.input + t * (pair.1.input - pair.0.input))
+            }
+            XCTAssertGreaterThanOrEqual(samples.min()!, min(pair.0.output, pair.1.output) - 0.000_001)
+            XCTAssertLessThanOrEqual(samples.max()!, max(pair.0.output, pair.1.output) + 0.000_001)
+        }
+    }
+
     func testToneCurveClickSamplesTheCurrentCurve() {
         let curve = LightToneCurve(points: [
             LightCurvePoint(input: 0.25, output: 0.1),

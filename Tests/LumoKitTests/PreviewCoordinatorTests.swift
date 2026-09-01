@@ -111,6 +111,43 @@ final class PreviewCoordinatorTests: XCTestCase {
         coordinator.endInteraction()
     }
 
+    func testInteractiveToneCurvePublishesBeforeGestureEnds() async throws {
+        let fake = FakeRenderEngine()
+        let coordinator = PreviewCoordinator(engine: fake, settleDelay: .seconds(10))
+        var publications: [PreviewCoordinator.Publication] = []
+        coordinator.onPublication = { publications.append($0) }
+        let source = makeSource()
+        let curve = LightToneCurve(points: [LightCurvePoint(input: 0.5, output: 0.8)])
+
+        coordinator.beginInteraction()
+        coordinator.submit(
+            RenderRequest(
+                source: source,
+                document: EditDocument(light: LightAdjustments(toneCurve: curve)),
+                targetSize: CGSize(width: 320, height: 240),
+                quality: .preview,
+                output: .raster
+            ),
+            phase: .interactive
+        )
+
+        try await waitUntil("the intermediate interactive publication") {
+            publications.count == 1
+        }
+        XCTAssertEqual(publications[0].phase, .interactive)
+        XCTAssertEqual(publications[0].request.quality, .interactive)
+        XCTAssertEqual(
+            publications[0].request.document.light.toneCurve.value(at: 0.5),
+            0.8,
+            accuracy: 0.000_001
+        )
+
+        coordinator.endInteraction()
+        try await waitUntil("the settled publication") { publications.count == 2 }
+        XCTAssertEqual(publications[1].phase, .settled)
+        XCTAssertEqual(publications[1].request.quality, .preview)
+    }
+
     /// Opt-in smoke benchmark for the pointer-to-pixel path using a 60 MP-class source extent.
     /// The fake renderer keeps this repeatable in CI; the Instruments recipe remains the source of
     /// truth for hardware measurements with a real RAW and GPU.
