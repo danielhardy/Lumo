@@ -6,6 +6,14 @@ import SwiftUI
 
 // MARK: - Commands
 
+/// The edit-transfer shortcuts deliberately include Option so they do not compete with AppKit's
+/// standard Command-C/Command-V actions when a text field owns the first responder.
+enum LumoEditTransferShortcuts {
+    static let modifiers: EventModifiers = [.command, .option]
+    static let copyKey: KeyEquivalent = "c"
+    static let pasteKey: KeyEquivalent = "v"
+}
+
 /// Lumo's File menu, replacing SwiftUI's default "New" group.
 ///
 /// One of two entry points LumoKit exposes to the executable (the other is
@@ -47,9 +55,15 @@ public struct LumoCommands: Commands {
             Divider()
 
             Button("Copy All Edits") { post(.copyAllEdits) }
-                .keyboardShortcut("c")
+                .keyboardShortcut(
+                    LumoEditTransferShortcuts.copyKey,
+                    modifiers: LumoEditTransferShortcuts.modifiers
+                )
             Button("Paste Edits") { post(.pasteEdits) }
-                .keyboardShortcut("v")
+                .keyboardShortcut(
+                    LumoEditTransferShortcuts.pasteKey,
+                    modifiers: LumoEditTransferShortcuts.modifiers
+                )
 
             Divider()
 

@@ -205,7 +205,7 @@ public struct ContentView: View {
         } label: {
             Label("Copy Edits", systemImage: "doc.on.doc")
         }
-        .help("Copy all edits from the active photo (⌘C)")
+        .help("Copy all edits from the active photo (⌘⌥C)")
         .disabled(viewModel.sourceImage == nil)
 
         Button {
@@ -213,7 +213,7 @@ public struct ContentView: View {
         } label: {
             Label("Paste Edits", systemImage: "doc.on.clipboard")
         }
-        .help("Paste edits to the active photo or current selection (⌘V)")
+        .help("Paste edits to the active photo or current selection (⌘⌥V)")
         .disabled(!viewModel.canPasteEdits)
 
         Divider()

@@ -192,6 +192,8 @@ rescanned.
 | `⌘R` | Re-scan the source folder |
 | `⌘⇧L` | Choose LUT folder |
 | `⌘D` | Derive LUT from JPG |
+| `⌘⌥C` | Copy all edits |
+| `⌘⌥V` | Paste edits |
 | `⌘S` | Export |
 | `⌘⇧E` | Export all |
 
