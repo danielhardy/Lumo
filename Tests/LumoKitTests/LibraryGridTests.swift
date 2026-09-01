@@ -48,17 +48,16 @@ final class LibraryGridTests: TempDirectoryTestCase {
         let cache = LibraryMosaicLayoutCache()
         let layout = LibraryGridLayout()
         let fallback = [4.0 / 3.0, 4.0 / 3.0, 4.0 / 3.0]
+        let itemIDs = fallback.indices.map { _ in PhotoAssetID.imported(UUID()) }
 
         let initial = cache.rows(
-            revision: 1,
-            itemCount: fallback.count,
+            itemIDs: itemIDs,
             width: 900,
             layout: layout,
             aspectRatioAt: { fallback[$0] }
         )
         let resolved = cache.rows(
-            revision: 1,
-            itemCount: fallback.count,
+            itemIDs: itemIDs,
             width: 900,
             layout: layout,
             aspectRatioAt: { $0 == 0 ? 1.0 / 3.0 : fallback[$0] }
@@ -66,6 +65,28 @@ final class LibraryGridTests: TempDirectoryTestCase {
 
         XCTAssertEqual(resolved, initial, "metadata must not move already-placed mosaic rows")
         XCTAssertEqual(cache.recomputeCount, 1, "a metadata update must not redo full-collection row math")
+    }
+
+    func testMosaicCacheRecomputesWhenOrderedItemIdentitiesChange() {
+        let cache = LibraryMosaicLayoutCache()
+        let layout = LibraryGridLayout()
+        let firstIDs = [PhotoAssetID.imported(UUID()), PhotoAssetID.imported(UUID())]
+        let secondIDs = [firstIDs[1], firstIDs[0]]
+
+        _ = cache.rows(
+            itemIDs: firstIDs,
+            width: 900,
+            layout: layout,
+            aspectRatioAt: { _ in 4.0 / 3.0 }
+        )
+        _ = cache.rows(
+            itemIDs: secondIDs,
+            width: 900,
+            layout: layout,
+            aspectRatioAt: { _ in 4.0 / 3.0 }
+        )
+
+        XCTAssertEqual(cache.recomputeCount, 2, "a changed item order must invalidate the mosaic")
     }
 
     func testDemandDrivenGridWaitsForMaterializedCellsBeforeDecoding() async throws {

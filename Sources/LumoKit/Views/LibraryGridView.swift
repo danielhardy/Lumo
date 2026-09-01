@@ -26,9 +26,9 @@ struct LibraryGridView: View {
                 } else {
                     ScrollView {
                         let indices = collection.filteredIndices
+                        let itemIDs = indices.map { collection.items[$0].id }
                         let rows = mosaicCache.rows(
-                            revision: collection.libraryLayoutRevision,
-                            itemCount: indices.count,
+                            itemIDs: itemIDs,
                             width: max(1, geometry.size.width - 32),
                             layout: layout,
                             aspectRatioAt: { offset in

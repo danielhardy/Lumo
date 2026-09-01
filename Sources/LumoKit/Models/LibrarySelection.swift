@@ -261,12 +261,12 @@ struct LibraryGridLayout: Sendable, Equatable {
 /// Metadata arrives after discovery and changes an item's aspect ratio from the photographic
 /// fallback to its real value. Rebuilding rows for that mutation would move every later item in
 /// the collection. The cache therefore treats geometry as a snapshot of the current collection
-/// structure: rows are rebuilt only when the structure or viewport width changes, and metadata
-/// updates reuse the already-placed rows. The row snapshot is still value data, so the lazy stack
-/// keeps virtualizing the hosted cells as before.
+/// structure: rows are rebuilt only when the ordered item identities or viewport width changes,
+/// and metadata updates reuse the already-placed rows. The row snapshot is still value data, so
+/// the lazy stack keeps virtualizing the hosted cells as before.
 @MainActor
 final class LibraryMosaicLayoutCache {
-    private var cachedRevision: UInt64?
+    private var cachedItemIDs: [PhotoAssetID]?
     private var cachedWidth: Double?
     private var cachedRows: [LibraryGridLayout.MosaicRow] = []
 
@@ -274,19 +274,18 @@ final class LibraryMosaicLayoutCache {
     private(set) var recomputeCount = 0
 
     func rows(
-        revision: UInt64,
-        itemCount: Int,
+        itemIDs: [PhotoAssetID],
         width: Double,
         layout: LibraryGridLayout,
         aspectRatioAt: (Int) -> Double
     ) -> [LibraryGridLayout.MosaicRow] {
-        guard cachedRevision != revision || cachedWidth != width else {
+        guard cachedItemIDs != itemIDs || cachedWidth != width else {
             return cachedRows
         }
 
-        let aspectRatios = (0..<max(0, itemCount)).map(aspectRatioAt)
+        let aspectRatios = itemIDs.indices.map(aspectRatioAt)
         cachedRows = layout.mosaicRows(aspectRatios: aspectRatios, width: width)
-        cachedRevision = revision
+        cachedItemIDs = itemIDs
         cachedWidth = width
         recomputeCount += 1
         return cachedRows

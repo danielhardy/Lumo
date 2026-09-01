@@ -98,10 +98,6 @@ final class ImageCollection: ObservableObject {
     @Published var isScanning: Bool = false
     @Published private(set) var scanWarnings: [ScanWarning] = []
     @Published private(set) var filter = LibraryFilter.all
-    /// Changes only when the ordered filtered collection changes, not when deferred metadata
-    /// updates an existing item. Library mosaic geometry uses this to avoid rebuilding rows for
-    /// each metadata arrival.
-    @Published private(set) var libraryLayoutRevision: UInt64 = 0
     /// The persistent source folder, if one is set (nil for Photos imports or
     /// one-off single-image opens).
     @Published var sourceFolderURL: URL?
@@ -193,7 +189,6 @@ final class ImageCollection: ObservableObject {
     func setFilter(_ filter: LibraryFilter) {
         guard self.filter != filter else { return }
         self.filter = filter
-        invalidateLibraryLayout()
         reconcileFilteredSelection()
     }
 
@@ -214,7 +209,6 @@ final class ImageCollection: ObservableObject {
         }
         recordCullingChange(itemID: itemID, oldState: oldState)
         items[index].asset.flag = flag
-        invalidateLibraryLayout()
         persistCullingState(for: items[index].asset)
         if shouldAdvance { advance(from: index) }
         if !filteredIndices.contains(selectedIndex) { reconcileFilteredSelection() }
@@ -231,7 +225,6 @@ final class ImageCollection: ObservableObject {
         guard oldState.rating != clamped else { return false }
         recordCullingChange(itemID: itemID, oldState: oldState)
         items[index].asset.rating = clamped
-        invalidateLibraryLayout()
         persistCullingState(for: items[index].asset)
         if !filteredIndices.contains(selectedIndex) { reconcileFilteredSelection() }
         return true
@@ -244,7 +237,6 @@ final class ImageCollection: ObservableObject {
         guard let change = cullingUndoStack.popLast(),
               let index = items.firstIndex(where: { $0.id == change.itemID }) else { return false }
         items[index].asset.libraryState = change.oldState
-        invalidateLibraryLayout()
         persistCullingState(for: items[index].asset)
         if let activeID = change.activeIDBefore,
            filteredIndices.contains(where: { items[$0].id == activeID }) {
@@ -340,7 +332,6 @@ final class ImageCollection: ObservableObject {
         scanTask?.cancel()
         stopMetadataLoading()
         items = []
-        invalidateLibraryLayout()
         selectedIndex = 0
         selection.clear()
         thumbnailDemandIDs.removeAll()
@@ -387,7 +378,6 @@ final class ImageCollection: ObservableObject {
                     // Sorting the accumulated prefix on every batch keeps the final ordering
                     // deterministic while still making the first useful rows visible immediately.
                     self.items.sort(by: Self.itemPrecedes)
-                    self.invalidateLibraryLayout()
                     self.reconcileSelection()
                     self.isActive = !self.items.isEmpty
                     self.generateThumbnails()
@@ -570,7 +560,6 @@ final class ImageCollection: ObservableObject {
             scheduler.cancel(id: thumbnailJobID(for: item))
             thumbnailJobIDs.remove(thumbnailJobID(for: item))
             items.remove(at: index)
-            invalidateLibraryLayout()
             reconcileSelection()
             selectedIndex = min(selectedIndex, max(0, items.count - 1))
             isActive = !items.isEmpty
@@ -610,7 +599,6 @@ final class ImageCollection: ObservableObject {
         scanTask = nil
         stopMetadataLoading()
         items = []
-        invalidateLibraryLayout()
         selectedIndex = 0
         selection.clear()
         isThumbnailDemandDriven = false
@@ -640,7 +628,6 @@ final class ImageCollection: ObservableObject {
             context: LumoTraceContext(sourceFingerprint: identifier.raw, quality: "photosImport")
         )
         items.append(Item(asset: asset, metadata: nil))
-        invalidateLibraryLayout()
         reconcileSelection()
         isActive = true
         enqueueMetadata(for: items[items.count - 1], generation: scanGeneration)
@@ -764,7 +751,6 @@ final class ImageCollection: ObservableObject {
         scanTask = nil
         stopMetadataLoading()
         items = []
-        invalidateLibraryLayout()
         selectedIndex = 0
         selection.clear()
         isThumbnailDemandDriven = false
@@ -775,10 +761,6 @@ final class ImageCollection: ObservableObject {
         isScanning = false
         scanWarnings = []
         sourceFolderURL = nil
-    }
-
-    private func invalidateLibraryLayout() {
-        libraryLayoutRevision &+= 1
     }
 
     // MARK: - Thumbnail generation
