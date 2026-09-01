@@ -161,6 +161,9 @@ struct PreviewSurfaceView: NSViewRepresentable {
                 ty: (destination.height - fittedHeight) / 2 - extent.minY * scale
             )
             let fitted = image.transformed(by: transform)
+            // Deliberately dark image-presentation letterbox. This is scoped to the Metal
+            // drawable so an image's surrounding SwiftUI shell can follow light/dark mode;
+            // changing it would alter rendered presentation pixels rather than window chrome.
             let background = CIImage(
                 color: CIColor(red: 0.07, green: 0.07, blue: 0.08, alpha: 1)
             ).cropped(to: destination)

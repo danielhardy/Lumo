@@ -34,6 +34,7 @@ struct InfoInspectorView: View {
             }
         }
         .frame(minWidth: 240, idealWidth: 280)
+        .background(LumoTheme.windowBackground)
     }
 
     private var tabSwitcher: some View {
@@ -74,20 +75,23 @@ struct InfoInspectorView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Color.gray.opacity(0.15), in: Capsule())
+                    .background(Color.primary.opacity(0.08), in: Capsule())
             }
 
             if let histogram = viewModel.histogram {
                 HistogramChart(data: histogram, channel: channel)
                     .frame(height: 120)
-                    .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 6))
+                    // The plot is intentionally dark for stable channel contrast. It is
+                    // scoped to the chart and does not define the inspector background.
+                    .background(LumoTheme.analysisBackground, in: RoundedRectangle(cornerRadius: 6))
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                            .stroke(LumoTheme.analysisBorder, lineWidth: 1)
                     )
             } else {
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.black.opacity(0.25))
+                    // Match the loaded histogram's intentionally dark analysis surface.
+                    .fill(LumoTheme.analysisBackground)
                     .frame(height: 120)
                     .overlay(ProgressView().controlSize(.small))
             }

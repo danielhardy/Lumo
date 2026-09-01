@@ -34,14 +34,14 @@ struct RecipeReportView: View {
                 y: .value("Out", Float(0)),
                 series: .value("Series", "identity")
             )
-            .foregroundStyle(.gray.opacity(0.4))
+            .foregroundStyle(.secondary.opacity(0.6))
             .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
             LineMark(
                 x: .value("In", Float(1)),
                 y: .value("Out", Float(1)),
                 series: .value("Series", "identity")
             )
-            .foregroundStyle(.gray.opacity(0.4))
+            .foregroundStyle(.secondary.opacity(0.6))
             .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
 
             ForEach(Array(report.toneCurve.enumerated()), id: \.offset) { _, point in
@@ -76,14 +76,14 @@ struct RecipeReportView: View {
         .chartYScale(domain: 0...1)
         .chartXAxis {
             AxisMarks(values: [0, 0.25, 0.5, 0.75, 1.0]) { _ in
-                AxisGridLine().foregroundStyle(.gray.opacity(0.15))
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.25))
                 AxisTick()
                 AxisValueLabel()
             }
         }
         .chartYAxis {
             AxisMarks(values: [0, 0.25, 0.5, 0.75, 1.0]) { _ in
-                AxisGridLine().foregroundStyle(.gray.opacity(0.15))
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.25))
                 AxisTick()
                 AxisValueLabel()
             }
@@ -149,7 +149,7 @@ struct RecipeReportView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(Color.gray.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+            .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
     }
 }
 
@@ -173,7 +173,7 @@ private struct StatBadge: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.gray.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
         .help(hint ?? "")
     }
 }

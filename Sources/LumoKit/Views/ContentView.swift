@@ -79,6 +79,7 @@ public struct ContentView: View {
         NavigationStack {
             detailContent
         }
+        .background(LumoTheme.windowBackground)
         .inspector(isPresented: $viewModel.isInspectorPresented) {
             InfoInspectorView(viewModel: viewModel)
                 .inspectorColumnWidth(min: 240, ideal: 280, max: 360)

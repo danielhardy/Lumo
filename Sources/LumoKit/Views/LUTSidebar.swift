@@ -43,6 +43,7 @@ struct LookInspectorView: View {
             intensitySection
         }
         .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
+        .background(LumoTheme.windowBackground)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Look adjustments")
     }
@@ -114,7 +115,7 @@ struct LookInspectorView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+        .background(LumoTheme.controlBackground, in: RoundedRectangle(cornerRadius: 6))
         .onExitCommand { searchText = "" }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)

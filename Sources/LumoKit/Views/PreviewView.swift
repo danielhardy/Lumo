@@ -5,7 +5,10 @@ import SwiftUI
 struct PreviewView: View {
     @ObservedObject var viewModel: AppViewModel
 
-    private let bgColor = Color(nsColor: NSColor(red: 0.07, green: 0.07, blue: 0.08, alpha: 1))
+    /// The shell around the Metal image surface follows the window appearance. The Metal
+    /// surface's letterbox remains intentionally dark because it is part of image presentation,
+    /// not window chrome; see `PreviewSurfaceView`.
+    private var bgColor: Color { LumoTheme.windowBackground }
 
     var body: some View {
         ZStack {
@@ -52,7 +55,7 @@ struct PreviewView: View {
 
                 // Divider
                 Rectangle()
-                    .fill(Color.white.opacity(0.15))
+                    .fill(Color.primary.opacity(0.15))
                     .frame(width: 1)
 
                 // LUT applied

@@ -62,10 +62,11 @@ struct LibraryGridView: View {
                         .padding(16)
                         .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .top)
                     }
-                    .background(Color(nsColor: .windowBackgroundColor))
+                    .background(LumoTheme.windowBackground)
                 }
             }
         }
+        .background(LumoTheme.windowBackground)
         .onAppear {
             collection.beginThumbnailDemand()
         }

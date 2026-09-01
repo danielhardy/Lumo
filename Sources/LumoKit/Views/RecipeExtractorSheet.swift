@@ -48,6 +48,7 @@ struct RecipeExtractorSheet: View {
         .padding(20)
         .frame(width: 540)
         .frame(minHeight: coordinator.report == nil ? 280 : 540)
+        .background(LumoTheme.windowBackground)
     }
 
     // MARK: - Header
@@ -88,7 +89,7 @@ struct RecipeExtractorSheet: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(Color.gray.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+            .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
 
             Button("Choose…") { onPick() }
                 .buttonStyle(.bordered)

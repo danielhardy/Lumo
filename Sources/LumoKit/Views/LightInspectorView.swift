@@ -163,7 +163,9 @@ private struct ToneCurveEditor: View {
     private func curveGraph(size: CGSize) -> some View {
         Canvas { context, canvasSize in
             let rect = CGRect(origin: .zero, size: canvasSize)
-            context.fill(Path(roundedRect: rect, cornerRadius: 5), with: .color(.black.opacity(0.2)))
+            // Tone-curve analysis is intentionally dark for consistent grid/curve contrast;
+            // this fill is limited to the graph and is not an inspector-wide appearance choice.
+            context.fill(Path(roundedRect: rect, cornerRadius: 5), with: .color(LumoTheme.analysisBackground))
 
             var grid = Path()
             for fraction in stride(from: 0.25, through: 0.75, by: 0.25) {
@@ -172,12 +174,12 @@ private struct ToneCurveEditor: View {
                 grid.move(to: CGPoint(x: 0, y: (1 - fraction) * canvasSize.height))
                 grid.addLine(to: CGPoint(x: canvasSize.width, y: (1 - fraction) * canvasSize.height))
             }
-            context.stroke(grid, with: .color(.white.opacity(0.1)), lineWidth: 1)
+            context.stroke(grid, with: .color(LumoTheme.analysisGrid), lineWidth: 1)
 
             var identity = Path()
             identity.move(to: CGPoint(x: 0, y: canvasSize.height))
             identity.addLine(to: CGPoint(x: canvasSize.width, y: 0))
-            context.stroke(identity, with: .color(.white.opacity(0.25)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+            context.stroke(identity, with: .color(LumoTheme.analysisReference), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
 
             let curve = viewModel.document.light.toneCurve
             var path = Path()
