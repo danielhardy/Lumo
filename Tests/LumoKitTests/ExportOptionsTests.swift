@@ -23,9 +23,12 @@ final class ExportOptionsTests: TempDirectoryTestCase {
         XCTAssertEqual(ExportFormat.tiff.capabilities.bitDepths, [.eight, .sixteen])
         XCTAssertEqual(ExportFormat.jpeg.capabilities.bitDepths, [.eight])
         XCTAssertEqual(ExportFormat.png.capabilities.bitDepths, [.eight, .sixteen])
+        XCTAssertEqual(ExportFormat.heif.capabilities.bitDepths, [.eight])
         XCTAssertEqual(ExportFormat.jpeg.capabilities.alphaModes, [.opaque])
+        XCTAssertEqual(ExportFormat.heif.capabilities.alphaModes, [.opaque])
         XCTAssertTrue(ExportFormat.tiff.capabilities.supportsAlpha)
         XCTAssertTrue(ExportFormat.png.capabilities.colorSpaces.contains(.displayP3))
+        XCTAssertTrue(ExportFormat.heif.capabilities.colorSpaces.contains(.displayP3))
     }
 
     func testInvalidCombinationsFailBeforeRenderingWithActionableErrors() {

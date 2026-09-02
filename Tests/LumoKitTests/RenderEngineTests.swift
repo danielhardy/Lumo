@@ -360,7 +360,7 @@ final class RenderEngineTests: TempDirectoryTestCase {
     func testEveryFormatEncodesToItsOwnType() async throws {
         let engine = RenderEngine()
         let expected: [ExportFormat: UTType] = [
-            .png: .png, .jpeg: .jpeg, .tiff: .tiff,
+            .png: .png, .jpeg: .jpeg, .tiff: .tiff, .heif: .heic,
         ]
 
         for (format, type) in expected {
@@ -373,6 +373,31 @@ final class RenderEngineTests: TempDirectoryTestCase {
             let imageSource = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil))
             let uti = try XCTUnwrap(CGImageSourceGetType(imageSource) as String?)
             XCTAssertEqual(UTType(uti), type, "\(format) encoded as \(uti)")
+        }
+    }
+
+    /// HEIF is only part of the format contract when Image I/O can produce a real, readable file.
+    /// The test is intentionally a round trip rather than a non-empty-data check: an encoder that
+    /// returns bytes the system cannot decode is not cleanly supported for export.
+    func testHEIFRoundTripsDimensionsAndColorSpace() async throws {
+        let engine = RenderEngine()
+        let options = ExportOptions(format: .heif, colorSpace: .displayP3)
+
+        do {
+            let result = try await engine.encode(
+                source: source,
+                document: EditDocument(),
+                lut: nil,
+                options: options
+            )
+            let imageSource = try XCTUnwrap(CGImageSourceCreateWithData(result as CFData, nil))
+            XCTAssertEqual(CGImageSourceGetType(imageSource) as String?, UTType.heic.identifier)
+            let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(imageSource, 0, nil))
+            XCTAssertEqual(image.width, 96)
+            XCTAssertEqual(image.height, 64)
+            XCTAssertEqual(image.colorSpace?.name as String?, CGColorSpace.displayP3 as String?)
+        } catch let error as ImageError {
+            throw XCTSkip("HEIF encoding is unavailable on this machine: \(error.localizedDescription)")
         }
     }
 

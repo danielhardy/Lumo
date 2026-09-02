@@ -220,6 +220,34 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
         )
     }
 
+    /// HEIF depends on the host's Image I/O/HEVC encoder. A failure from that optional encoder is
+    /// still an ordinary per-item batch failure: no destination is committed and later items run.
+    func testBatchHEIFEncoderFailureIsIsolatedToTheItem() async throws {
+        let fake = FakeRenderEngine()
+        await fake.setShouldFailEncode(true)
+        let coordinator = ExportCoordinator(engine: fake)
+        var statuses: [String] = []
+        coordinator.onStatus = { statuses.append($0) }
+
+        let folder = try destinationFolder()
+        let outcome = await coordinator.performBatchExport(
+            try makeSources(["first", "second"]),
+            document: EditDocument(),
+            lut: nil,
+            format: .heif,
+            to: folder
+        )
+
+        XCTAssertEqual(outcome, .init(exported: 0, failed: 2, total: 2))
+        XCTAssertTrue(statuses.contains { $0.hasPrefix("Skipped first:") })
+        XCTAssertTrue(statuses.contains { $0.hasPrefix("Skipped second:") })
+        XCTAssertFalse(
+            try FileManager.default.contentsOfDirectory(atPath: folder.path)
+                .contains { $0.hasSuffix(".heic") || $0.hasSuffix(".partial") },
+            "an unavailable HEIF encoder must not leave a partial or committed output"
+        )
+    }
+
     func testBatchExportDoesNotOverwriteSameNamedSources() async throws {
         let coordinator = ExportCoordinator()
 

@@ -57,6 +57,7 @@ final class ExportNamingTests: TempDirectoryTestCase {
         XCTAssertEqual(ExportFormat.jpeg.fileExtension, "jpg")
         XCTAssertEqual(ExportFormat.tiff.fileExtension, "tif")
         XCTAssertEqual(ExportFormat.png.fileExtension, "png")
+        XCTAssertEqual(ExportFormat.heif.fileExtension, "heic")
 
         for format in ExportFormat.allCases {
             XCTAssertTrue(
@@ -75,7 +76,7 @@ final class ExportNamingTests: TempDirectoryTestCase {
     /// in the suite would notice either.
     func testTheExportFormatPickerContractSurvivedThePromotion() {
         // The order and labels the export-flow format control shows.
-        XCTAssertEqual(ExportFormat.allCases.map(\.rawValue), ["TIFF", "JPEG", "PNG"])
+        XCTAssertEqual(ExportFormat.allCases.map(\.rawValue), ["TIFF", "JPEG", "PNG", "HEIF"])
 
         // What the Picker keys its rows by. Duplicates break selection silently.
         let ids = ExportFormat.allCases.map(\.id)
@@ -87,5 +88,6 @@ final class ExportNamingTests: TempDirectoryTestCase {
         XCTAssertEqual(ExportFormat.jpeg.utType, .jpeg)
         XCTAssertEqual(ExportFormat.tiff.utType, .tiff)
         XCTAssertEqual(ExportFormat.png.utType, .png)
+        XCTAssertEqual(ExportFormat.heif.utType, .heic)
     }
 }

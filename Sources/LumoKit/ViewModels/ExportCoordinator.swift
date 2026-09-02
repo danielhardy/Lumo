@@ -680,7 +680,7 @@ private final class ExportFormatAccessoryView: NSView {
         picker.action = #selector(selectionChanged)
         picker.selectedSegment = ExportFormat.allCases.firstIndex(of: selectedFormat) ?? 0
         picker.setAccessibilityLabel("Export format")
-        picker.setAccessibilityHelp("Choose TIFF, JPEG, or PNG for the exported image")
+        picker.setAccessibilityHelp("Choose TIFF, JPEG, PNG, or HEIF for the exported image")
 
         photosCheckbox.setAccessibilityLabel("Also add to Photos")
         photosCheckbox.target = self

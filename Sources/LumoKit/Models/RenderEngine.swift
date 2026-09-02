@@ -448,6 +448,15 @@ actor RenderEngine: RenderEngining {
                     quality: quality,
                     metadata: exportMetadata(for: request)
                 )
+            case .heif:
+                data = try encode(
+                    encodedImage,
+                    format: format,
+                    representationFormat: .RGBA8,
+                    colorSpace: colorSpace,
+                    quality: quality,
+                    metadata: exportMetadata(for: request)
+                )
             }
         }
 
@@ -500,7 +509,7 @@ actor RenderEngine: RenderEngining {
         }
 
         var imageProperties = metadata ?? [:]
-        if format == .jpeg {
+        if format == .jpeg || format == .heif {
             imageProperties[kCGImageDestinationLossyCompressionQuality] = quality
         }
         CGImageDestinationAddImage(destination, cgImage,
