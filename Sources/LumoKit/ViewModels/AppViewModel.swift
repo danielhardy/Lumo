@@ -1201,6 +1201,24 @@ public final class AppViewModel: ObservableObject {
     private func openActiveCollectionImage(loadMode: Bool) {
         guard let item = collection.selectedItem else { return }
         if loadMode { navigation.move(to: .edit) }
+
+        // The library selection is the source of truth for the edit handoff. When returning from
+        // the grid, the active item is often already prepared because the editor was left visible
+        // behind the library. Reusing that source avoids clearing a valid preview (and the canvas
+        // presentation state) just to revisit the same photo. If the surface was recreated or a
+        // preview is still pending, explicitly request the visible render again.
+        if activeAssetID == item.id {
+            if imageSource != nil, sourceImage != nil {
+                if previewSurface.image == nil {
+                    schedulePreview()
+                }
+                return
+            }
+            // A source preparation can be non-cancellable. Let the in-flight, revision-checked
+            // request finish instead of enqueueing a duplicate while the user is navigating.
+            if loadTask != nil { return }
+        }
+
         if let url = item.url {
             openImage(url: url, assetID: item.id)
         } else if let data = item.imageData {

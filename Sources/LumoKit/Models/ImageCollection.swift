@@ -160,8 +160,8 @@ final class ImageCollection: ObservableObject {
     }
 
     var selectedItem: Item? {
-        guard isActive, items.indices.contains(selectedIndex) else { return nil }
-        return items[selectedIndex]
+        guard isActive, let activeID = selection.activeID else { return nil }
+        return items.first { $0.id == activeID }
     }
 
     /// The current edit-transfer destinations, in source order. The active item remains separate
