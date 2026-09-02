@@ -1,6 +1,17 @@
 import CoreGraphics
 import Foundation
 
+/// A rendering surface with its own resolution-planning hysteresis state.
+///
+/// Main-preview settled and interactive requests intentionally share one surface. Comparison and
+/// histogram requests do not: they can have different viewports or crops as those features evolve,
+/// so one surface's recent detail choice must not influence another's.
+enum ResolutionPlannerSurface: String, Sendable {
+    case mainPreview
+    case comparisonBaseline
+    case histogram
+}
+
 /// The discrete source detail selected for one canvas request.
 ///
 /// `sourceSize` is the size of the *uncropped* source that should be developed. Crop remains a

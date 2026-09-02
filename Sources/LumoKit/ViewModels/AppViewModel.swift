@@ -706,7 +706,7 @@ public final class AppViewModel: ObservableObject {
         previewSurface.clear()
         originalPreviewSurface.clear()
         canvasState.resetForSource()
-        resolutionPlanner.reset()
+        resetResolutionPlanners()
         // Do not let the previous surface briefly show the photo we are leaving while the new
         // source is being decoded.
         sourceImage = nil
@@ -1416,20 +1416,71 @@ public final class AppViewModel: ObservableObject {
     /// Backing pixels of the visible canvas. PreviewView updates this from its live geometry;
     /// the fallback is only used before the first layout pass.
     private var previewBackingSize = CGSize(width: 1600, height: 1200)
-    private var resolutionPlanner = ResolutionPlanner()
+    /// Each logical rendering surface owns its hysteresis state. Main preview settled and
+    /// interactive requests share a planner because they describe the same canvas; supporting
+    /// surfaces remain independent so a future viewport/crop difference cannot leak detail choices
+    /// between them.
+    private var mainPreviewResolutionPlanner = ResolutionPlanner()
+    private var comparisonResolutionPlanner = ResolutionPlanner()
+    private var histogramResolutionPlanner = ResolutionPlanner()
     private static let intensityDebounceMs = 60
 
     /// Request enough source detail for the current display scale while leaving the final
     /// placement to `PreviewSurfaceView`. The coalescing coordinator keeps a zoom gesture from
     /// building a queue of obsolete high-resolution renders.
-    private func previewRenderTargetSize(for document: EditDocument) -> CGSize {
+    private func previewRenderTargetSize(
+        for document: EditDocument,
+        surface: ResolutionPlannerSurface = .mainPreview
+    ) -> CGSize {
         guard let imageSource else { return previewBackingSize }
-        return resolutionPlanner.plan(
+        return resolutionPlan(
+            for: document,
             nativeExtent: imageSource.nativeExtent,
-            crop: document.crop,
             viewportSize: previewBackingSize,
-            navigation: canvasState.navigation
+            surface: surface
         ).sourceSize
+    }
+
+    /// Plan source detail for one logical rendering surface.
+    ///
+    /// This stays an internal value seam so tests can exercise the same surface routing without
+    /// depending on asynchronous image preparation or a real drawable size. Production render
+    /// requests use `previewRenderTargetSize(for:surface:)` above.
+    func resolutionPlan(
+        for document: EditDocument,
+        nativeExtent: CGSize,
+        viewportSize: CGSize,
+        surface: ResolutionPlannerSurface
+    ) -> ResolutionPlan {
+        switch surface {
+        case .mainPreview:
+            return mainPreviewResolutionPlanner.plan(
+                nativeExtent: nativeExtent,
+                crop: document.crop,
+                viewportSize: viewportSize,
+                navigation: canvasState.navigation
+            )
+        case .comparisonBaseline:
+            return comparisonResolutionPlanner.plan(
+                nativeExtent: nativeExtent,
+                crop: document.crop,
+                viewportSize: viewportSize,
+                navigation: canvasState.navigation
+            )
+        case .histogram:
+            return histogramResolutionPlanner.plan(
+                nativeExtent: nativeExtent,
+                crop: document.crop,
+                viewportSize: viewportSize,
+                navigation: canvasState.navigation
+            )
+        }
+    }
+
+    private func resetResolutionPlanners() {
+        mainPreviewResolutionPlanner.reset()
+        comparisonResolutionPlanner.reset()
+        histogramResolutionPlanner.reset()
     }
 
     /// What the main preview panel should currently show, as a render request.
@@ -1475,7 +1526,7 @@ public final class AppViewModel: ObservableObject {
         let (requested, look) = displayRequest
         previewCoordinator.submit(RenderRequest(
                 source: imageSource, document: requested, lut: look,
-                targetSize: previewRenderTargetSize(for: requested), quality: .preview,
+                targetSize: previewRenderTargetSize(for: requested, surface: .mainPreview), quality: .preview,
                 output: .raster, space: .current
             ), phase: .settled)
     }
@@ -1489,7 +1540,7 @@ public final class AppViewModel: ObservableObject {
         let (requested, lut) = displayRequest
         previewCoordinator.submit(RenderRequest(
             source: imageSource, document: requested, lut: lut,
-            targetSize: previewRenderTargetSize(for: requested), quality: .interactive,
+            targetSize: previewRenderTargetSize(for: requested, surface: .mainPreview), quality: .interactive,
             output: .raster, space: .current
         ), phase: .interactive)
     }
@@ -1812,7 +1863,7 @@ public final class AppViewModel: ObservableObject {
             return
         }
         let baseline = document.comparisonBaseline
-        let box = previewRenderTargetSize(for: baseline)
+        let box = previewRenderTargetSize(for: baseline, surface: .comparisonBaseline)
         let sourceRevision = self.sourceRevision
         let comparisonRevision = self.comparisonRevision
 
@@ -1915,7 +1966,7 @@ public final class AppViewModel: ObservableObject {
             let (requested, lut) = displayRequest
             request = RenderRequest(
                 source: imageSource, document: requested, lut: lut,
-                targetSize: previewRenderTargetSize(for: requested), quality: .preview,
+                targetSize: previewRenderTargetSize(for: requested, surface: .histogram), quality: .preview,
                 output: .raster, space: .current
             )
         }
