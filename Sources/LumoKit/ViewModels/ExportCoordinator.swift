@@ -50,6 +50,9 @@ final class ExportCoordinator: ObservableObject {
     /// is non-preemptible once Core Image enters it, so a batch cannot monopolize the display actor.
     /// The batch loop remains serial, retaining only one full-size result at a time.
     private let exportEngine: any RenderEngining
+    /// Optional post-commit Photos delivery. Keeping this injectable leaves core export tests
+    /// independent of PhotoKit authorization and the user's library.
+    private let photosDelivery: (any PhotosDelivering)?
     private var batchTask: Task<BatchOutcome, Never>?
     /// This flag also makes the panel-free API cancellable: its caller may not own a task that the
     /// coordinator can cancel, but the UI still needs a reliable boundary before the next item.
@@ -65,11 +68,13 @@ final class ExportCoordinator: ObservableObject {
         engine: any RenderEngining = RenderEngine.shared,
         exportEngine: (any RenderEngining)? = nil,
         editStore: EditDocumentStore? = nil,
-        lutResolver: ((LUTID?) -> CubeLUT?)? = nil
+        lutResolver: ((LUTID?) -> CubeLUT?)? = nil,
+        photosDelivery: (any PhotosDelivering)? = PhotoKitDelivery()
     ) {
         // Test renderers are deliberately shared so request assertions remain simple. The real
         // renderer gets isolated mutable Core Image state for export work.
         self.exportEngine = exportEngine ?? (engine is RenderEngine ? RenderEngine() : engine)
+        self.photosDelivery = photosDelivery
         self.editStore = editStore
         self.lutResolver = lutResolver
         self.lastUsedFormat = Self.defaultFormat
@@ -122,12 +127,17 @@ final class ExportCoordinator: ObservableObject {
         let failed: Int
         let total: Int
         let cancelled: Bool
+        let photosFailed: Int
 
-        init(exported: Int, failed: Int, total: Int, cancelled: Bool = false) {
+        init(
+            exported: Int, failed: Int, total: Int, cancelled: Bool = false,
+            photosFailed: Int = 0
+        ) {
             self.exported = exported
             self.failed = failed
             self.total = total
             self.cancelled = cancelled
+            self.photosFailed = photosFailed
         }
 
         var isCancelled: Bool { cancelled }
@@ -175,7 +185,15 @@ final class ExportCoordinator: ObservableObject {
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         performExport(
-            source: source, document: document, lut: lut, format: formatPicker.selectedFormat, to: url
+            source: source,
+            document: document,
+            lut: lut,
+            options: ExportOptions(
+                format: formatPicker.selectedFormat,
+                destination: .file(url),
+                photos: formatPicker.photosOptions
+            ),
+            to: url
         )
     }
 
@@ -236,8 +254,23 @@ final class ExportCoordinator: ObservableObject {
                 )).data
                 try Task.checkCancellation()
                 try await Self.write(data, to: url)
+                if let photos = options.photos, let delivery = self?.photosDelivery {
+                    do {
+                        let result = try await delivery.deliver(
+                            data: data,
+                            filename: url.lastPathComponent,
+                            format: options.format,
+                            options: photos
+                        )
+                        self?.reportPhotosSuccess(result, filename: url.lastPathComponent)
+                    } catch {
+                        self?.onStatus?("Exported: \(url.lastPathComponent)")
+                        self?.onError?("Photos delivery failed; the file is safe at \(url.lastPathComponent): \(error.localizedDescription)")
+                    }
+                } else {
+                    self?.onStatus?("Exported: \(url.lastPathComponent)")
+                }
                 self?.isExporting = false
-                self?.onStatus?("Exported: \(url.lastPathComponent)")
             } catch {
                 self?.isExporting = false
                 self?.onError?("Export failed: \(error.localizedDescription)")
@@ -276,18 +309,25 @@ final class ExportCoordinator: ObservableObject {
         panel.canChooseDirectories = true
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        panel.accessoryView = ExportFormatAccessoryView(selectedFormat: lastUsedFormat)
+        let formatPicker = ExportFormatAccessoryView(selectedFormat: lastUsedFormat)
+        panel.accessoryView = formatPicker
         guard panel.runModal() == .OK, let folder = panel.url else { return }
 
-        let format = (panel.accessoryView as? ExportFormatAccessoryView)?.selectedFormat
-            ?? lastUsedFormat
+        let format = formatPicker.selectedFormat
         // Record the choice as soon as the dialog completes, before the async batch starts.
         lastUsedFormat = format
+        let options = ExportOptions(
+            format: format,
+            destination: .folder(folder),
+            photos: formatPicker.photosOptions
+        )
         batchTask = Task { [weak self] in
             guard let self else {
                 return BatchOutcome(exported: 0, failed: items.count, total: items.count)
             }
-            return await self.performBatchExport(items, document: document, lut: lut, format: format, to: folder)
+            return await self.performBatchExport(
+                items, document: document, lut: lut, options: options, to: folder
+            )
         }
     }
 
@@ -371,6 +411,7 @@ final class ExportCoordinator: ObservableObject {
 
         var exported = 0
         var failed = 0
+        var photosFailed = 0
         var cancelled = false
 
         // Reserve destinations in selection order before each render starts. The batch remains
@@ -445,6 +486,23 @@ final class ExportCoordinator: ObservableObject {
                     try Task.checkCancellation()
                     guard !batchCancellationRequested else { throw CancellationError() }
                     exported += 1
+                    if let photos = options.photos, let delivery = photosDelivery {
+                        do {
+                            let result = try await delivery.deliver(
+                                data: data,
+                                filename: dest.lastPathComponent,
+                                format: options.format,
+                                options: photos
+                            )
+                            if let warning = result.warning {
+                                photosFailed += 1
+                                onStatus?("Exported \(item.name); Photos warning: \(warning)")
+                            }
+                        } catch {
+                            photosFailed += 1
+                            onStatus?("Exported \(item.name); Photos delivery failed: \(error.localizedDescription)")
+                        }
+                    }
                 } catch is CancellationError {
                     cancelled = true
                     break
@@ -465,7 +523,11 @@ final class ExportCoordinator: ObservableObject {
 
         cancelled = cancelled || Task.isCancelled || batchCancellationRequested
         let outcome = BatchOutcome(
-            exported: exported, failed: failed, total: total, cancelled: cancelled
+            exported: exported,
+            failed: failed,
+            total: total,
+            cancelled: cancelled,
+            photosFailed: photosFailed
         )
         isExporting = false
         batchProgress = 0
@@ -560,13 +622,28 @@ final class ExportCoordinator: ObservableObject {
         if outcome.cancelled {
             let processed = outcome.exported + outcome.failed
             let remaining = max(0, outcome.total - processed)
-            return "Export cancelled after \(processed) of \(outcome.total) (\(outcome.exported) exported, \(outcome.failed) failed, \(remaining) not started) to \(destination)"
+            return "Export cancelled after \(processed) of \(outcome.total) (\(outcome.exported) exported, \(outcome.failed) failed, \(remaining) not started)\(photosSummary(for: outcome)) to \(destination)"
         }
         if outcome.failed == 0 {
             let plural = outcome.exported == 1 ? "" : "s"
-            return "Exported \(outcome.exported) image\(plural) to \(destination)"
+            return "Exported \(outcome.exported) image\(plural)\(photosSummary(for: outcome)) to \(destination)"
         }
-        return "Exported \(outcome.exported) of \(outcome.total) (\(outcome.failed) failed) to \(destination)"
+        return "Exported \(outcome.exported) of \(outcome.total) (\(outcome.failed) failed)\(photosSummary(for: outcome)) to \(destination)"
+    }
+
+    private func reportPhotosSuccess(_ result: PhotosDeliveryResult, filename: String) {
+        if let warning = result.warning {
+            onStatus?("Exported: \(filename); Photos warning: \(warning)")
+        } else if result.albumAdded {
+            onStatus?("Exported: \(filename) and added to Photos album")
+        } else {
+            onStatus?("Exported: \(filename) and added to Photos")
+        }
+    }
+
+    nonisolated private static func photosSummary(for outcome: BatchOutcome) -> String {
+        guard outcome.photosFailed > 0 else { return "" }
+        return " (Photos: \(outcome.photosFailed) failed)"
     }
 }
 
@@ -578,6 +655,8 @@ final class ExportCoordinator: ObservableObject {
 @MainActor
 private final class ExportFormatAccessoryView: NSView {
     private let picker: NSSegmentedControl
+    private let photosCheckbox: NSButton
+    private let albumField: NSTextField
     var onSelectionChanged: ((ExportFormat) -> Void)?
 
     init(selectedFormat: ExportFormat) {
@@ -587,6 +666,10 @@ private final class ExportFormatAccessoryView: NSView {
             target: nil,
             action: nil
         )
+        photosCheckbox = NSButton(
+            checkboxWithTitle: "Also add to Photos", target: nil, action: nil
+        )
+        albumField = NSTextField(string: "")
         super.init(frame: .zero)
 
         let label = NSTextField(labelWithString: "Export format:")
@@ -599,9 +682,25 @@ private final class ExportFormatAccessoryView: NSView {
         picker.setAccessibilityLabel("Export format")
         picker.setAccessibilityHelp("Choose TIFF, JPEG, or PNG for the exported image")
 
-        let stack = NSStackView(views: [label, picker])
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
+        photosCheckbox.setAccessibilityLabel("Also add to Photos")
+        photosCheckbox.target = self
+        photosCheckbox.action = #selector(photosSelectionChanged)
+
+        albumField.placeholderString = "Album (optional)"
+        albumField.isEnabled = false
+        albumField.setAccessibilityLabel("Photos album name")
+
+        let formatStack = NSStackView(views: [label, picker])
+        formatStack.orientation = .horizontal
+        formatStack.alignment = .centerY
+        formatStack.spacing = 8
+        let photosStack = NSStackView(views: [photosCheckbox, albumField])
+        photosStack.orientation = .horizontal
+        photosStack.alignment = .centerY
+        photosStack.spacing = 8
+        let stack = NSStackView(views: [formatStack, photosStack])
+        stack.orientation = .vertical
+        stack.alignment = .leading
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
@@ -618,7 +717,7 @@ private final class ExportFormatAccessoryView: NSView {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: 300, height: 28)
+        NSSize(width: 420, height: 64)
     }
 
     var selectedFormat: ExportFormat {
@@ -627,8 +726,17 @@ private final class ExportFormatAccessoryView: NSView {
         return ExportFormat.allCases[index]
     }
 
+    var photosOptions: PhotosExportOptions? {
+        guard photosCheckbox.state == .on else { return nil }
+        return PhotosExportOptions(albumName: albumField.stringValue)
+    }
+
     @objc private func selectionChanged() {
         onSelectionChanged?(selectedFormat)
+    }
+
+    @objc private func photosSelectionChanged() {
+        albumField.isEnabled = photosCheckbox.state == .on
     }
 }
 

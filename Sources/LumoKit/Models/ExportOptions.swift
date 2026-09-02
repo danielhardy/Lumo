@@ -105,6 +105,8 @@ struct ExportOptions: Codable, Sendable, Equatable {
     let filenamePolicy: ExportFilenamePolicy
     let destination: ExportDestination?
     let metadata: ExportMetadataPolicy
+    /// Optional post-export delivery. The file/folder destination is committed first.
+    let photos: PhotosExportOptions?
 
     init(
         format: ExportFormat = .jpeg,
@@ -115,7 +117,8 @@ struct ExportOptions: Codable, Sendable, Equatable {
         alpha: ExportAlpha? = nil,
         filenamePolicy: ExportFilenamePolicy = .sourceNameWithLook,
         destination: ExportDestination? = nil,
-        metadata: ExportMetadataPolicy = .preserve
+        metadata: ExportMetadataPolicy = .preserve,
+        photos: PhotosExportOptions? = nil
     ) {
         self.format = format
         self.quality = quality
@@ -126,6 +129,7 @@ struct ExportOptions: Codable, Sendable, Equatable {
         self.filenamePolicy = filenamePolicy
         self.destination = destination
         self.metadata = metadata
+        self.photos = photos
     }
 
     static let `default` = ExportOptions()

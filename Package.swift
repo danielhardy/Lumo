@@ -17,6 +17,7 @@ let package = Package(
             name: "LumoKit",
             swiftSettings: [.swiftLanguageMode(.v6)],
             linkerSettings: [
+                .linkedFramework("Photos"),
                 .linkedFramework("PhotosUI"),
             ]
         ),
