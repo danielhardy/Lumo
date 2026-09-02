@@ -142,19 +142,28 @@ struct PreviewView: View {
 
     /// A full-panel surface with presentation-only mouse and trackpad navigation. The same
     /// navigation value is passed to both comparison panels, so before/after remains registered.
+    @ViewBuilder
     private func canvasSurface(_ surface: PreviewSurface) -> some View {
         GeometryReader { geometry in
-            PreviewSurfaceView(
+            let preview = PreviewSurfaceView(
                 surface: surface,
                 navigation: canvasState.navigation,
                 onScrollZoom: { factor in viewModel.zoomCanvas(by: factor) },
                 onDrawableSizeChange: { size in viewModel.updatePreviewBackingSize(size) }
             )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .allowsHitTesting(!canvasState.isCropToolActive)
-                .contentShape(Rectangle())
-                .gesture(dragGesture(viewportSize: geometry.size))
-                .simultaneousGesture(magnificationGesture(viewportSize: geometry.size))
+
+            if canvasState.isCropToolActive {
+                // Keep the navigation gesture wrappers out of the hit-test tree while the crop
+                // overlay owns pointer input. Disabling only PreviewSurfaceView still leaves
+                // the GeometryReader's navigation gestures eligible to win an interior drag.
+                preview.allowsHitTesting(false)
+            } else {
+                preview
+                    .contentShape(Rectangle())
+                    .gesture(dragGesture(viewportSize: geometry.size))
+                    .simultaneousGesture(magnificationGesture(viewportSize: geometry.size))
+            }
         }
     }
 

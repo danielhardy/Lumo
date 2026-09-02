@@ -4,6 +4,51 @@ import XCTest
 @testable import LumoKit
 
 final class CropModelTests: XCTestCase {
+    func testDraggingCropAreaTranslatesInNormalizedBottomLeftSpace() {
+        let rect = CGRect(x: 0.2, y: 0.25, width: 0.5, height: 0.4)
+        let imageRect = CGRect(x: 10, y: 20, width: 800, height: 400)
+
+        let moved = CropOverlayInteraction.translated(
+            rect, delta: CGSize(width: 80, height: -40), imageRect: imageRect
+        )
+
+        XCTAssertEqual(moved.origin.x, 0.3, accuracy: 0.000001)
+        XCTAssertEqual(moved.origin.y, 0.35, accuracy: 0.000001)
+        XCTAssertEqual(moved.width, 0.5, accuracy: 0.000001)
+        XCTAssertEqual(moved.height, 0.4, accuracy: 0.000001)
+    }
+
+    func testDraggingCropAreaClampsTheWholeFrameToImageBounds() {
+        let rect = CGRect(x: 0.2, y: 0.25, width: 0.5, height: 0.4)
+        let imageRect = CGRect(x: 0, y: 0, width: 100, height: 100)
+
+        let moved = CropOverlayInteraction.translated(
+            rect, delta: CGSize(width: 100, height: 100), imageRect: imageRect
+        )
+
+        XCTAssertEqual(moved, rect.offsetBy(dx: 0.3, dy: -0.25))
+    }
+
+    func testDraggingCropAreaKeepsNormalizedMovementStableAcrossCanvasScales() {
+        let rect = CGRect(x: 0.15, y: 0.2, width: 0.6, height: 0.5)
+        let fitImageRect = CGRect(x: 20, y: 10, width: 800, height: 600)
+        let zoomedImageRect = CGRect(x: -380, y: -290, width: 1_600, height: 1_200)
+
+        let fitMoved = CropOverlayInteraction.translated(
+            rect, delta: CGSize(width: 80, height: -60), imageRect: fitImageRect
+        )
+        let zoomedMoved = CropOverlayInteraction.translated(
+            rect, delta: CGSize(width: 160, height: -120), imageRect: zoomedImageRect
+        )
+
+        XCTAssertEqual(fitMoved.origin.x, zoomedMoved.origin.x, accuracy: 0.000001)
+        XCTAssertEqual(fitMoved.origin.y, zoomedMoved.origin.y, accuracy: 0.000001)
+        XCTAssertEqual(fitMoved.size.width, rect.size.width, accuracy: 0.000001)
+        XCTAssertEqual(fitMoved.size.height, rect.size.height, accuracy: 0.000001)
+        XCTAssertEqual(zoomedMoved.size.width, rect.size.width, accuracy: 0.000001)
+        XCTAssertEqual(zoomedMoved.size.height, rect.size.height, accuracy: 0.000001)
+    }
+
     func testCropIsNormalizedBoundedAndCodable() throws {
         let crop = CropAdjustments(normalizedRect: CGRect(x: -0.1, y: 0.2, width: 0.8, height: 0.9))
         let rect = try XCTUnwrap(crop.normalizedRect)

@@ -137,7 +137,9 @@ struct CropOverlayView: View {
             .onChanged { value in
                 let start = moveStart ?? normalizedRect
                 moveStart = start
-                onChange(translated(start, delta: value.translation, imageRect: imageRect))
+                onChange(CropOverlayInteraction.translated(
+                    start, delta: value.translation, imageRect: imageRect
+                ))
             }
             .onEnded { _ in moveStart = nil }
     }
@@ -150,16 +152,6 @@ struct CropOverlayView: View {
                 onChange(resized(start, handle: handle, delta: value.translation, imageRect: imageRect))
             }
             .onEnded { _ in handleStarts[handle] = nil }
-    }
-
-    private func translated(_ rect: CGRect, delta: CGSize, imageRect: CGRect) -> CGRect {
-        guard imageRect.width > 0, imageRect.height > 0 else { return rect }
-        let dx = delta.width / imageRect.width
-        let dy = -delta.height / imageRect.height
-        return rect.offsetBy(
-            dx: min(max(dx, -rect.minX), 1 - rect.maxX),
-            dy: min(max(dy, -rect.minY), 1 - rect.maxY)
-        )
     }
 
     private func resized(_ rect: CGRect, handle: Handle, delta: CGSize, imageRect: CGRect) -> CGRect {
@@ -187,6 +179,20 @@ struct CropOverlayView: View {
             minY = min(max(rect.minY + dy, 0), rect.maxY - minimum)
         }
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+}
+
+/// Normalized crop movement is kept separate from SwiftUI gesture delivery so its bottom-left
+/// coordinate conversion and image-bound clamping can be tested without a live view hierarchy.
+enum CropOverlayInteraction {
+    static func translated(_ rect: CGRect, delta: CGSize, imageRect: CGRect) -> CGRect {
+        guard imageRect.width > 0, imageRect.height > 0 else { return rect }
+        let dx = delta.width / imageRect.width
+        let dy = -delta.height / imageRect.height
+        return rect.offsetBy(
+            dx: min(max(dx, -rect.minX), 1 - rect.maxX),
+            dy: min(max(dy, -rect.minY), 1 - rect.maxY)
+        )
     }
 }
 
