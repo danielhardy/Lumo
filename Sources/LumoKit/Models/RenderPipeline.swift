@@ -29,8 +29,9 @@ enum RenderPipeline {
     /// GPU-backed Texture, Clarity, and Dehaze Effects stage. v12 adds the post-LUT vignette stage.
     /// v13 adds deterministic, resolution-aware post-LUT grain. v14 preserves the grain seed's
     /// full 32-bit entropy when passing it to the GPU kernel. v15 adds the post-LUT crop stage.
-    /// v16 formalizes the reusable pre-LUT prefix boundary.
-    static let cacheVersion = 16
+    /// v16 formalizes the reusable pre-LUT prefix boundary. v17 bounds and sanitizes the Dehaze
+    /// output before it can be reused or presented.
+    static let cacheVersion = 17
 
     /// Build the graph for `document` over `source`.
     ///
@@ -449,7 +450,8 @@ enum RenderPipeline {
     /// Apply the detail/atmosphere controls that belong before the LUT. Kept separate from the
     /// convenience above so the full pipeline can place vignette after LUT exactly once.
     static func applyPreLUTEffects(_ effects: EffectsAdjustments, to image: CIImage) -> CIImage {
-        guard effects.texture != 0 || effects.clarity != 0 || effects.dehaze != 0 else { return image }
+        let dehaze = sanitizedDehaze(effects.dehaze)
+        guard effects.texture != 0 || effects.clarity != 0 || dehaze != 0 else { return image }
         var result = image
 
         if effects.texture != 0 {
@@ -458,8 +460,8 @@ enum RenderPipeline {
         if effects.clarity != 0 {
             result = applyClarity(effects.clarity, to: result)
         }
-        if effects.dehaze != 0 {
-            result = applyDehaze(effects.dehaze, to: result)
+        if dehaze != 0 {
+            result = applyDehaze(dehaze, to: result)
         }
         return result
     }
@@ -534,6 +536,15 @@ enum RenderPipeline {
     /// terms are intentionally restrained: at moderate settings the operation remains reversible
     /// and avoids making clipped highlights or artificial halos the primary visual effect.
     private static func applyDehaze(_ value: Double, to image: CIImage) -> CIImage {
+        let value = sanitizedDehaze(value)
+        guard value != 0,
+              image.extent.width.isFinite,
+              image.extent.height.isFinite,
+              image.extent.width > 0,
+              image.extent.height > 0
+        else { return image }
+
+        let inputExtent = image.extent
         let amount = CGFloat(abs(value) / EffectsAdjustments.dehazeRange.upperBound)
         let radius = normalizedRadius(0.026, for: image)
         let local: CIImage
@@ -552,8 +563,9 @@ enum RenderPipeline {
         controls.brightness = 0
         controls.contrast = Float(1 + (value > 0 ? 0.28 : -0.22) * amount)
         controls.saturation = Float(1 + (value > 0 ? 0.16 : -0.14) * amount)
-        result = controls.outputImage ?? result
-        return applyDehazeTone(value, amount: amount, to: result)
+        result = boundedOutput(controls.outputImage, to: inputExtent, fallback: result)
+        return boundedOutput(applyDehazeTone(value, amount: amount, to: result),
+                             to: inputExtent, fallback: image)
     }
 
     /// A shallow S-curve supplies the tonal part of Dehaze without reusing the Clarity midtone
@@ -563,12 +575,41 @@ enum RenderPipeline {
         let curve = CIFilter.toneCurve()
         curve.inputImage = image
         let direction: CGFloat = value > 0 ? 1 : -1
+        let safeAmount = min(max(amount.isFinite ? amount : 0, 0), 1)
         curve.point0 = toneCurvePoint(input: 0, output: 0)
-        curve.point1 = toneCurvePoint(input: 0.25, output: 0.25 - 0.035 * direction * amount)
+        curve.point1 = toneCurvePoint(
+            input: 0.25,
+            output: clampedToneValue(0.25 - 0.035 * direction * safeAmount)
+        )
         curve.point2 = toneCurvePoint(input: 0.5, output: 0.5)
-        curve.point3 = toneCurvePoint(input: 0.75, output: 0.75 + 0.035 * direction * amount)
+        curve.point3 = toneCurvePoint(
+            input: 0.75,
+            output: clampedToneValue(0.75 + 0.035 * direction * safeAmount)
+        )
         curve.point4 = toneCurvePoint(input: 1, output: 1)
-        return curve.outputImage ?? image
+        return curve.outputImage?.cropped(to: image.extent) ?? image
+    }
+
+    /// The model clamps normal UI edits, but the renderer is also a public value boundary used by
+    /// decoded documents, tests, and future callers. Keep malformed values from becoming NaN or
+    /// infinity in Core Image parameters even if a caller bypasses model construction.
+    private static func sanitizedDehaze(_ value: Double) -> Double {
+        guard value.isFinite else { return 0 }
+        return min(max(value, EffectsAdjustments.dehazeRange.lowerBound),
+                   EffectsAdjustments.dehazeRange.upperBound)
+    }
+
+    /// Spatial filters may advertise an unbounded or implementation-defined extent. Dehaze is a
+    /// tonal/detail operation, so its output must remain in the exact input frame before the graph
+    /// is materialized for preview or passed to the full-resolution/export rasterizer.
+    private static func boundedOutput(_ candidate: CIImage?, to extent: CGRect,
+                                      fallback: CIImage) -> CIImage {
+        guard let candidate,
+              candidate.extent.width.isFinite,
+              candidate.extent.height.isFinite,
+              candidate.extent.width > 0,
+              candidate.extent.height > 0 else { return fallback }
+        return candidate.cropped(to: extent)
     }
 
     private static func normalizedRadius(_ fraction: CGFloat, for image: CIImage) -> CGFloat {
@@ -591,13 +632,24 @@ enum RenderPipeline {
         mask: CIImage?,
         extent: CGRect
     ) -> CIImage {
-        let maskImage = mask ?? CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1))
-            .cropped(to: extent)
-        return effectsBlendKernel?.apply(
-            extent: extent,
-            roiCallback: { _, rect in rect },
-            arguments: [image, effect.cropped(to: extent), maskImage, amount]
-        )?.cropped(to: extent) ?? image
+        let baseMask = mask ?? CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1))
+        let maskImage: CIImage
+        if amount == 1 {
+            maskImage = baseMask.cropped(to: extent)
+        } else {
+            // Scale only the mask alpha. CIBlendWithAlphaMask handles the coordinate mapping
+            // between a filtered effect and the original image; the old custom kernel sampled
+            // those two samplers in one coordinate space and could vertically reverse Dehaze at
+            // full amount.
+            maskImage = baseMask.applyingFilter("CIColorMatrix", parameters: [
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: amount),
+            ]).cropped(to: extent)
+        }
+        let blend = CIFilter.blendWithAlphaMask()
+        blend.inputImage = effect.cropped(to: extent)
+        blend.backgroundImage = image
+        blend.maskImage = maskImage
+        return blend.outputImage?.cropped(to: extent) ?? image
     }
 
     private static func midtoneMask(for image: CIImage, amount: CGFloat) -> CIImage {
@@ -616,17 +668,6 @@ enum RenderPipeline {
         float weight = clamp(4.0 * luminance * (1.0 - luminance), 0.0, 1.0);
         float alpha = weight * clamp(controls.x, 0.0, 1.0);
         return vec4(0.0, 0.0, 0.0, alpha);
-    }
-    """)
-
-    private static let effectsBlendKernel = CIKernel(source: """
-    kernel vec4 effectsBlend(sampler original, sampler effect, sampler mask, float amount) {
-        vec2 coordinate = samplerCoord(original);
-        vec4 base = sample(original, coordinate);
-        vec4 altered = sample(effect, coordinate);
-        vec4 maskPixel = sample(mask, coordinate);
-        float mixAmount = clamp(amount * maskPixel.a, 0.0, 1.0);
-        return mix(base, altered, mixAmount);
     }
     """)
 

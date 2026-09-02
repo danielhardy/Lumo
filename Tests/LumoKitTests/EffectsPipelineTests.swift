@@ -68,15 +68,23 @@ final class EffectsPipelineTests: XCTestCase {
         ))
     }
 
-    private func values(of image: CIImage, width: Int, height: Int) -> [Float] {
+    private func values(
+        of image: CIImage,
+        width: Int,
+        height: Int,
+        bounds: CGRect = CGRect(x: 0, y: 0, width: 0, height: 0)
+    ) -> [Float] {
         var pixels = [Float](repeating: 0, count: width * height * 4)
+        let renderBounds = bounds.width > 0 && bounds.height > 0
+            ? bounds
+            : CGRect(x: 0, y: 0, width: width, height: height)
         pixels.withUnsafeMutableBytes { raw in
             guard let base = raw.baseAddress else { return }
             Pixels.context.render(
                 image,
                 toBitmap: base,
                 rowBytes: width * 4 * MemoryLayout<Float>.size,
-                bounds: CGRect(x: 0, y: 0, width: width, height: height),
+                bounds: renderBounds,
                 format: .RGBAf,
                 colorSpace: nil
             )
@@ -220,6 +228,53 @@ final class EffectsPipelineTests: XCTestCase {
             XCTAssertEqual(output.extent, source.extent)
             let bytes = try Pixels.bytes(of: output)
             XCTAssertEqual(bytes[3], 102, accuracy: 2, "Effects must preserve alpha")
+        }
+    }
+
+    func testDehazeFullRangePreservesOffsetExtentOrientationAndFinitePixels() throws {
+        let width = 640
+        let height = 400
+        let extent = CGRect(x: 37, y: 19, width: width, height: height)
+        let source = try grayscaleImage(
+            values: (0..<(width * height)).map { index in
+                let y = CGFloat(index / width)
+                return 0.12 + 0.76 * y / CGFloat(height - 1)
+            }, width: width, height: height
+        ).transformed(by: CGAffineTransform(translationX: extent.minX, y: extent.minY))
+        let sourceValues = values(of: source, width: width, height: height, bounds: extent)
+        let sourceLow = sourceValues.prefix(width * height / 8).reduce(0, +)
+            / Float(width * height / 8)
+        let sourceHigh = sourceValues.suffix(width * height / 8).reduce(0, +)
+            / Float(width * height / 8)
+        let sourceDirection = sourceHigh - sourceLow
+        let sourceBytes = try Pixels.bytes(of: source)
+
+        for value in [-100.0, -1.0, 0.0, 1.0, 100.0] {
+            let output = RenderPipeline.applyEffects(
+                EffectsAdjustments(dehaze: value), to: source
+            )
+            XCTAssertEqual(
+                output.extent, extent,
+                "Dehaze \(value) changed the image frame"
+            )
+
+            let outputValues = values(of: output, width: width, height: height, bounds: extent)
+            XCTAssertTrue(outputValues.allSatisfy { $0.isFinite },
+                          "Dehaze \(value) produced a non-finite pixel")
+            if abs(value) == 100 {
+                assertPixelsDiffer(
+                    try Pixels.bytes(of: output), sourceBytes,
+                    "maximum Dehaze must remain an actual adjustment"
+                )
+            }
+            let outputLow = outputValues.prefix(width * height / 8).reduce(0, +)
+                / Float(width * height / 8)
+            let outputHigh = outputValues.suffix(width * height / 8).reduce(0, +)
+                / Float(width * height / 8)
+            XCTAssertGreaterThan(
+                (outputHigh - outputLow) * sourceDirection, 0,
+                "Dehaze \(value) inverted the source orientation"
+            )
         }
     }
 

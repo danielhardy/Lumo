@@ -98,4 +98,48 @@ final class RenderRequestTests: TempDirectoryTestCase {
             "preview and export request policies must preserve the same pipeline pixels"
         )
     }
+
+    func testDehazeFullRangeKeepsPreviewAndExportGeometryAndPixelsAligned() async throws {
+        let source = try makeSource()
+        let engine = RenderEngine()
+
+        for value in [-100.0, -1.0, 0.0, 1.0, 100.0] {
+            let document = EditDocument(effects: EffectsAdjustments(dehaze: value))
+            let preview = try await engine.render(RenderRequest(
+                source: source,
+                document: document,
+                targetSize: source.nativeExtent,
+                quality: .preview,
+                output: .raster
+            ))
+            let interactive = try await engine.render(RenderRequest(
+                source: source,
+                document: document,
+                targetSize: source.nativeExtent,
+                quality: .interactive,
+                output: .raster
+            ))
+            let exported = try await engine.render(RenderRequest(
+                source: source,
+                document: document,
+                quality: .export,
+                output: .encoded(format: .png, quality: 1)
+            ))
+
+            XCTAssertEqual(preview.extent, source.nativeExtent, "preview extent for Dehaze \(value)")
+            XCTAssertEqual(interactive.extent, source.nativeExtent,
+                           "interactive extent for Dehaze \(value)")
+            XCTAssertEqual(exported.extent, source.nativeExtent, "export extent for Dehaze \(value)")
+            assertPixelsEqual(
+                try Pixels.bytes(of: try Pixels.decode(interactive.data)),
+                try Pixels.bytes(of: try Pixels.decode(preview.data)),
+                "interactive/settled Dehaze \(value) must keep the same geometry"
+            )
+            assertPixelsEqual(
+                try Pixels.bytes(of: try Pixels.decode(preview.data)),
+                try Pixels.bytes(of: try Pixels.decode(exported.data)),
+                "preview/export Dehaze \(value) must use the same bounded geometry"
+            )
+        }
+    }
 }
