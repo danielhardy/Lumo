@@ -48,6 +48,7 @@ enum LumoWorkflowEvent: CaseIterable {
     case renderStart
     case renderEnd
     case gpuComplete
+    case presentationEncoded
     case drawablePresented
     case staleRevision
 
@@ -61,6 +62,7 @@ enum LumoWorkflowEvent: CaseIterable {
         case .renderStart: return "RenderStart"
         case .renderEnd: return "RenderEnd"
         case .gpuComplete: return "GPUComplete"
+        case .presentationEncoded: return "PresentationEncoded"
         case .drawablePresented: return "DrawablePresented"
         case .staleRevision: return "StaleRevision"
         }

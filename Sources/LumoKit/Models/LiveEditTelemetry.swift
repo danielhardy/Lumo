@@ -22,6 +22,10 @@ struct LiveEditMeasurement: Sendable, Equatable {
     var renderEnd: TimeInterval?
     var gpuCompletion: TimeInterval?
     var drawablePresentation: TimeInterval?
+    /// Main-actor-only presentation timings. These are intentionally separate from renderStart/
+    /// renderEnd: the latter covers completed source/adjustment processing on RenderEngine.
+    var drawableAcquisitionMS: Double?
+    var presentationEncodingMS: Double?
     /// Filled from Instruments/Metal System Trace when a capture is imported into a report.
     var cpuTimeMS: Double?
     var gpuTimeMS: Double?
@@ -85,7 +89,8 @@ final class LiveEditTelemetry {
             requestedWidth: width, requestedHeight: height,
             effectiveWidth: width, effectiveHeight: height,
             inputTime: time, renderStart: nil, renderEnd: nil, gpuCompletion: nil,
-            drawablePresentation: nil, cpuTimeMS: nil, gpuTimeMS: nil,
+            drawablePresentation: nil, drawableAcquisitionMS: nil, presentationEncodingMS: nil,
+            cpuTimeMS: nil, gpuTimeMS: nil,
             allocationBytes: nil, memoryGrowthBytes: nil))
         trimIfNeeded()
         index[revision] = measurements.count - 1
@@ -114,6 +119,13 @@ final class LiveEditTelemetry {
         if let value = renderEnd { measurements[i].renderEnd = value }
         if let value = gpuCompletion { measurements[i].gpuCompletion = value }
         if let value = drawablePresentation { measurements[i].drawablePresentation = value }
+    }
+
+    func markPresentationTimings(_ revision: UInt64, drawableAcquisitionMS: Double,
+                                 presentationEncodingMS: Double) {
+        guard let i = index[revision] else { return }
+        measurements[i].drawableAcquisitionMS = drawableAcquisitionMS
+        measurements[i].presentationEncodingMS = presentationEncodingMS
     }
 
     func coalesced(_ revision: UInt64) {

@@ -22,6 +22,13 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
         try Fixtures.writeGradientPNG(width: 64, height: 48, named: "shot.png", in: tempDirectory)
     }
 
+    private func makeRealViewModel() -> AppViewModel {
+        AppViewModel(
+            engine: RenderEngine(),
+            editStore: EditDocumentStore(fileURL: tempDirectory.appendingPathComponent("edits.json"))
+        )
+    }
+
     // MARK: - Waiting
 
     /// The load and the render are both unstructured tasks, so tests wait on published state rather
@@ -67,8 +74,9 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
 
     private func previewBytes(_ viewModel: AppViewModel) throws -> [UInt8] {
         let image = try XCTUnwrap(viewModel.previewSurface.image)
-        let context = CIContext()
-        let cg = try XCTUnwrap(context.createCGImage(image, from: image.extent.integral))
+        let cg = try XCTUnwrap(
+            RenderEngine.presentationContext.createCGImage(image, from: image.extent.integral)
+        )
         return try Pixels.bytes(of: cg)
     }
 
@@ -192,7 +200,7 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
     /// The gate, at the pixels. Each of the three knobs must visibly move the preview — a request
     /// that is assembled correctly and never rendered would pass every test above.
     func testEachKnobVisiblyChangesThePreview() async throws {
-        let viewModel = AppViewModel(engine: RenderEngine())
+        let viewModel = makeRealViewModel()
         try await openImage(viewModel)
         try await waitUntil("the first preview") { viewModel.previewSurface.image != nil }
         let plain = try previewBytes(viewModel)
@@ -235,7 +243,7 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
     /// before and after. It needs no RAW — the resolution path does not care what the source is —
     /// which is why it runs on CI too, unlike the derive gate proper.
     func testAFreshDerivePutsAGradedImageOnScreen() async throws {
-        let viewModel = AppViewModel(engine: RenderEngine())
+        let viewModel = makeRealViewModel()
         try await openImage(viewModel)
         try await waitUntil("the first preview") { viewModel.previewSurface.image != nil }
         let ungraded = try previewBytes(viewModel)
@@ -260,7 +268,7 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
     /// survived. What distinguishes them is which surface is published for the main panel, so this
     /// checks the pixels there.
     func testHoldingSpaceShowsTheUngradedImageInTheMainPanel() async throws {
-        let viewModel = AppViewModel(engine: RenderEngine())
+        let viewModel = makeRealViewModel()
         try await openImage(viewModel)
         try await waitUntil("the first preview") { viewModel.previewSurface.image != nil }
         let ungraded = try previewBytes(viewModel)
@@ -288,7 +296,7 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
         guard let rawURL = Fixtures.localRAWURL else {
             throw XCTSkip("no local RAW to develop; see Fixtures.localRAWURL")
         }
-        let viewModel = AppViewModel(engine: RenderEngine())
+        let viewModel = makeRealViewModel()
         viewModel.openImage(url: rawURL)
         try await waitUntil("the RAW to load", timeout: 30) { viewModel.sourceImage != nil }
         try await waitUntil("the first preview", timeout: 30) { viewModel.previewSurface.image != nil }

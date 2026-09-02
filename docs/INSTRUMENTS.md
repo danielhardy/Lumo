@@ -6,8 +6,9 @@ Lumo's render workflow emits Points of Interest signposts under subsystem
 `Export`, and `LiveEdit`, plus the Photos import stages `PhotoTransfer`, `PhotoThumbnail`, and
 `PhotoCollectionInsert`. Cache outcomes are events named `CacheHit` and `CacheMiss`; cancelled
 and coalesced work is counted by `Cancellation` and `Coalesced` events. LiveEdit emits
-`PointerInput`, `RenderStart`, `RenderEnd`, `GPUComplete`, `DrawablePresented`, and
-`StaleRevision`. Each carries a privacy-safe source token, quality, and document revision.
+`PointerInput`, `RenderStart`, `RenderEnd`, `GPUComplete`, `PresentationEncoded`,
+`DrawablePresented`, and `StaleRevision`. Each carries a privacy-safe source token, quality, and
+document revision.
 
 The `source` argument is a 16-character SHA-256 token captured once when the source
 session is created. Event logging reuses that token and does not query URL metadata
@@ -50,8 +51,11 @@ keeps live editing separate from settled preview and export work.
 Use the **Points of Interest** detail view to inspect interval duration and event count.
 `PreviewCoordinator.telemetry.report()` supplies p50/p95/p99 input-to-present latency,
 delivered FPS, frame gaps, coalescing, stale-revision age, and requested/effective
-render dimensions. Effective dimensions are updated from the drawable backing pixels;
-requested dimensions are the render request's target size.
+render dimensions. Each sample also records the main-actor drawable-acquisition and
+presentation-encoding budgets. Effective dimensions are updated from the drawable backing pixels;
+requested dimensions are the render request's target size. `RenderEnd` now occurs after the
+off-main-actor processing texture has completed, while `GPUComplete` and `DrawablePresented`
+describe the separate presentation submission.
 Use Metal System Trace for GPU time and Allocations/VM Tracker for allocations and memory growth.
 Save the `.trace` and this value-only summary with the scenario notes.
 

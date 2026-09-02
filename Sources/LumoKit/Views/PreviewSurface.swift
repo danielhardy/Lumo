@@ -9,9 +9,9 @@ final class PreviewSurface: ObservableObject {
     @Published private(set) var revision: UInt64 = 0
     private(set) var image: CIImage?
     private(set) var space: WorkingSpace = .current
-    /// The last image known to have made it through the presentation command buffer. A newly
-    /// published Core Image graph is lazy, so the fact that `present` accepted it is not enough to
-    /// replace a frame that is already on screen.
+    /// The last image known to have made it through the presentation command buffer. Production
+    /// frames are already completed texture-backed images; the confirmation still matters because
+    /// drawable acquisition/presentation can fail independently of processing.
     private var lastValidImage: CIImage?
     private var lastValidSpace: WorkingSpace = .current
     private var pendingDisplayID: UInt64?
@@ -74,6 +74,20 @@ final class PreviewSurface: ObservableObject {
 
     fileprivate func setEffectiveDimensions(revision: UInt64, width: Int, height: Int) {
         telemetryByRevision[revision]?.telemetry.setEffectiveDimensions(revision, width: width, height: height)
+    }
+
+    fileprivate func markPresentationEncoded(revision: UInt64, drawableAcquisitionMS: Double,
+                                             presentationEncodingMS: Double) {
+        telemetryByRevision[revision]?.telemetry.markPresentationTimings(
+            revision, drawableAcquisitionMS: drawableAcquisitionMS,
+            presentationEncodingMS: presentationEncodingMS
+        )
+        if let pending = telemetryByRevision[revision], let source = pending.source {
+            LumoObservability.event(
+                .presentationEncoded, source: source, quality: pending.quality,
+                detail: "drawable_ms=\(drawableAcquisitionMS) encode_ms=\(presentationEncodingMS)"
+            )
+        }
     }
 
     private func trimTelemetry() {
@@ -167,26 +181,30 @@ struct PreviewSurfaceView: NSViewRepresentable {
     @MainActor final class Coordinator: NSObject, MTKViewDelegate {
         let context: CIContext = RenderEngine.presentationContext
         let device: MTLDevice = RenderEngine.presentationDevice
-        let commandQueue: MTLCommandQueue = RenderEngine.presentationDevice.makeCommandQueue()!
+        let commandQueue: MTLCommandQueue = RenderEngine.presentationQueue
         weak var surface: PreviewSurface?
         weak var view: MTKView?
         var navigation = CanvasNavigation()
         private var lastDrawnRevision: UInt64?
         private var lastDrawnNavigation: CanvasNavigation?
         private var lastDrawableSize: (width: Int, height: Int)?
-        /// `makeCIImage` builds a lazy Core Image graph, so its completion is not the same thing
-        /// as its GPU work finishing. Keep one drawable submission in flight and redraw only the
-        /// newest surface state when it completes; otherwise a drag queues old curve revisions
-        /// faster than the GPU can present them.
+        /// Keep one drawable submission in flight and redraw only the newest surface state when it
+        /// completes. Processing has already completed on RenderEngine's queue; this pacer bounds
+        /// only the small transform/compositing pass and drawable submissions.
         private var isDrawing = false
 
         func draw(in view: MTKView) {
             self.view = view
             guard !isDrawing else { return }
-            guard let surface, let image = surface.image,
-                  let drawable = view.currentDrawable,
+            guard let surface, let image = surface.image else { return }
+            let drawableAcquisitionStart = LiveEditTelemetryClock.now
+            guard let drawable = view.currentDrawable,
                   let commandBuffer = commandQueue.makeCommandBuffer()
             else { return }
+
+            let drawableAcquisitionMS = max(
+                0, (LiveEditTelemetryClock.now - drawableAcquisitionStart) * 1_000
+            )
 
             let drawableSize = (drawable.texture.width, drawable.texture.height)
             let sameDrawableSize = lastDrawableSize?.width == drawableSize.0 &&
@@ -231,6 +249,7 @@ struct PreviewSurfaceView: NSViewRepresentable {
             let drawRevision = surface.revision
             let drawNavigation = navigation
             isDrawing = true
+            let presentationEncodingStart = LiveEditTelemetryClock.now
             context.render(output, to: drawable.texture, commandBuffer: commandBuffer,
                            bounds: destination, colorSpace: surface.space.cgColorSpace)
 
@@ -238,6 +257,16 @@ struct PreviewSurfaceView: NSViewRepresentable {
             // drawable is on us. The drawable is submitted only after the complete fitted frame is
             // encoded, so a new frame cannot expose Core Image's intermediate tiles.
             commandBuffer.present(drawable)
+            let presentationEncodingMS = max(
+                0, (LiveEditTelemetryClock.now - presentationEncodingStart) * 1_000
+            )
+            if let presentationRevision {
+                surface.markPresentationEncoded(
+                    revision: presentationRevision,
+                    drawableAcquisitionMS: drawableAcquisitionMS,
+                    presentationEncodingMS: presentationEncodingMS
+                )
+            }
             commandBuffer.addCompletedHandler { [weak self, weak surface] commandBuffer in
                 let succeeded = commandBuffer.status == .completed
                 let gpuCompletion = commandBuffer.gpuEndTime > 0

@@ -15,7 +15,7 @@ final class ObservabilityTests: XCTestCase {
     func testWorkflowEventsCoverCacheAndSupersededWork() {
         let names = LumoWorkflowEvent.allCases.map { String(describing: $0.name) }
 
-        XCTAssertEqual(names, ["CacheHit", "CacheMiss", "Cancellation", "Coalesced", "PointerInput", "RenderStart", "RenderEnd", "GPUComplete", "DrawablePresented", "StaleRevision"])
+        XCTAssertEqual(names, ["CacheHit", "CacheMiss", "Cancellation", "Coalesced", "PointerInput", "RenderStart", "RenderEnd", "GPUComplete", "PresentationEncoded", "DrawablePresented", "StaleRevision"])
     }
 
     func testSourceTokensAreStablePrivateSafeAndDistinct() {

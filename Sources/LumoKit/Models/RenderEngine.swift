@@ -2,6 +2,7 @@ import Foundation
 import CoreImage
 import CoreGraphics
 import ImageIO
+import Metal
 
 /// What the app needs from a renderer, so a test can hand it something that is not the GPU.
 ///
@@ -14,7 +15,11 @@ import ImageIO
 /// for free; a fake has to earn it.
 protocol RenderEngining: Sendable {
 
-    /// Evaluated Core Image output for the persistent GPU presentation surface.
+    /// Completed Core Image output for the persistent GPU presentation surface.
+    ///
+    /// A production implementation must not return a lazy source graph here. The returned image
+    /// is backed by a completed GPU texture, so the caller may apply presentation-only transforms
+    /// without causing source development or adjustment evaluation on its actor.
     func makeCIImage(_ request: RenderRequest) async -> sending CIImage?
 
     /// Render one UI-independent request through the deterministic pipeline.
@@ -111,12 +116,16 @@ extension RenderEngining {
     }
 }
 
-/// The one `CIContext`.
+/// The render contexts have deliberately separate ownership domains. The processing context and
+/// queue live behind `RenderEngine`; the presentation context and queue live on the main actor in
+/// `PreviewSurfaceView.Coordinator`. They share a device, but neither context or queue crosses an
+/// actor boundary. This prevents drawable acquisition/presentation from becoming part of source
+/// evaluation while making the device/queue relationship explicit.
 ///
-/// **The GPU is the isolation boundary** (`docs/PHASE2_SPEC.md` §4.5). `CIImage`, `CIFilter` and
-/// `CIContext` are born and die inside this actor; only `Sendable` values cross in — `RenderRequest`,
-/// `ImageSource`, `CubeLUT`, and `WorkingSpace` — and a `RenderResult` crosses out. That is what
-/// lets Step 8 turn strict concurrency on without a single `@unchecked`.
+/// **The GPU is the isolation boundary** (`docs/PHASE2_SPEC.md` §4.5). Source graphs, filters and
+/// processing contexts are born and die inside this actor; only value requests and completed,
+/// texture-backed preview images cross out. That is what lets Step 8 turn strict concurrency on
+/// without a single `@unchecked`.
 ///
 /// It deliberately does **not** decide *what* to render. `RenderPipeline.buildImage` is a pure
 /// function that builds the graph; this evaluates it. Preview and export call the same builder and
@@ -124,32 +133,63 @@ extension RenderEngining {
 /// rather than maintained (§1).
 ///
 /// Added in Step 4 **alongside** the old `ImageProcessor` path, which Steps 5–7 then cut over leaf by
-/// leaf — preview, export, histogram — until nothing was left of it to delete. As of Step 7 this is
-/// the **only** `CIContext` in the render stack. `RecipeExtractor` keeps its own by design (§3): it
-/// sits outside this stack, never imports `EditDocument`, and samples in a space pinned to sRGB
-/// regardless of `WorkingSpace.current`. Two contexts in the module, one in the render path, and
-/// `RenderStackTests` fails if a third appears.
+/// leaf — preview, export, histogram — until nothing was left of it to delete. `RecipeExtractor`
+/// keeps its own context by design (§3): it sits outside this stack, never imports `EditDocument`,
+/// and samples in a space pinned to sRGB regardless of `WorkingSpace.current`. The render stack now
+/// has one actor-owned processing context and one explicitly main-actor-owned presentation context;
+/// `RenderStackTests` continues to protect against accidental context proliferation.
 actor RenderEngine: RenderEngining {
 
-    /// Shared by the persistent SwiftUI presentation surfaces. Keeping this in the render-stack
-    /// owner preserves the single-context invariant while allowing MTKView to draw its drawable.
-    ///
-    /// `presentationContext` is built from this same device: the `MTKView` and the `CIContext`
-    /// rendering into its drawable's texture must agree on device, or the render silently no-ops.
+    /// Shared device for the two explicitly-owned GPU domains. The engine's processing context is
+    /// created from its private queue; the presentation context is created from the main-actor
+    /// presentation queue below. A device is safe to share; mutable contexts and queues are not.
     @MainActor static let presentationDevice: MTLDevice = MTLCreateSystemDefaultDevice()!
 
-    @MainActor static let presentationContext: CIContext = CIContext(mtlDevice: presentationDevice)
+    @MainActor static let presentationQueue: MTLCommandQueue = presentationDevice.makeCommandQueue()!
+    @MainActor static let presentationContext: CIContext = CIContext(mtlCommandQueue: presentationQueue)
 
     func makeCIImage(_ request: RenderRequest) async -> sending CIImage? {
         guard request.output == .raster, !Task.isCancelled else { return nil }
-        return buildImage(request.source, request.document, request.lut, request.renderScale,
-                          request.space, quality: request.quality)
+        guard let image = buildImage(request.source, request.document, request.lut,
+                                     request.renderScale, request.space, quality: request.quality),
+              image.extent.isRasterizable
+        else {
+            return nil
+        }
+        guard let device, let commandQueue else {
+            // This is the CPU/no-device compatibility seam. The shipping macOS path has a Metal
+            // device and therefore takes the completed-texture path below; keeping the lazy image
+            // available here preserves RenderEngine's graph-only test initializer and CPU CI hosts.
+            return image
+        }
+
+        let rect = image.extent.integral
+        let width = Int(rect.width)
+        let height = Int(rect.height)
+        guard width > 0, height > 0,
+              let texture = makePreviewTexture(device: device, width: width, height: height)
+        else { return nil }
+
+        // RGBAh/RGBA16Float is intentional. The processing result is never quantized to RGBA8
+        // merely to cross the actor boundary; color matching and premultiplied-alpha behavior stay
+        // in Core Image at the requested working-space precision. Core Image encodes into this
+        // engine-owned command buffer, and the renderer does not hand the texture to presentation
+        // until its completion handler reports success.
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
+        context.render(image, to: texture, commandBuffer: commandBuffer, bounds: rect,
+                       colorSpace: request.space.cgColorSpace)
+        guard await commitAndWaitForCompletion(commandBuffer), !Task.isCancelled else { return nil }
+        // CIImage retains the texture. Since this image is only returned after the command buffer
+        // completes, a presentation transform can sample it without racing an in-flight write.
+        return CIImage(mtlTexture: texture, options: [.colorSpace: request.space.cgColorSpace])
     }
 
-    /// The app's engine. One instance, therefore one context.
+    /// The app's engine. One instance, therefore one actor-owned processing context and queue.
     static let shared = RenderEngine()
 
     private let context: CIContext
+    private let device: MTLDevice?
+    private let commandQueue: MTLCommandQueue?
 
     /// Cube filters, reused across renders. Lives here rather than on `CubeLUT` because it is mutable
     /// reference state: a `CIFilter` gets its `inputImage` written on every use, so it is only safe
@@ -170,11 +210,16 @@ actor RenderEngine: RenderEngining {
     private var memoryPressureSource: DispatchSourceMemoryPressure?
 
     init(configuration: RenderCacheConfiguration = .default) {
-        // Matches `ImageProcessor`: Metal when there is a device, the CPU fallback when there isn't
-        // (CI runners included).
-        if let device = MTLCreateSystemDefaultDevice() {
-            self.context = CIContext(mtlDevice: device)
+        // The processing context owns its queue. Using contextWithMTLCommandQueue makes the
+        // asynchronous completion boundary explicit instead of letting Core Image hide work in an
+        // internal queue that the caller cannot pace.
+        if let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() {
+            self.device = device
+            self.commandQueue = queue
+            self.context = CIContext(mtlCommandQueue: queue)
         } else {
+            self.device = nil
+            self.commandQueue = nil
             self.context = CIContext()
         }
         self.previewCache = BoundedLRUCache(
@@ -192,6 +237,10 @@ actor RenderEngine: RenderEngining {
     /// machine offers.
     init(context: CIContext, configuration: RenderCacheConfiguration = .default) {
         self.context = context
+        // An injected context may be CPU-backed or may target a device unknown to the caller, so
+        // retain the deterministic graph seam for tests instead of guessing a mismatched device.
+        self.device = nil
+        self.commandQueue = nil
         self.previewCache = BoundedLRUCache(
             maxEntries: configuration.previewMaxEntries,
             maxCostBytes: configuration.previewMaxCostBytes
@@ -474,6 +523,34 @@ actor RenderEngine: RenderEngining {
     var cachedFilterCount: Int { lutCache.count }
 
     // MARK: - Private
+
+    /// Allocate the completed-frame surface. The image stays texture-backed all the way to the
+    /// main-actor presentation pass; there is intentionally no PNG/CGImage/CPU readback seam here.
+    private func makePreviewTexture(device: MTLDevice, width: Int, height: Int) -> MTLTexture? {
+        let descriptor = MTLTextureDescriptor()
+        descriptor.textureType = .type2D
+        descriptor.pixelFormat = .rgba16Float
+        descriptor.width = width
+        descriptor.height = height
+        descriptor.mipmapLevelCount = 1
+        descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
+        descriptor.storageMode = .private
+        return device.makeTexture(descriptor: descriptor)
+    }
+
+    /// Turn the processing command buffer into the renderer's pacing boundary without blocking
+    /// the actor thread. The handler is installed before commit; otherwise Metal rejects a late
+    /// handler on a command buffer that has already been submitted. Cancellation is checked by the
+    /// caller after this continuation resumes, so the GPU resource is never handed to presentation
+    /// while its write is still in flight.
+    private func commitAndWaitForCompletion(_ commandBuffer: MTLCommandBuffer) async -> Bool {
+        await withCheckedContinuation { continuation in
+            commandBuffer.addCompletedHandler { buffer in
+                continuation.resume(returning: buffer.status == .completed)
+            }
+            commandBuffer.commit()
+        }
+    }
 
     /// One funnel, so preview and export cannot diverge in how they build the graph — only in the
     /// scale they ask for.

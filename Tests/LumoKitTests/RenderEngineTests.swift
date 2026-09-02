@@ -1,6 +1,7 @@
 import XCTest
 import CoreImage
 import CoreGraphics
+import Metal
 import UniformTypeIdentifiers
 @testable import LumoKit
 
@@ -38,6 +39,63 @@ final class RenderEngineTests: TempDirectoryTestCase {
     }
 
     // MARK: - Parity
+
+    /// Display previews cross the actor boundary as completed GPU pixels, not as a lazy graph.
+    /// The color-space metadata is retained on the texture-backed image so the presentation pass
+    /// cannot silently fall back to the context's default space.
+    func testDisplayPreviewIsBackedByACompletedMetalTexture() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("Metal is unavailable on this host")
+        }
+
+        let engine = RenderEngine()
+        let request = RenderRequest(
+            source: source, document: EditDocument(),
+            targetSize: CGSize(width: 48, height: 48), quality: .preview, output: .raster
+        )
+        let maybeImage = await engine.makeCIImage(request)
+        let image = try XCTUnwrap(maybeImage)
+
+        XCTAssertEqual(image.colorSpace?.name as String?, CGColorSpace.sRGB as String?)
+        XCTAssertEqual(image.extent.integral.size, CGSize(width: 48, height: 32))
+        let displayed = try await MainActor.run {
+            try XCTUnwrap(
+                RenderEngine.presentationContext.createCGImage(image, from: image.extent.integral),
+                "the completed texture must remain consumable by a Core Image presenter"
+            )
+        }
+        let reference = try await render(
+            engine, EditDocument(), scale: .preview(maxSize: CGSize(width: 48, height: 48))
+        )
+        assertPixelsEqual(try Pixels.bytes(of: displayed), try Pixels.bytes(of: reference),
+                          "completed preview pixels must match the actor-owned raster path")
+    }
+
+    /// RAW develop edits must survive the completed-texture boundary, not only the lazy graph path.
+    func testCompletedRAWPreviewReflectsDevelopSettings() async throws {
+        guard let rawURL = Fixtures.localRAWURL else {
+            throw XCTSkip("no local RAW to develop; see Fixtures.localRAWURL")
+        }
+        let rawSource = ImageSource(url: rawURL, nativeExtent: CGSize(width: 4000, height: 3000))
+        let engine = RenderEngine()
+
+        func preview(_ settings: RAWDevelopSettings) async throws -> [UInt8] {
+            let request = RenderRequest(
+                source: rawSource, document: EditDocument(rawDevelop: settings),
+                targetSize: CGSize(width: 256, height: 256), quality: .preview, output: .raster
+            )
+            let maybeImage = await engine.makeCIImage(request)
+            let image = try XCTUnwrap(maybeImage)
+            let cgImage = try await MainActor.run {
+                try XCTUnwrap(RenderEngine.presentationContext.createCGImage(image, from: image.extent.integral))
+            }
+            return try Pixels.bytes(of: cgImage)
+        }
+
+        let neutral = try await preview(.neutral)
+        let exposed = try await preview(RAWDevelopSettings(exposure: 1.5))
+        assertPixelsDiffer(exposed, neutral, "completed RAW previews must carry develop changes")
+    }
 
     /// The whole point of Phase 2, asserted directly: the same document rendered for display and
     /// encoded for export must be the same pixels. Not "close" — the same graph, the same rasterizer,
