@@ -170,10 +170,13 @@ final class PhotoKitDelivery: PhotosDelivering {
                 change.addAssets(NSArray(object: asset))
             }
         } else {
-            let creation = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(
-                withTitle: name
-            )
+            // `creationRequestForAssetCollection` must be called from within the change block
+            // itself, like every other PHChangeRequest factory — calling it beforehand and only
+            // mutating it inside `performChanges` violates PhotoKit's transaction contract.
             try await library.performChanges {
+                let creation = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(
+                    withTitle: name
+                )
                 creation.addAssets(NSArray(object: asset))
             }
         }
