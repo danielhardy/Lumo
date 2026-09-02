@@ -91,7 +91,7 @@ public struct ContentView: View {
                 do {
                     guard let data = try await item.loadTransferable(type: Data.self) else {
                         transferInterval.end()
-                        viewModel.recordPhotosImportFailure(name: name)
+                        viewModel.recordPhotosImportFailure(name: name, ordinal: ordinal)
                         continue
                     }
                     transferInterval.end()
@@ -111,7 +111,7 @@ public struct ContentView: View {
                     transferInterval.end()
                     // A provider failure is local to this item. Continue so already imported
                     // originals remain usable and later selections still get a chance to arrive.
-                    viewModel.recordPhotosImportFailure(name: name)
+                    viewModel.recordPhotosImportFailure(name: name, ordinal: ordinal)
                 }
             }
             wasCancelled = wasCancelled || Task.isCancelled

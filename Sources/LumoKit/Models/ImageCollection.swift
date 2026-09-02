@@ -20,6 +20,41 @@ final class ImageCollection: ObservableObject {
         }
     }
 
+    /// A display-only reservation made before a streamed Photos payload arrives. It deliberately
+    /// contains no source bytes or `PhotoAsset`; the slot exists only to keep the destination
+    /// thumbnail order stable while the provider transfers the corresponding item.
+    struct PendingImportSlot: Identifiable, Equatable, Sendable {
+        enum State: String, Sendable, Equatable {
+            case pending
+            case failed
+        }
+
+        let id: PhotoAssetID
+        let ordinal: Int
+        var assetID: PhotoAssetID?
+        var name: String?
+        var state: State
+
+        init(ordinal: Int, name: String? = nil, state: State = .pending) {
+            self.id = .imported(UUID())
+            self.ordinal = ordinal
+            self.assetID = nil
+            self.name = name
+            self.state = state
+        }
+    }
+
+    /// The ordered thumbnail presentation. Loaded entries carry an index into `items`; pending
+    /// and failed entries carry only their reservation metadata and therefore cannot be selected.
+    struct ThumbnailEntry: Identifiable, Equatable {
+        let id: PhotoAssetID
+        let itemIndex: Int?
+        let placeholder: PendingImportSlot?
+        let aspectRatio: Double
+
+        var isPlaceholder: Bool { placeholder != nil }
+    }
+
     struct Item: Identifiable {
         var asset: PhotoAsset
         var thumbnail: NSImage?
@@ -136,6 +171,12 @@ final class ImageCollection: ObservableObject {
     /// The selected filmstrip item and its small neighborhood stay warm even when SwiftUI has not
     /// materialized those cells yet. This keeps ←/→ stepping from waiting on a cold thumbnail.
     private var preparedThumbnailIDs: Set<PhotoAssetID> = []
+    /// Reservations are kept separate from `items` so a placeholder can never become a selection
+    /// or editing target. They are cleared once the streamed operation ends.
+    @Published private(set) var pendingImportSlots: [PendingImportSlot] = []
+    /// Data imports can finish out of order. Keeping their ordinals alongside the items preserves
+    /// picker order without changing the stable source IDs used by editing and persistence.
+    private var dataImportOrdinals: [Int] = []
     /// Folder whose security scope we hold open, released when we move on.
     private var scopedURL: URL?
 
@@ -332,6 +373,8 @@ final class ImageCollection: ObservableObject {
         scanTask?.cancel()
         stopMetadataLoading()
         items = []
+        pendingImportSlots.removeAll()
+        dataImportOrdinals.removeAll()
         selectedIndex = 0
         selection.clear()
         thumbnailDemandIDs.removeAll()
@@ -557,12 +600,20 @@ final class ImageCollection: ObservableObject {
         case .failure(let warning):
             addScanWarning(warning)
             let item = items[index]
+            if let slotIndex = pendingImportSlots.firstIndex(where: { $0.assetID == itemID }) {
+                pendingImportSlots[slotIndex].assetID = nil
+                pendingImportSlots[slotIndex].name = item.displayName
+                pendingImportSlots[slotIndex].state = .failed
+            }
             scheduler.cancel(id: thumbnailJobID(for: item))
             thumbnailJobIDs.remove(thumbnailJobID(for: item))
             items.remove(at: index)
+            if dataImportOrdinals.indices.contains(index) {
+                dataImportOrdinals.remove(at: index)
+            }
             reconcileSelection()
             selectedIndex = min(selectedIndex, max(0, items.count - 1))
-            isActive = !items.isEmpty
+            isActive = !items.isEmpty || !pendingImportSlots.isEmpty
         }
     }
 
@@ -580,7 +631,7 @@ final class ImageCollection: ObservableObject {
     /// its thumbnails inline and is easy to miss when the thumbnail path moves — which is why
     /// `docs/PHASE2_SPEC.md` §6 names both explicitly. Step 7 pointed both at `Thumbnails`.
     func addFromData(_ dataItems: [(name: String, data: Data)]) {
-        beginDataImport()
+        beginDataImport(reservedCount: dataItems.count)
         for (ordinal, item) in dataItems.enumerated() {
             appendDataImport(
                 PhotoImportItem(name: item.name, data: item.data), ordinal: ordinal
@@ -592,13 +643,15 @@ final class ImageCollection: ObservableObject {
     /// Start a streamed Photos import. Items are published as they arrive instead of waiting for
     /// the picker to transfer the entire selection, so the first asset can be opened immediately
     /// and one failed/cancelled transfer does not discard earlier successes.
-    func beginDataImport() {
+    func beginDataImport(reservedCount: Int = 0) {
         scanGeneration &+= 1
         cancelThumbnailWork()
         scanTask?.cancel()
         scanTask = nil
         stopMetadataLoading()
         items = []
+        pendingImportSlots = (0..<max(0, reservedCount)).map { PendingImportSlot(ordinal: $0) }
+        dataImportOrdinals.removeAll()
         selectedIndex = 0
         selection.clear()
         isThumbnailDemandDriven = false
@@ -606,6 +659,7 @@ final class ImageCollection: ObservableObject {
         thumbnailDemandPriorities.removeAll()
         preparedThumbnailIDs.removeAll()
         isScanning = false
+        isActive = !pendingImportSlots.isEmpty
         scanWarnings = []
         startMetadataLoading()
     }
@@ -627,10 +681,17 @@ final class ImageCollection: ObservableObject {
             .photoCollectionInsert,
             context: LumoTraceContext(sourceFingerprint: identifier.raw, quality: "photosImport")
         )
-        items.append(Item(asset: asset, metadata: nil))
+        let insertionIndex = dataImportOrdinals.firstIndex(where: { $0 > ordinal }) ?? items.count
+        items.insert(Item(asset: asset, metadata: nil), at: insertionIndex)
+        dataImportOrdinals.insert(ordinal, at: insertionIndex)
+        if let slotIndex = pendingImportSlots.firstIndex(where: { $0.ordinal == ordinal }) {
+            pendingImportSlots[slotIndex].assetID = identifier
+            pendingImportSlots[slotIndex].name = item.name
+            pendingImportSlots[slotIndex].state = .pending
+        }
         reconcileSelection()
         isActive = true
-        enqueueMetadata(for: items[items.count - 1], generation: scanGeneration)
+        enqueueMetadata(for: items[insertionIndex], generation: scanGeneration)
         enqueueThumbnails()
         interval.end()
         return identifier
@@ -641,7 +702,65 @@ final class ImageCollection: ObservableObject {
     func finishDataImport() {
         metadataContinuation?.finish()
         metadataContinuation = nil
+        pendingImportSlots.removeAll()
+        isActive = !items.isEmpty
         enqueueThumbnails()
+    }
+
+    /// Mark one ordinal as unavailable without manufacturing a photo asset. The failed slot stays
+    /// visible until the streamed operation is finished, making partial failures understandable.
+    func recordDataImportFailure(ordinal: Int, name: String) {
+        guard let index = pendingImportSlots.firstIndex(where: { $0.ordinal == ordinal }) else {
+            return
+        }
+        pendingImportSlots[index].name = name
+        pendingImportSlots[index].state = .failed
+    }
+
+    /// Mark the next unresolved reservation as failed for compatibility with callers that do not
+    /// have an ordinal (older programmatic import callers use this form).
+    func recordDataImportFailure(name: String) {
+        guard let ordinal = pendingImportSlots.first(where: { $0.state == .pending })?.ordinal else {
+            return
+        }
+        recordDataImportFailure(ordinal: ordinal, name: name)
+    }
+
+    /// The library/filmstrip projection includes reservations in source order but never exposes
+    /// them through the collection's selectable item indices.
+    var thumbnailEntries: [ThumbnailEntry] {
+        guard !pendingImportSlots.isEmpty else {
+            return filteredIndices.map { index in
+                ThumbnailEntry(
+                    id: items[index].id,
+                    itemIndex: index,
+                    placeholder: nil,
+                    aspectRatio: items[index].libraryAspectRatio
+                )
+            }
+        }
+
+        return pendingImportSlots.compactMap { slot in
+            guard let assetID = slot.assetID,
+                  let itemIndex = items.firstIndex(where: { $0.id == assetID }) else {
+                return ThumbnailEntry(
+                    id: slot.id,
+                    itemIndex: nil,
+                    placeholder: slot,
+                    aspectRatio: 4.0 / 3.0
+                )
+            }
+            let item = items[itemIndex]
+            guard filter.matches(flag: item.asset.flag, rating: item.asset.rating) else {
+                return nil
+            }
+            return ThumbnailEntry(
+                id: slot.id,
+                itemIndex: itemIndex,
+                placeholder: nil,
+                aspectRatio: item.libraryAspectRatio
+            )
+        }
     }
 
     /// Number of source items currently retained by a streamed import.
@@ -751,6 +870,8 @@ final class ImageCollection: ObservableObject {
         scanTask = nil
         stopMetadataLoading()
         items = []
+        pendingImportSlots.removeAll()
+        dataImportOrdinals.removeAll()
         selectedIndex = 0
         selection.clear()
         isThumbnailDemandDriven = false

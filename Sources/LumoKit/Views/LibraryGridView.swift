@@ -20,26 +20,24 @@ struct LibraryGridView: View {
             Divider()
 
             GeometryReader { geometry in
-                if collection.filteredIndices.isEmpty {
+                if collection.thumbnailEntries.isEmpty {
                     LibraryEmptyState(collection: collection)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
-                        let indices = collection.filteredIndices
-                        let itemIDs = indices.map { collection.items[$0].id }
+                        let entries = collection.thumbnailEntries
+                        let itemIDs = entries.map(\.id)
                         let rows = mosaicCache.rows(
                             itemIDs: itemIDs,
                             width: max(1, geometry.size.width - 32),
                             layout: layout,
-                            aspectRatioAt: { offset in
-                                collection.items[indices[offset]].libraryAspectRatio
-                            }
+                            aspectRatioAt: { entries[$0].aspectRatio }
                         )
                         LazyVStack(alignment: .leading, spacing: CGFloat(layout.spacing)) {
                             ForEach(rows) { row in
                                 LibraryMosaicRow(
                                     row: row,
-                                    sourceIndices: indices,
+                                    entries: entries,
                                     collection: collection,
                                     spacing: layout.spacing,
                                     onSelect: select(index:),
@@ -82,7 +80,7 @@ struct LibraryGridView: View {
 
 private struct LibraryMosaicRow: View {
     let row: LibraryGridLayout.MosaicRow
-    let sourceIndices: [Int]
+    let entries: [ImageCollection.ThumbnailEntry]
     @ObservedObject var collection: ImageCollection
     let spacing: Double
     let onSelect: (Int) -> Void
@@ -93,7 +91,7 @@ private struct LibraryMosaicRow: View {
             LibraryMosaicCellLayout(
                 offset: offset,
                 width: width,
-                id: collection.items[sourceIndices[offset]].id
+                id: entries[offset].id
             )
         }
     }
@@ -101,38 +99,43 @@ private struct LibraryMosaicRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: CGFloat(spacing)) {
             ForEach(cells) { cell in
-                let index = sourceIndices[cell.offset]
-                let item = collection.items[index]
-                LibraryGridCell(
-                    item: item,
-                    isSelected: collection.selection.selectedIDs.contains(item.id),
-                    isActive: collection.selection.activeID == item.id,
-                    imageWidth: cell.width,
-                    imageHeight: row.imageHeight
-                )
-                .frame(width: CGFloat(cell.width))
-                .onAppear {
-                    // Make the cell callback order-independent: SwiftUI may deliver a child's
-                    // appearance before its row's appearance.
-                    collection.beginThumbnailDemand()
-                    collection.requestThumbnail(for: item.id)
-                }
-                .onDisappear {
-                    collection.releaseThumbnail(for: item.id)
-                }
-                .onTapGesture {
-                    onSelect(index)
-                }
-                .simultaneousGesture(
-                    TapGesture(count: 2).onEnded {
-                        onSelect(index)
-                        onOpen()
+                let entry = entries[cell.offset]
+                if let index = entry.itemIndex {
+                    let item = collection.items[index]
+                    LibraryGridCell(
+                        item: item,
+                        isSelected: collection.selection.selectedIDs.contains(item.id),
+                        isActive: collection.selection.activeID == item.id,
+                        imageWidth: cell.width,
+                        imageHeight: row.imageHeight
+                    )
+                    .frame(width: CGFloat(cell.width))
+                    .onAppear {
+                        // Make the cell callback order-independent: SwiftUI may deliver a child's
+                        // appearance before its row's appearance.
+                        collection.beginThumbnailDemand()
+                        collection.requestThumbnail(for: item.id)
                     }
-                )
-                .accessibilityAddTraits(
-                    collection.selection.selectedIDs.contains(item.id) ? .isSelected : []
-                )
-                .accessibilityHint("Double-click to edit")
+                    .onDisappear {
+                        collection.releaseThumbnail(for: item.id)
+                    }
+                    .onTapGesture {
+                        onSelect(index)
+                    }
+                    .simultaneousGesture(
+                        TapGesture(count: 2).onEnded {
+                            onSelect(index)
+                            onOpen()
+                        }
+                    )
+                    .accessibilityAddTraits(
+                        collection.selection.selectedIDs.contains(item.id) ? .isSelected : []
+                    )
+                    .accessibilityHint("Double-click to edit")
+                } else if let slot = entry.placeholder {
+                    LibraryGridPlaceholder(slot: slot)
+                        .frame(width: CGFloat(cell.width), height: CGFloat(row.imageHeight))
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -317,5 +320,31 @@ private struct LibraryGridCell: View {
         }
         .font(.caption2.weight(.semibold))
         .frame(minWidth: 14)
+    }
+}
+
+private struct LibraryGridPlaceholder: View {
+    let slot: ImageCollection.PendingImportSlot
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(Color.secondary.opacity(0.09))
+            .overlay {
+                VStack(spacing: 7) {
+                    if slot.state == .pending {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(slot.state == .pending ? "Importing" : "Unavailable")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(slot.state == .pending ? "Importing photo" : "Photo unavailable")
     }
 }

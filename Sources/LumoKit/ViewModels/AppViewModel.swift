@@ -949,7 +949,7 @@ public final class AppViewModel: ObservableObject {
     }
 
     func beginPhotosImport(totalCount: Int) {
-        collection.beginDataImport()
+        collection.beginDataImport(reservedCount: max(0, totalCount))
         photosImportProgress = PhotosImportProgress(
             total: max(0, totalCount), processed: 0, imported: 0, failed: 0,
             currentName: nil, phase: .transferring
@@ -986,8 +986,13 @@ public final class AppViewModel: ObservableObject {
         }
     }
 
-    func recordPhotosImportFailure(name: String) {
+    func recordPhotosImportFailure(name: String, ordinal: Int? = nil) {
         guard var progress = photosImportProgress else { return }
+        if let ordinal {
+            collection.recordDataImportFailure(ordinal: ordinal, name: name)
+        } else {
+            collection.recordDataImportFailure(name: name)
+        }
         progress.processed += 1
         progress.failed += 1
         progress.currentName = name

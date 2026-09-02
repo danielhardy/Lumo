@@ -10,42 +10,49 @@ struct FilmstripView: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 8) {
-                    ForEach(collection.filteredIndices, id: \.self) { index in
-                        let item = collection.items[index]
-                        Button {
-                            let modifiers = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                            onSelect(index, modifiers.contains(.command))
-                        } label: {
-                            FilmstripThumbnail(
-                                item: item,
-                                isSelected: collection.selection.selectedIDs.contains(item.id)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
-                            let direction: FilmstripNavigation.Direction =
-                                press.key == .leftArrow ? .previous : .next
-                            guard let adjacentIndex = FilmstripNavigation.adjacentIndex(
-                                in: collection.filteredIndices,
-                                selectedIndex: collection.selectedIndex,
-                                direction: direction
-                            ) else {
-                                return .ignored
+                    ForEach(collection.thumbnailEntries) { entry in
+                        if let index = entry.itemIndex {
+                            let item = collection.items[index]
+                            Button {
+                                let modifiers = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                                onSelect(index, modifiers.contains(.command))
+                            } label: {
+                                FilmstripThumbnail(
+                                    item: item,
+                                    isSelected: collection.selection.selectedIDs.contains(item.id)
+                                )
                             }
-                            onSelect(adjacentIndex, false)
-                            return .handled
-                        }
-                        .id(item.id)
-                        .onAppear {
-                            // Child appearance can precede the scroll view's callback, so opt into
-                            // demand-driven work here as well as on the container.
-                            collection.beginThumbnailDemand()
-                            collection.requestThumbnail(
-                                for: item.id, priority: .adjacentFilmstrip
-                            )
-                        }
-                        .onDisappear {
-                            collection.releaseThumbnail(for: item.id)
+                            .buttonStyle(.plain)
+                            .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
+                                let direction: FilmstripNavigation.Direction =
+                                    press.key == .leftArrow ? .previous : .next
+                                guard let adjacentIndex = FilmstripNavigation.adjacentIndex(
+                                    in: collection.filteredIndices,
+                                    selectedIndex: collection.selectedIndex,
+                                    direction: direction
+                                ) else {
+                                    return .ignored
+                                }
+                                onSelect(adjacentIndex, false)
+                                return .handled
+                            }
+                            // Use the source ID for navigation scrolling; the mosaic keeps the
+                            // reservation ID internally so this cell can be replaced in place.
+                            .id(item.id)
+                            .onAppear {
+                                // Child appearance can precede the scroll view's callback, so opt into
+                                // demand-driven work here as well as on the container.
+                                collection.beginThumbnailDemand()
+                                collection.requestThumbnail(
+                                    for: item.id, priority: .adjacentFilmstrip
+                                )
+                            }
+                            .onDisappear {
+                                collection.releaseThumbnail(for: item.id)
+                            }
+                        } else if let slot = entry.placeholder {
+                            FilmstripPlaceholder(slot: slot)
+                                .id(entry.id)
                         }
                     }
                 }
@@ -126,5 +133,33 @@ struct FilmstripThumbnail: View {
         .accessibilityLabel(item.displayName)
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+private struct FilmstripPlaceholder: View {
+    let slot: ImageCollection.PendingImportSlot
+
+    var body: some View {
+        VStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.secondary.opacity(0.09))
+                .frame(width: 72, height: 72)
+                .overlay {
+                    if slot.state == .pending {
+                        ProgressView()
+                            .scaleEffect(0.5)
+                    } else {
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            Text(slot.state == .pending ? "Importing" : "Unavailable")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(width: 72)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(slot.state == .pending ? "Importing photo" : "Photo unavailable")
     }
 }
