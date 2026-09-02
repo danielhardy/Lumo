@@ -312,14 +312,14 @@ public struct ContentView: View {
         .help("Export the graded image (⌘S)")
         .disabled(viewModel.sourceImage == nil)
 
-        // Batch export — only when a multi-image set is loaded
+        // Selected export — the grid selection is independent from the active edit photo.
         if viewModel.collection.isActive {
             Button {
-                viewModel.batchExportDialog()
+                viewModel.exportSelectedDialog()
             } label: {
-                Label("Export All", systemImage: "square.and.arrow.up.on.square")
+                Label("Export Selected", systemImage: "square.and.arrow.up.on.square")
             }
-            .help("Apply the current Look to all imported images and export to a folder (⌘⇧E)")
+            .help("Export the selected photos from their originals and saved edits (⌘⇧E)")
             .disabled(viewModel.isExporting)
         }
     }

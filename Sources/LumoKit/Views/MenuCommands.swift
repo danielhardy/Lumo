@@ -78,7 +78,7 @@ public struct LumoCommands: Commands {
             Button("Export...") { post(.exportImage) }
                 .keyboardShortcut("s")
 
-            Button("Export All...") { post(.exportAll) }
+            Button("Export Selected...") { post(.exportSelected) }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
         }
     }
@@ -102,8 +102,8 @@ struct MenuCommandReceivers: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: .exportImage)) { _ in
                 viewModel.exportDialog()
             }
-            .onReceive(NotificationCenter.default.publisher(for: .exportAll)) { _ in
-                viewModel.batchExportDialog()
+            .onReceive(NotificationCenter.default.publisher(for: .exportSelected)) { _ in
+                viewModel.exportSelectedDialog()
             }
             .onReceive(NotificationCenter.default.publisher(for: .chooseLookFolder)) { _ in
                 viewModel.chooseLookFolder()
@@ -146,7 +146,9 @@ struct MenuCommandReceivers: ViewModifier {
 extension Notification.Name {
     static let openImage = Notification.Name("Lumo.openImage")
     static let exportImage = Notification.Name("Lumo.exportImage")
-    static let exportAll = Notification.Name("Lumo.exportAll")
+    static let exportSelected = Notification.Name("Lumo.exportSelected")
+    /// Compatibility name for callers from the pre-selection export flow.
+    static let exportAll = exportSelected
     static let chooseLookFolder = Notification.Name("Lumo.chooseLookFolder")
     static let importLook = Notification.Name("Lumo.importLook")
     static let importFromPhotos = Notification.Name("Lumo.importFromPhotos")

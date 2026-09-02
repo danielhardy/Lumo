@@ -285,6 +285,89 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
         XCTAssertLessThan(atFull, 6, "intensity 1 of a to-black cube should have blacked it out")
     }
 
+    func testBatchExportUsesEachAssetsPersistedDocument() async throws {
+        let sourceFolder = tempDirectory.appendingPathComponent("sources")
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        let urls = try ["first", "second"].map {
+            try Fixtures.writeGradientPNG(width: 48, height: 32, named: "\($0).png", in: sourceFolder)
+        }
+        let store = EditDocumentStore(fileURL: tempDirectory.appendingPathComponent("edits.json"))
+        let firstDocument = EditDocument(adjustments: [.exposure(ev: 0.25)])
+        let secondDocument = EditDocument(adjustments: [.vibrance(amount: 0.75)])
+        for (url, document) in zip(urls, [firstDocument, secondDocument]) {
+            try await store.save(
+                document,
+                for: EditSourceReference(assetID: .file(url), url: url)
+            )
+        }
+
+        let fake = FakeRenderEngine()
+        let coordinator = ExportCoordinator(engine: fake, editStore: store)
+        let items = urls.map {
+            ExportCoordinator.BatchItem(url: $0, data: nil, name: $0.deletingPathExtension().lastPathComponent)
+        }
+        let outcome = await coordinator.performBatchExport(
+            items, document: EditDocument(), lut: nil, format: .png, to: try destinationFolder()
+        )
+
+        XCTAssertEqual(outcome, .init(exported: 2, failed: 0, total: 2))
+        let requests = await fake.encodeRequests
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertTrue(requests.contains { $0.source?.backing == .url(urls[0]) && $0.document == firstDocument })
+        XCTAssertTrue(requests.contains { $0.source?.backing == .url(urls[1]) && $0.document == secondDocument })
+        XCTAssertTrue(requests.allSatisfy { $0.scale == .full }, "batch export must never use a preview scale")
+    }
+
+    func testSelectedExportContainsExactlyTheLibrarySelectionAndUsesOriginals() async throws {
+        let libraryFolder = tempDirectory.appendingPathComponent("selected-library")
+        try FileManager.default.createDirectory(at: libraryFolder, withIntermediateDirectories: true)
+        let urls = try ["one", "two", "three"].map {
+            try Fixtures.writeGradientPNG(width: 40, height: 24, named: "\($0).png", in: libraryFolder)
+        }
+        let store = EditDocumentStore(fileURL: tempDirectory.appendingPathComponent("selected-edits.json"))
+        let documents = [
+            EditDocument(adjustments: [.exposure(ev: 0.1)]),
+            EditDocument(adjustments: [.exposure(ev: 0.2)]),
+            EditDocument(adjustments: [.exposure(ev: 0.3)]),
+        ]
+        for (url, document) in zip(urls, documents) {
+            try await store.save(document, for: EditSourceReference(assetID: .file(url), url: url))
+        }
+
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake, editStore: store)
+        viewModel.collection.setSourceFolder(libraryFolder)
+        try await waitUntil {
+            viewModel.collection.items.count == urls.count
+        }
+        let firstIndex = try XCTUnwrap(viewModel.collection.items.firstIndex { $0.url == urls[0] })
+        let thirdIndex = try XCTUnwrap(viewModel.collection.items.firstIndex { $0.url == urls[2] })
+        viewModel.collection.select(at: firstIndex)
+        viewModel.collection.select(at: thirdIndex, modifiers: [.command])
+
+        let request = viewModel.selectedBatchExportRequest
+        XCTAssertEqual(request.items.count, 2)
+        XCTAssertEqual(
+            Set(request.items.compactMap { $0.url?.lastPathComponent }),
+            Set([urls[0].lastPathComponent, urls[2].lastPathComponent])
+        )
+
+        let outcome = await viewModel.export.performBatchExport(
+            request.items,
+            document: request.document,
+            lut: request.lut,
+            format: .png,
+            to: try destinationFolder()
+        )
+        XCTAssertEqual(outcome, .init(exported: 2, failed: 0, total: 2))
+        let requests = await fake.encodeRequests
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertTrue(requests.allSatisfy { $0.scale == .full })
+        XCTAssertTrue(requests.contains { $0.document == documents[0] })
+        XCTAssertTrue(requests.contains { $0.document == documents[2] })
+        XCTAssertFalse(requests.contains { $0.document == documents[1] })
+    }
+
     // MARK: - Summary text
 
     func testSummaryWordingCoversSingularPluralAndFailures() {

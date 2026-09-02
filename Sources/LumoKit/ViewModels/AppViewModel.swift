@@ -485,7 +485,7 @@ public final class AppViewModel: ObservableObject {
         self.editStore = editStore
         self.workScheduler = ImageWorkScheduler()
         self.collection = ImageCollection(scheduler: workScheduler)
-        self.export = ExportCoordinator(engine: engine)
+        self.export = ExportCoordinator(engine: engine, editStore: editStore)
         self.previewCoordinator = PreviewCoordinator(engine: engine, scheduler: workScheduler)
 
         // A missing value is the first-launch state: single-photo editing is the primary surface.
@@ -563,6 +563,11 @@ public final class AppViewModel: ObservableObject {
     /// owns the status bar and the alert. They report *what* happened; deciding
     /// how to show it stays here.
     private func wireCoordinators() {
+        // Export resolves each selected asset's durable document on demand. The LUT table is not
+        // part of that Codable record, so resolve its stable ID against the current Look library
+        // only after the store has supplied the per-photo document.
+        export.lutResolver = { [weak self] id in self?.resolvedLUT(id) }
+
         // A rescan can mean the bytes behind an unchanged `LUTID` have changed — a path is the
         // identity, so a `.cube` replaced in place keeps it. Drop the engine's cube filters rather
         // than go on serving the old cube. Wired here, before `restoreFolder()` runs below, so the
@@ -2160,13 +2165,57 @@ public final class AppViewModel: ObservableObject {
         export.batchExportDialog(items: request.items, document: request.document, lut: request.lut)
     }
 
+    /// Export exactly the library selection. The active photo is not implicitly added when the
+    /// user has selected other cells; selection and edit focus are separate in the grid model.
+    func exportSelectedDialog() {
+        let request = selectedBatchExportRequest
+        guard !request.items.isEmpty else {
+            statusMessage = "Select at least one photo to export"
+            return
+        }
+        export.batchExportDialog(items: request.items, document: request.document, lut: request.lut)
+    }
+
     /// What Export All would write, without running a panel. Internal for the same reason
     /// `exportRequest` is.
     var batchExportRequest: (items: [ExportCoordinator.BatchItem], document: EditDocument, lut: CubeLUT?) {
-        // Snapshot only the Sendable bits — avoid carrying NSImage thumbnails
-        // across the actor boundary.
-        let items = collection.items.map {
-            ExportCoordinator.BatchItem(url: $0.url, data: $0.imageData, name: $0.displayName)
+        makeBatchExportRequest(from: collection.items)
+    }
+
+    /// The panel-free request used by Export Selected. Unlike the historical `batchExportRequest`
+    /// compatibility seam, this list is never widened to the whole collection.
+    var selectedBatchExportRequest: (items: [ExportCoordinator.BatchItem], document: EditDocument, lut: CubeLUT?) {
+        makeBatchExportRequest(from: collection.selectedItems)
+    }
+
+    /// Alternate spelling for callers that use the product-facing command name.
+    var selectedExportRequest: (items: [ExportCoordinator.BatchItem], document: EditDocument, lut: CubeLUT?) {
+        selectedBatchExportRequest
+    }
+
+    private func makeBatchExportRequest(
+        from sourceItems: [ImageCollection.Item]
+    ) -> (items: [ExportCoordinator.BatchItem], document: EditDocument, lut: CubeLUT?) {
+        // Snapshot only Sendable source/edit values — never carry NSImage thumbnails into export.
+        // A missing session document is intentional: ExportCoordinator asks EditDocumentStore for
+        // the durable record, so unopened selected photos still export their own saved edits.
+        let items = sourceItems.map { item in
+            let itemDocument: EditDocument?
+            if item.id == activeAssetID {
+                itemDocument = document
+            } else {
+                itemDocument = editSessions[item.id]?.document
+            }
+            let itemLUT = itemDocument.flatMap { resolvedLUT($0.lut.lutID) }
+            return ExportCoordinator.BatchItem(
+                url: item.url,
+                data: item.imageData,
+                name: item.displayName,
+                assetID: item.id,
+                bookmarkData: item.asset.bookmarkData,
+                document: itemDocument,
+                lut: itemLUT
+            )
         }
         return (items: items, document: document, lut: selectedLook)
     }

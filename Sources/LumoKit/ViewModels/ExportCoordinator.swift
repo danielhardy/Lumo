@@ -45,10 +45,23 @@ final class ExportCoordinator: ObservableObject {
     /// The batch loop remains serial, retaining only one full-size result at a time.
     private let exportEngine: any RenderEngining
 
-    init(engine: any RenderEngining = RenderEngine.shared, exportEngine: (any RenderEngining)? = nil) {
+    /// The edit store is used for batch items that have not been opened in the current session.
+    /// `lutResolver` is deliberately a value-returning main-actor seam: the store owns edit values,
+    /// while the app's Look library owns the non-Codable LUT table.
+    var lutResolver: ((LUTID?) -> CubeLUT?)?
+    private let editStore: EditDocumentStore?
+
+    init(
+        engine: any RenderEngining = RenderEngine.shared,
+        exportEngine: (any RenderEngining)? = nil,
+        editStore: EditDocumentStore? = nil,
+        lutResolver: ((LUTID?) -> CubeLUT?)? = nil
+    ) {
         // Test renderers are deliberately shared so request assertions remain simple. The real
         // renderer gets isolated mutable Core Image state for export work.
         self.exportEngine = exportEngine ?? (engine is RenderEngine ? RenderEngine() : engine)
+        self.editStore = editStore
+        self.lutResolver = lutResolver
         self.lastUsedFormat = Self.defaultFormat
     }
 
@@ -63,11 +76,34 @@ final class ExportCoordinator: ObservableObject {
         let url: URL?
         let data: Data?
         let name: String
+        /// Stable identity used to find the item's persisted edit record. It is optional so the
+        /// original panel-free API remains source-compatible for callers that only have a URL/data
+        /// pair.
+        let assetID: PhotoAssetID?
+        /// A source bookmark can outlive the folder scope that was active when the item was scanned.
+        /// It is kept as data, never as an open security scope.
+        let bookmarkData: Data?
+        /// A live session snapshot wins over disk when the user edited this photo moments ago.
+        /// `nil` means the coordinator should resolve the durable record.
+        let document: EditDocument?
+        /// The resolved table for `document.lut`. The document remains authoritative; a nil LUT is
+        /// safe when the referenced Look is unavailable.
+        let lut: CubeLUT?
 
-        init(url: URL?, data: Data?, name: String) {
+        init(
+            url: URL?, data: Data?, name: String,
+            assetID: PhotoAssetID? = nil,
+            bookmarkData: Data? = nil,
+            document: EditDocument? = nil,
+            lut: CubeLUT? = nil
+        ) {
             self.url = url
             self.data = data
             self.name = name
+            self.assetID = assetID ?? url.map(PhotoAssetID.file) ?? data.map(PhotoAssetID.data)
+            self.bookmarkData = bookmarkData
+            self.document = document
+            self.lut = lut
         }
     }
 
@@ -161,6 +197,10 @@ final class ExportCoordinator: ObservableObject {
         onStatus?("Exporting...")
 
         Task { [exportEngine, options] in
+            let hasDestinationScope = url.startAccessingSecurityScopedResource()
+            defer {
+                if hasDestinationScope { url.stopAccessingSecurityScopedResource() }
+            }
             var interval = LumoObservability.begin(.export, source: source, quality: .export)
             defer { interval.end() }
             do {
@@ -229,9 +269,9 @@ final class ExportCoordinator: ObservableObject {
     /// image that fails to decode or encode is counted and skipped, never
     /// aborting the run. Returns the tally so callers (and tests) can assert on it.
     ///
-    /// The same `document` for every image, which is what the app means today: one look auditioned
-    /// across a folder (§8.4). Per-image documents arrive with the `EditDocumentStore` in Step 11,
-    /// and this loop is the one place that will have to look them up.
+    /// The fallback `document`/`lut` arguments are retained for callers that intentionally want to
+    /// apply one look to a set. A `BatchItem` with a live snapshot or a durable record always wins,
+    /// which is what current/selected export uses.
     ///
     /// **Not memoized, deliberately.** The engine's developed-source memo only covers preview
     /// scales; a batch renders N *different* images at `.full`, so a memo would hold one
@@ -292,18 +332,40 @@ final class ExportCoordinator: ObservableObject {
         var exported = 0
         var failed = 0
 
+        let hasDestinationScope = folder.startAccessingSecurityScopedResource()
+        defer {
+            if hasDestinationScope { folder.stopAccessingSecurityScopedResource() }
+        }
+
         for (index, item) in items.enumerated() {
             guard !Task.isCancelled else { break }
-            if let source = Self.source(for: item) {
-                let lookName = options.filenamePolicy == .sourceNameWithLook ? lut?.name : nil
+            if let sourceAccess = Self.sourceAccess(for: item) {
+                let source = sourceAccess.source
+                let documentResolution = await resolvedDocument(for: item, fallback: document)
+                let itemDocument = documentResolution.document
+                let itemLUT: CubeLUT?
+                if let itemLUTValue = item.lut {
+                    itemLUT = itemLUTValue
+                } else if documentResolution.isPerAsset {
+                    // A missing Look is an intentional unresolved reference, not permission to
+                    // leak the active photo's Look onto this asset.
+                    itemLUT = lutResolver?(itemDocument.lut.lutID)
+                } else {
+                    itemLUT = lutResolver?(itemDocument.lut.lutID) ?? lut
+                }
+                let lookName = options.filenamePolicy == .sourceNameWithLook ? itemLUT?.name : nil
                 let base = options.filenamePolicy.baseName(source: item.name, look: lookName)
                 let dest = uniqueExportURL(in: folder, base: base, ext: options.format.fileExtension)
                 do {
                     try Task.checkCancellation()
+                    let hasSourceScope = sourceAccess.url?.startAccessingSecurityScopedResource() ?? false
+                    defer {
+                        if hasSourceScope { sourceAccess.url?.stopAccessingSecurityScopedResource() }
+                    }
                     var interval = LumoObservability.begin(.export, source: source, quality: .export)
                     defer { interval.end() }
                     let data = try await exportEngine.render(RenderRequest(
-                        source: source, document: document, lut: lut,
+                        source: source, document: itemDocument, lut: itemLUT,
                         quality: .export,
                         output: .encoded(
                             format: options.format, quality: CGFloat(options.quality)
@@ -342,6 +404,13 @@ final class ExportCoordinator: ObservableObject {
         try await Task.detached(priority: .userInitiated) { try data.write(to: url) }.value
     }
 
+    /// A resolved source plus the URL that may need a temporary security scope. The source itself
+    /// always points at the original URL/data; it never points at a thumbnail or preview bitmap.
+    private struct SourceAccess: Sendable {
+        let source: ImageSource
+        let url: URL?
+    }
+
     /// How to reproduce a batch item, as an `ImageSource`.
     ///
     /// `nativeExtent` is `.zero` because a batch export never measures one: the extent exists so a
@@ -349,10 +418,41 @@ final class ExportCoordinator: ObservableObject {
     /// returns 1.0 regardless. The pipeline reads the decoder's own size anyway, never this field
     /// (`RenderPipeline.developedSource`), so decoding every file up front just to fill it in would
     /// be pure cost.
-    private static func source(for item: BatchItem) -> ImageSource? {
-        if let url = item.url { return ImageSource(url: url, nativeExtent: .zero) }
-        if let data = item.data { return ImageSource(data: data, nativeExtent: .zero) }
+    private static func sourceAccess(for item: BatchItem) -> SourceAccess? {
+        if let url = item.url {
+            let resolved = resolveScopedURL(url: url, bookmarkData: item.bookmarkData)
+            return SourceAccess(
+                source: ImageSource(url: resolved, nativeExtent: .zero),
+                url: resolved
+            )
+        }
+        if let data = item.data {
+            return SourceAccess(source: ImageSource(data: data, nativeExtent: .zero), url: nil)
+        }
         return nil
+    }
+
+    private static func resolveScopedURL(url: URL, bookmarkData: Data?) -> URL {
+        guard let bookmarkData else { return url }
+        var isStale = false
+        guard let resolved = try? URL(
+            resolvingBookmarkData: bookmarkData,
+            options: [.withSecurityScope],
+            relativeTo: nil,
+            bookmarkDataIsStale: &isStale
+        ) else {
+            return url
+        }
+        return resolved
+    }
+
+    private func resolvedDocument(
+        for item: BatchItem, fallback: EditDocument
+    ) async -> (document: EditDocument, isPerAsset: Bool) {
+        if let document = item.document { return (document, true) }
+        guard let editStore, let assetID = item.assetID else { return (fallback, false) }
+        let result = await editStore.load(for: EditSourceReference(assetID: assetID, url: item.url))
+        return result.found ? (result.document, true) : (fallback, false)
     }
 
     /// The line shown when a batch finishes.
