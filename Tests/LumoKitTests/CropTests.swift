@@ -243,7 +243,7 @@ final class CropWorkflowTests: TempDirectoryTestCase {
     private func waitUntil(_ description: String, _ condition: @MainActor () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(5)
         while !condition() {
-            if Date() > deadline { return XCTFail("timed out waiting for (description)") }
+            if Date() > deadline { return XCTFail("timed out waiting for \(description)") }
             try await Task.sleep(for: .milliseconds(10))
         }
     }
