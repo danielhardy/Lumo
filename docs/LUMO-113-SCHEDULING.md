@@ -31,3 +31,15 @@ configuration and must record those values alongside export throughput and resid
 The capture is intentionally not fabricated in CI: the repository's opt-in Metal capture procedure
 requires a real drawable and hardware. Record source dimensions/format, OS, commit, viewport/backing
 pixels, cold/warm state, and whether histogram/comparison/prefetch work was enabled with the result.
+
+## Hardware capture (LUMO-123)
+
+The outstanding simultaneous batch-export + editing capture was taken on the target Mac (MacBook
+Pro18,3, M1 Pro, macOS 26.6, Release, commit `0cc8df8`, which contains LUMO-113 `df1143b`):
+`ConcurrentExportEditingBenchmark` drives the shipping export/editor/scheduler stack with real
+drawables. With a 6-item ARW batch export running concurrently with slider drags, navigation, and
+Info-tab histogram work: editor release-to-settled p95 `113.068 ms` (≤ 200 ms — met), interactive
+p95 `37.939 ms`, editor delivered 22 FPS with zero scheduler editor-job drops, export throughput
+`1.683` images/s, resident-memory delta ~122 MB. Editor targets are preserved; aggregate throughput
+did not win over the editor. Full record:
+[LUMO-123 capture summary](LUMO-123-DSC07826-20260902-124253-summary.md).

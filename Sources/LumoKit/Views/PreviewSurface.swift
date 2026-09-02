@@ -35,6 +35,13 @@ final class PreviewSurface: ObservableObject {
     private var hasManagedPresentationLifecycle = false
     var onPresentationFailure: (() -> Void)?
 
+    /// Capture-host seam for hardware benchmarks: when the WindowServer reports no scan-out
+    /// (`presentedTime == 0`, e.g. screen sharing or a headless capture session), a real drawable
+    /// still went through the presentation lifecycle and the capture needs a timestamp. When set,
+    /// such drawables are marked with this clock instead of being dropped as skipped frames.
+    /// Production leaves it nil, so Metal's zero-means-skipped contract is unchanged.
+    var zeroPresentedTimeFallback: (() -> TimeInterval)?
+
     /// The Metal view calls this when a real presentation lifecycle exists. Headless/test callers
     /// have no drawable to confirm, so `present` confirms immediately for that compatibility seam.
     fileprivate func attachPresentationLifecycle() {
@@ -169,14 +176,21 @@ final class PreviewSurface: ObservableObject {
 
     fileprivate func markDrawablePresented(revision: UInt64, time: TimeInterval) {
         guard let pending = telemetryByRevision[revision] else { return }
-        // Metal reports zero when a drawable was skipped. Do not turn a skipped frame into a
-        // false presentation sample, but release its association so the next frame can be tracked.
-        guard time > 0 else {
+        if time > 0 {
+            pending.telemetry.mark(revision, drawablePresentation: time)
+        } else if let fallback = zeroPresentedTimeFallback {
+            // Capture host without drawable scan-out (screen sharing/headless session). A real
+            // drawable still went through the presentation lifecycle and the capture needs a
+            // timestamp; this is the same fallback clock the MetalPresentationBenchmark capture
+            // procedure uses.
+            pending.telemetry.mark(revision, drawablePresentation: fallback())
+        } else {
+            // Metal reports zero when a drawable was skipped. Do not turn a skipped frame into a
+            // false presentation sample, but release its association so the next frame can be tracked.
             telemetryByRevision.removeValue(forKey: revision)
             submittedTelemetryRevisions.remove(revision)
             return
         }
-        pending.telemetry.mark(revision, drawablePresentation: time)
         if let source = pending.source {
             LumoObservability.liveEdit(.drawablePresented, source: source, quality: pending.quality,
                                        revision: revision, detail: "displayed")
