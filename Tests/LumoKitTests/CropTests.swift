@@ -236,6 +236,10 @@ final class CropPipelineTests: TempDirectoryTestCase {
 
 @MainActor
 final class CropWorkflowTests: TempDirectoryTestCase {
+    private enum WaitError: Error {
+        case timedOut
+    }
+
     private func waitUntil(_ description: String, _ condition: @MainActor () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(5)
         while !condition() {
@@ -244,14 +248,25 @@ final class CropWorkflowTests: TempDirectoryTestCase {
         }
     }
 
-    /// A bounded wait for the fake engine's actor-isolated request log, mirroring `waitUntil`'s
-    /// deadline so a regression (a call site that stops asking for a render) fails the assertion
-    /// below instead of hanging the test run.
-    private func waitUntilRequestCount(exceeds count: Int, on engine: FakeRenderEngine) async throws {
+    /// Wait for the request that represents a state transition, rather than merely waiting for the
+    /// log to grow. A cancelled or superseded preview may still reach the fake engine after the
+    /// caller has submitted a newer request, so a count increase alone does not identify which
+    /// transition was captured.
+    private func waitForPreviewRequest(
+        after count: Int = 0,
+        matching description: String,
+        on engine: FakeRenderEngine,
+        predicate: @MainActor (FakeRenderEngine.Request) -> Bool
+    ) async throws -> FakeRenderEngine.Request {
         let deadline = Date().addingTimeInterval(5)
-        while await engine.previewRequests.count <= count {
+        while true {
+            let requests = await engine.previewRequests
+            if let request = requests.dropFirst(count).first(where: predicate) {
+                return request
+            }
             if Date() > deadline {
-                return XCTFail("timed out waiting for a new render request")
+                XCTFail("timed out waiting for \(description)")
+                throw WaitError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -335,11 +350,19 @@ final class CropWorkflowTests: TempDirectoryTestCase {
         let committed = CropAdjustments(normalizedRect: committedRect)
         XCTAssertEqual(viewModel.document.crop, committed)
 
+        // Do not take the re-entry baseline while the commit render is still in flight. Otherwise
+        // that older request can be captured after `beginCrop()` and satisfy a count-only wait.
+        _ = try await waitForPreviewRequest(
+            matching: "the committed crop preview", on: fake
+        ) { $0.document.crop == committed }
+
         let requestsBeforeReentry = await fake.previewRequests.count
         viewModel.beginCrop()
-        try await waitUntilRequestCount(exceeds: requestsBeforeReentry, on: fake)
-        let reentryRequests = await fake.previewRequests
-        let reentryRequest = try XCTUnwrap(reentryRequests.last)
+        let reentryRequest = try await waitForPreviewRequest(
+            after: requestsBeforeReentry,
+            matching: "the uncropped re-entry preview",
+            on: fake
+        ) { $0.document.crop.isIdentity }
         XCTAssertTrue(
             reentryRequest.document.crop.isIdentity,
             "reopening Crop must render the full source stage, not the already-cropped committed frame"
@@ -348,9 +371,11 @@ final class CropWorkflowTests: TempDirectoryTestCase {
 
         let requestsBeforeCancel = await fake.previewRequests.count
         viewModel.cancelCrop()
-        try await waitUntilRequestCount(exceeds: requestsBeforeCancel, on: fake)
-        let cancelRequests = await fake.previewRequests
-        let cancelRequest = try XCTUnwrap(cancelRequests.last)
+        let cancelRequest = try await waitForPreviewRequest(
+            after: requestsBeforeCancel,
+            matching: "the committed cancel preview",
+            on: fake
+        ) { $0.document.crop == committed }
         XCTAssertEqual(
             cancelRequest.document.crop, committed,
             "Cancel must restore the committed framing under the overlay"
