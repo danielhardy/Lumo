@@ -26,6 +26,19 @@ enum ExportSizing: Codable, Sendable, Equatable {
     /// The requested output dimensions, preserving orientation and aspect ratio.
     /// A long-edge export never upscales a source.
     func outputSize(for sourceExtent: CGSize) -> CGSize {
+        let unrounded = unroundedOutputSize(for: sourceExtent)
+        guard unrounded != .zero else { return .zero }
+        guard case .longEdge = self else { return sourceExtent }
+        return CGSize(
+            width: max(1, unrounded.width.rounded(.toNearestOrAwayFromZero)),
+            height: max(1, unrounded.height.rounded(.toNearestOrAwayFromZero))
+        )
+    }
+
+    /// The proportional dimensions before the plan rounds each axis to a pixel. The render path
+    /// uses these dimensions as a proportional box so `RenderScale` recovers the one long-edge
+    /// factor instead of choosing a tighter ratio created by independent pixel rounding.
+    func unroundedOutputSize(for sourceExtent: CGSize) -> CGSize {
         guard sourceExtent.width.isFinite, sourceExtent.height.isFinite,
               sourceExtent.width > 0, sourceExtent.height > 0 else { return .zero }
         guard case .longEdge(let requestedEdge) = self, requestedEdge > 0 else {
@@ -34,10 +47,7 @@ enum ExportSizing: Codable, Sendable, Equatable {
 
         let sourceLongEdge = max(sourceExtent.width, sourceExtent.height)
         let factor = min(1, CGFloat(requestedEdge) / sourceLongEdge)
-        return CGSize(
-            width: max(1, (sourceExtent.width * factor).rounded(.toNearestOrAwayFromZero)),
-            height: max(1, (sourceExtent.height * factor).rounded(.toNearestOrAwayFromZero))
-        )
+        return CGSize(width: sourceExtent.width * factor, height: sourceExtent.height * factor)
     }
 
 }

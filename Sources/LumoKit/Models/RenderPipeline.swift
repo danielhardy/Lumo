@@ -249,6 +249,29 @@ enum RenderPipeline {
         return lanczos.outputImage ?? image
     }
 
+    /// Give an export its planned integral dimensions after the graph has been rendered at the
+    /// single unrounded long-edge factor. This is deliberately a final geometric correction: the
+    /// source stage remains isotropic and the plan's independently rounded dimensions are applied
+    /// exactly once at the output boundary.
+    static func resized(_ image: CIImage, to targetSize: CGSize) -> CIImage {
+        guard targetSize.width >= 1, targetSize.height >= 1,
+              targetSize.width.isFinite, targetSize.height.isFinite,
+              image.extent.width > 0, image.extent.height > 0,
+              image.extent.width.isFinite, image.extent.height.isFinite else {
+            return image
+        }
+
+        let extent = image.extent
+        let translated = image.transformed(by: CGAffineTransform(
+            translationX: -extent.minX, y: -extent.minY
+        ))
+        let scaled = translated.transformed(by: CGAffineTransform(
+            scaleX: targetSize.width / extent.width,
+            y: targetSize.height / extent.height
+        ))
+        return scaled.cropped(to: CGRect(origin: .zero, size: targetSize))
+    }
+
     // MARK: - Adjustments
 
     /// Apply the photographer-facing Light model before the inherited adjustment array.

@@ -396,8 +396,14 @@ actor RenderEngine: RenderEngining {
         guard let image else {
             throw ImageError.processingFailed
         }
+        let outputImage: CIImage
+        if let exportOutputSize = request.exportOutputSize {
+            outputImage = RenderPipeline.resized(image, to: exportOutputSize)
+        } else {
+            outputImage = image
+        }
         try Task.checkCancellation()
-        let rect = image.extent.integral
+        let rect = outputImage.extent.integral
         guard rect.isRasterizable else { throw ImageError.processingFailed }
         let colorSpace = outputSpace.cgColorSpace
 
@@ -405,7 +411,7 @@ actor RenderEngine: RenderEngining {
         switch request.output {
         case .raster:
             guard let raster = context.pngRepresentation(
-                of: image, format: .RGBA8, colorSpace: colorSpace
+                of: outputImage, format: .RGBA8, colorSpace: colorSpace
             ) else { throw ImageError.processingFailed }
             data = raster
 
@@ -413,7 +419,7 @@ actor RenderEngine: RenderEngining {
             let options = request.exportOptions
             let bitDepth = options?.bitDepth ?? format.defaultBitDepth
             let alpha = options?.alpha ?? format.defaultAlpha
-            let encodedImage = alpha == .opaque ? opaqueImage(image) : image
+            let encodedImage = alpha == .opaque ? opaqueImage(outputImage) : outputImage
             let representationFormat: CIFormat
             switch (bitDepth, alpha) {
             case (.sixteen, .preserve): representationFormat = .RGBA16

@@ -76,11 +76,20 @@ struct RenderRequest: Sendable, Equatable {
             guard let options = exportOptions, options.sizing.longEdge != nil else {
                 return .full
             }
-            // Use the durable pixel plan as the render box. RenderScale applies the tightest
-            // axis and the renderer's integral extent rounds outward, so bounding the unrounded
-            // image by these planned dimensions makes the encoded pixels match outputSize(for:).
-            return .preview(maxSize: options.outputSize(for: source.nativeExtent))
+            // Keep both dimensions proportional to the one long-edge factor. Passing the rounded
+            // output plan here lets an extreme aspect ratio's short axis become the tightest ratio
+            // and changes the factor before the renderer reaches the encoder.
+            return .preview(maxSize: options.sizing.unroundedOutputSize(for: source.nativeExtent))
         }
+    }
+
+    /// The durable pixel contract for a sized export. The renderer applies this after the shared
+    /// graph has been evaluated because `RenderScale` intentionally describes a scale factor, not
+    /// an independently rounded pixel box.
+    var exportOutputSize: CGSize? {
+        guard quality == .export, let options = exportOptions,
+              options.sizing.longEdge != nil else { return nil }
+        return options.outputSize(for: source.nativeExtent)
     }
 }
 
