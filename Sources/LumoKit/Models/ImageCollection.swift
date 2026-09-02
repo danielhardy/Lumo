@@ -177,6 +177,9 @@ final class ImageCollection: ObservableObject {
     /// Data imports can finish out of order. Keeping their ordinals alongside the items preserves
     /// picker order without changing the stable source IDs used by editing and persistence.
     private var dataImportOrdinals: [Int] = []
+    /// Arrivals without a matching reservation are an exceptional provider/caller condition. Keep
+    /// their IDs so the projection can render them at the tail instead of silently hiding them.
+    private var dataImportOverflowItemIDs: Set<PhotoAssetID> = []
     /// The streamed-import projection is evaluated by multiple views on every update. Keep the
     /// source ID lookup alongside the ordinal array so projecting loaded slots does not scan all
     /// items once per slot.
@@ -379,6 +382,7 @@ final class ImageCollection: ObservableObject {
         items = []
         pendingImportSlots.removeAll()
         dataImportOrdinals.removeAll()
+        dataImportOverflowItemIDs.removeAll()
         dataImportItemIndices.removeAll()
         selectedIndex = 0
         selection.clear()
@@ -613,6 +617,7 @@ final class ImageCollection: ObservableObject {
             scheduler.cancel(id: thumbnailJobID(for: item))
             thumbnailJobIDs.remove(thumbnailJobID(for: item))
             items.remove(at: index)
+            dataImportOverflowItemIDs.remove(itemID)
             if dataImportOrdinals.indices.contains(index) {
                 dataImportOrdinals.remove(at: index)
             }
@@ -668,6 +673,7 @@ final class ImageCollection: ObservableObject {
         items = []
         pendingImportSlots = (0..<max(0, reservedCount)).map { PendingImportSlot(ordinal: $0) }
         dataImportOrdinals.removeAll()
+        dataImportOverflowItemIDs.removeAll()
         dataImportItemIndices.removeAll()
         selectedIndex = 0
         selection.clear()
@@ -712,6 +718,11 @@ final class ImageCollection: ObservableObject {
             pendingImportSlots[slotIndex].assetID = identifier
             pendingImportSlots[slotIndex].name = item.name
             pendingImportSlots[slotIndex].state = .pending
+        } else {
+            // Keep an unexpected ordinal visible as a tail entry for this streamed operation.
+            // The normal PHPhotosPicker path reserves every ordinal, so this is a defensive
+            // fallback for a provider delivering more items than it declared or a misused caller.
+            dataImportOverflowItemIDs.insert(identifier)
         }
         reconcileSelection()
         isActive = true
@@ -727,6 +738,7 @@ final class ImageCollection: ObservableObject {
         metadataContinuation?.finish()
         metadataContinuation = nil
         pendingImportSlots.removeAll()
+        dataImportOverflowItemIDs.removeAll()
         isActive = !items.isEmpty
         enqueueThumbnails()
     }
@@ -751,7 +763,10 @@ final class ImageCollection: ObservableObject {
     }
 
     /// The library/filmstrip projection includes reservations in source order but never exposes
-    /// them through the collection's selectable item indices.
+    /// them through the collection's selectable item indices. Placeholders are deliberately
+    /// unfiltered so they continue to describe the in-flight import. Loaded arrivals do respect
+    /// the active culling filter and can therefore collapse out during an import. An arrival with
+    /// no reservation is rendered as a loaded tail entry rather than being silently omitted.
     var thumbnailEntries: [ThumbnailEntry] {
         guard !pendingImportSlots.isEmpty else {
             return filteredIndices.map { index in
@@ -764,7 +779,7 @@ final class ImageCollection: ObservableObject {
             }
         }
 
-        return pendingImportSlots.compactMap { slot in
+        let reservedEntries = pendingImportSlots.compactMap { slot in
             guard let assetID = slot.assetID,
                   let itemIndex = dataImportItemIndices[assetID] else {
                 return ThumbnailEntry(
@@ -787,6 +802,25 @@ final class ImageCollection: ObservableObject {
                 aspectRatio: item.libraryAspectRatio
             )
         }
+
+        let overflowEntries = items.indices.compactMap { itemIndex -> ThumbnailEntry? in
+            guard dataImportOverflowItemIDs.contains(items[itemIndex].id),
+                  filter.matches(
+                    flag: items[itemIndex].asset.flag,
+                    rating: items[itemIndex].asset.rating
+                  ) else {
+                return nil
+            }
+            let item = items[itemIndex]
+            return ThumbnailEntry(
+                id: item.id,
+                itemIndex: itemIndex,
+                placeholder: nil,
+                aspectRatio: item.libraryAspectRatio
+            )
+        }
+
+        return reservedEntries + overflowEntries
     }
 
     /// Number of source items currently retained by a streamed import.
@@ -898,6 +932,7 @@ final class ImageCollection: ObservableObject {
         items = []
         pendingImportSlots.removeAll()
         dataImportOrdinals.removeAll()
+        dataImportOverflowItemIDs.removeAll()
         dataImportItemIndices.removeAll()
         selectedIndex = 0
         selection.clear()

@@ -61,6 +61,79 @@ final class PhotosImportTests: TempDirectoryTestCase {
         XCTAssertEqual(entries[2].itemIndex, 1)
     }
 
+    func testImportProjectionKeepsPlaceholdersButFiltersLoadedArrivals() throws {
+        let url = try Fixtures.writeJPEG(
+            width: 32, height: 24, orientation: 1, named: "filtered.jpg", in: tempDirectory
+        )
+        let data = try Data(contentsOf: url)
+        let collection = ImageCollection()
+
+        collection.setFilter(LibraryFilter(flag: .picks, rating: .any))
+        collection.beginDataImport(reservedCount: 3)
+        let filteredIdentifier = "filtered-\(UUID().uuidString)"
+        let filteredID = collection.appendDataImport(
+            ImageCollection.PhotoImportItem(
+                name: "Filtered", data: data, localIdentifier: filteredIdentifier
+            ),
+            ordinal: 0
+        )
+
+        var entries = collection.thumbnailEntries
+        XCTAssertEqual(entries.compactMap(\.placeholder?.ordinal), [1, 2])
+        XCTAssertFalse(entries.contains(where: { $0.id == filteredID }))
+
+        let pickedID = collection.appendDataImport(
+            ImageCollection.PhotoImportItem(
+                name: "Picked", data: data, localIdentifier: "picked-\(UUID().uuidString)"
+            ),
+            ordinal: 2
+        )
+        XCTAssertTrue(collection.setFlag(.pick, for: pickedID))
+
+        entries = collection.thumbnailEntries
+        XCTAssertEqual(entries.count, 2)
+        XCTAssertEqual(entries.compactMap(\.placeholder?.ordinal), [1])
+        XCTAssertEqual(entries.last?.id, pickedID)
+        XCTAssertFalse(entries.last?.isPlaceholder ?? true)
+
+        collection.finishDataImport()
+        XCTAssertEqual(collection.thumbnailEntries.map(\.id), [pickedID])
+    }
+
+    func testUnreservedImportOrdinalAppearsAsLoadedTailEntry() throws {
+        let url = try Fixtures.writeJPEG(
+            width: 32, height: 24, orientation: 1, named: "overflow.jpg", in: tempDirectory
+        )
+        let data = try Data(contentsOf: url)
+        let collection = ImageCollection()
+
+        collection.beginDataImport(reservedCount: 2)
+        let overflowID = collection.appendDataImport(
+            ImageCollection.PhotoImportItem(name: "Overflow", data: data, localIdentifier: "overflow"),
+            ordinal: 2
+        )
+
+        var entries = collection.thumbnailEntries
+        XCTAssertEqual(entries.count, 3)
+        XCTAssertTrue(entries[0].isPlaceholder)
+        XCTAssertTrue(entries[1].isPlaceholder)
+        XCTAssertEqual(entries[2].id, overflowID)
+        XCTAssertEqual(entries[2].itemIndex, 0)
+        XCTAssertFalse(entries[2].isPlaceholder)
+
+        let reservedID = collection.appendDataImport(
+            ImageCollection.PhotoImportItem(name: "Reserved", data: data, localIdentifier: "reserved"),
+            ordinal: 1
+        )
+        entries = collection.thumbnailEntries
+        XCTAssertEqual(entries.map(\.isPlaceholder), [true, false, false])
+        XCTAssertEqual(entries[1].id, reservedID)
+        XCTAssertEqual(entries[2].id, overflowID)
+
+        collection.finishDataImport()
+        XCTAssertEqual(collection.thumbnailEntries.map(\.id), [reservedID, overflowID])
+    }
+
     func testLoadedEntryIdentitySurvivesImportCompletion() throws {
         let url = try Fixtures.writeJPEG(
             width: 32, height: 24, orientation: 1, named: "stable-entry.jpg", in: tempDirectory
