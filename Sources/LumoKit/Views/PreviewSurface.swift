@@ -48,6 +48,14 @@ final class PreviewSurface: ObservableObject {
                  detailIdentity: PreviewFrameIdentity? = nil,
                  detailFactor: CGFloat? = nil,
                  onPresented: (() -> Void)? = nil) -> Bool {
+        guard let image,
+              image.extent.width > 0, image.extent.height > 0,
+              image.extent.width.isFinite, image.extent.height.isFinite else {
+            // A failed render must not turn the surface into a blank candidate. The coordinator
+            // reports the failure separately; retaining the current image keeps the drawable's
+            // last confirmed frame available while that path recovers.
+            return false
+        }
         if let detailIdentity, let detailFactor, detailFactor.isFinite,
            let current = currentDetail,
            current.identity == detailIdentity,
@@ -288,16 +296,9 @@ struct PreviewSurfaceView: NSViewRepresentable {
             // Render into the drawable's actual pixel dimensions. The display transform is applied
             // here, after the requested render has been produced, so fit/fill/zoom/pan never alter
             // the source or export pipeline.
-            let extent = image.extent
-            let transform = navigation.transform(imageExtent: extent, viewportSize: destination.size)
-            let displayed = image.transformed(by: transform.affineTransform(for: extent))
-            // Deliberately dark image-presentation letterbox. This is scoped to the Metal
-            // drawable so an image's surrounding SwiftUI shell can follow light/dark mode;
-            // changing it would alter rendered presentation pixels rather than window chrome.
-            let background = CIImage(
-                color: CIColor(red: 0.07, green: 0.07, blue: 0.08, alpha: 1)
-            ).cropped(to: destination)
-            let output = displayed.composited(over: background)
+            guard let output = Self.presentationImage(
+                image, navigation: navigation, destination: destination
+            ) else { return }
             let presentationRevision = surface.pendingPresentationRevision()
             if let presentationRevision {
                 surface.setEffectiveDimensions(revision: presentationRevision,
@@ -362,6 +363,40 @@ struct PreviewSurfaceView: NSViewRepresentable {
             if let revision = presentationRevision {
                 surface.markPresentationSubmitted(revision: revision)
             }
+        }
+
+        /// Build the bounded image graph sent to the drawable.
+        ///
+        /// A native-resolution candidate can be much larger than the drawable once navigation
+        /// passes 100%. Leaving that transformed extent attached to the source-over graph makes
+        /// Core Image's Metal destination evaluate an unnecessarily large working extent and can
+        /// fail the command buffer on large sources. Clip before compositing the letterbox and
+        /// clip the final result as a second explicit destination contract. The source image is
+        /// never downscaled here; only pixels outside the current viewport are discarded.
+        static func presentationImage(
+            _ image: CIImage, navigation: CanvasNavigation, destination: CGRect
+        ) -> CIImage? {
+            guard destination.width > 0, destination.height > 0,
+                  destination.width.isFinite, destination.height.isFinite,
+                  image.extent.width > 0, image.extent.height > 0,
+                  image.extent.width.isFinite, image.extent.height.isFinite else { return nil }
+
+            let extent = image.extent
+            let transform = navigation.transform(imageExtent: extent, viewportSize: destination.size)
+            guard transform.scale.isFinite, transform.scale > 0,
+                  transform.imageSize.width.isFinite, transform.imageSize.height.isFinite else {
+                return nil
+            }
+            let displayed = image
+                .transformed(by: transform.affineTransform(for: extent))
+                .cropped(to: destination)
+            // Deliberately dark image-presentation letterbox. This is scoped to the Metal
+            // drawable so an image's surrounding SwiftUI shell can follow light/dark mode;
+            // changing it would alter rendered presentation pixels rather than window chrome.
+            let background = CIImage(
+                color: CIColor(red: 0.07, green: 0.07, blue: 0.08, alpha: 1)
+            ).cropped(to: destination)
+            return displayed.composited(over: background).cropped(to: destination)
         }
 
         private func drawingFinished(

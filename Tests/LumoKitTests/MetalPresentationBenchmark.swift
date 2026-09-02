@@ -260,9 +260,13 @@ final class MetalPresentationBenchmark: XCTestCase {
         }
         let acquisitionMS = max(0, (CACurrentMediaTime() - inputTime) * 1_000)
         let started = CACurrentMediaTime()
-        let presentation = fit(image, to: bounds.size)
-            .transformed(by: CGAffineTransform(translationX: CGFloat(transformIteration % 2), y: 0))
-            .cropped(to: bounds)
+        var navigation = CanvasNavigation()
+        navigation.setZoom(transformIteration.isMultiple(of: 2) ? 1.01 : 8.0)
+        let presentation = try XCTUnwrap(
+            PreviewSurfaceView.Coordinator.presentationImage(
+                image, navigation: navigation, destination: bounds
+            )
+        )
         context.render(presentation, to: drawable.texture, commandBuffer: commandBuffer,
                        bounds: bounds, colorSpace: WorkingSpace.current.cgColorSpace)
         let encoded = CACurrentMediaTime()
@@ -290,23 +294,6 @@ final class MetalPresentationBenchmark: XCTestCase {
             gpuMS: gpuEnd > gpuStart ? (gpuEnd - gpuStart) * 1_000 : nil,
             memoryDeltaBytes: residentMemory() - initialMemory
         )
-    }
-
-    private func fit(_ image: CIImage, to size: CGSize) -> CIImage {
-        let extent = image.extent
-        guard extent.width > 0, extent.height > 0 else { return image }
-        let normalized = image.transformed(by: CGAffineTransform(
-            translationX: -extent.origin.x, y: -extent.origin.y
-        ))
-        let scale = min(size.width / extent.width, size.height / extent.height)
-        let scaled = normalized.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let offset = CGPoint(
-            x: (size.width - scaled.extent.width) / 2,
-            y: (size.height - scaled.extent.height) / 2
-        )
-        return scaled
-            .transformed(by: CGAffineTransform(translationX: offset.x, y: offset.y))
-            .cropped(to: CGRect(origin: .zero, size: size))
     }
 
     private func residentMemory() -> Int64 {

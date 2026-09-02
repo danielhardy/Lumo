@@ -87,4 +87,42 @@ final class PreviewSurfaceTests: XCTestCase {
         XCTAssertTrue(surface.image === sharp)
         XCTAssertNil(surface.pendingDisplayRevision())
     }
+
+    func testPresentationImageRemainsBoundedAbove100PercentAndKeepsTheSourceVisible() throws {
+        let source = CIImage(color: CIColor(red: 0.9, green: 0.2, blue: 0.1, alpha: 1))
+            .cropped(to: CGRect(x: 37, y: 19, width: 640, height: 400))
+        let destination = CGRect(x: 0, y: 0, width: 320, height: 240)
+
+        for zoom in [1.01, 8.0] {
+            var navigation = CanvasNavigation()
+            navigation.setZoom(zoom)
+            let output = try XCTUnwrap(
+                PreviewSurfaceView.Coordinator.presentationImage(
+                    source, navigation: navigation, destination: destination
+                )
+            )
+
+            XCTAssertEqual(output.extent, destination)
+            let rendered = try XCTUnwrap(
+                RenderEngine.presentationContext.createCGImage(output, from: destination)
+            )
+            XCTAssertGreaterThan(rendered.width, 0)
+            XCTAssertGreaterThan(rendered.height, 0)
+            let bytes = try Pixels.bytes(of: rendered)
+            let center = ((rendered.height / 2) * rendered.width + rendered.width / 2) * 4
+            XCTAssertGreaterThan(bytes[center], 100, "zoom " + String(zoom) + " must present source pixels")
+        }
+    }
+
+    func testInvalidCandidateCannotBlankTheLastConfirmedFrame() throws {
+        let surface = PreviewSurface()
+        let first = CIImage(color: .red)
+        surface.present(first)
+        let firstRevision = try XCTUnwrap(surface.pendingDisplayRevision())
+        surface.markPresentationSucceeded(displayRevision: firstRevision)
+
+        XCTAssertFalse(surface.present(nil))
+        XCTAssertTrue(surface.image === first)
+        XCTAssertNil(surface.pendingDisplayRevision())
+    }
 }

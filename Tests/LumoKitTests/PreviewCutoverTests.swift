@@ -141,6 +141,32 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
         )
     }
 
+    func testZoomJustAboveAndFarAbove100PercentUsesNativePreviewAndKeepsSurfaceFrame() async throws {
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: fake)
+        try await openImage(viewModel)
+        try await waitUntil("the opening surface") { viewModel.previewSurface.image != nil }
+
+        for zoom in [1.01, 8.0] {
+            let before = viewModel.previewSurface.revision
+            viewModel.setCanvasZoom(zoom)
+            try await waitUntil("the " + String(zoom) + "x navigation render") {
+                viewModel.previewSurface.revision > before && viewModel.previewSurface.image != nil
+            }
+        }
+
+        let requests = await fake.previewRequests
+        XCTAssertTrue(
+            requests.contains {
+                if case .preview(let size) = $0.scale {
+                    return size == CGSize(width: 64, height: 48)
+                }
+                return false
+            },
+            "zoom above 100% must use the native source detail rather than a blank oversized target"
+        )
+    }
+
     /// Develop, adjustments and intensity each reach the engine as part of the document. This is the
     /// step's gate, asserted at the request level.
     func testDevelopAdjustmentsAndIntensityAllReachTheEngine() async throws {
