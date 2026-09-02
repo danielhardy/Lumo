@@ -61,6 +61,28 @@ final class PhotosImportTests: TempDirectoryTestCase {
         XCTAssertEqual(entries[2].itemIndex, 1)
     }
 
+    func testLoadedEntryIdentitySurvivesImportCompletion() throws {
+        let url = try Fixtures.writeJPEG(
+            width: 32, height: 24, orientation: 1, named: "stable-entry.jpg", in: tempDirectory
+        )
+        let data = try Data(contentsOf: url)
+        let collection = ImageCollection()
+
+        collection.beginDataImport(reservedCount: 2)
+        let firstID = collection.appendDataImport(
+            ImageCollection.PhotoImportItem(name: "First", data: data, localIdentifier: "first"),
+            ordinal: 0
+        )
+        let loadedEntryID = try XCTUnwrap(
+            collection.thumbnailEntries.first(where: { !$0.isPlaceholder })?.id
+        )
+
+        XCTAssertEqual(loadedEntryID, firstID)
+        collection.finishDataImport()
+
+        XCTAssertEqual(collection.thumbnailEntries.map(\.id), [firstID])
+    }
+
     func testFailureAndCancellationClearReservationsWithoutCreatingTargets() throws {
         let url = try Fixtures.writeJPEG(
             width: 32, height: 24, orientation: 1, named: "partial.jpg", in: tempDirectory

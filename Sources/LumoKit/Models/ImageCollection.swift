@@ -177,6 +177,10 @@ final class ImageCollection: ObservableObject {
     /// Data imports can finish out of order. Keeping their ordinals alongside the items preserves
     /// picker order without changing the stable source IDs used by editing and persistence.
     private var dataImportOrdinals: [Int] = []
+    /// The streamed-import projection is evaluated by multiple views on every update. Keep the
+    /// source ID lookup alongside the ordinal array so projecting loaded slots does not scan all
+    /// items once per slot.
+    private var dataImportItemIndices: [PhotoAssetID: Int] = [:]
     /// Folder whose security scope we hold open, released when we move on.
     private var scopedURL: URL?
 
@@ -375,6 +379,7 @@ final class ImageCollection: ObservableObject {
         items = []
         pendingImportSlots.removeAll()
         dataImportOrdinals.removeAll()
+        dataImportItemIndices.removeAll()
         selectedIndex = 0
         selection.clear()
         thumbnailDemandIDs.removeAll()
@@ -611,6 +616,7 @@ final class ImageCollection: ObservableObject {
             if dataImportOrdinals.indices.contains(index) {
                 dataImportOrdinals.remove(at: index)
             }
+            removeDataImportItemIndex(for: itemID, at: index)
             reconcileSelection()
             selectedIndex = min(selectedIndex, max(0, items.count - 1))
             isActive = !items.isEmpty || !pendingImportSlots.isEmpty
@@ -621,6 +627,16 @@ final class ImageCollection: ObservableObject {
         let id = message
         guard !scanWarnings.contains(where: { $0.id == id }) else { return }
         scanWarnings.append(ScanWarning(id: id, message: message))
+    }
+
+    private func removeDataImportItemIndex(for itemID: PhotoAssetID, at index: Int) {
+        guard dataImportItemIndices.removeValue(forKey: itemID) != nil else { return }
+        let shiftedIDs = dataImportItemIndices.compactMap { remainingID, remainingIndex in
+            remainingIndex > index ? remainingID : nil
+        }
+        for remainingID in shiftedIDs {
+            dataImportItemIndices[remainingID, default: index] -= 1
+        }
     }
 
     // MARK: - Data import (from Photos picker)
@@ -652,6 +668,7 @@ final class ImageCollection: ObservableObject {
         items = []
         pendingImportSlots = (0..<max(0, reservedCount)).map { PendingImportSlot(ordinal: $0) }
         dataImportOrdinals.removeAll()
+        dataImportItemIndices.removeAll()
         selectedIndex = 0
         selection.clear()
         isThumbnailDemandDriven = false
@@ -684,6 +701,13 @@ final class ImageCollection: ObservableObject {
         let insertionIndex = dataImportOrdinals.firstIndex(where: { $0 > ordinal }) ?? items.count
         items.insert(Item(asset: asset, metadata: nil), at: insertionIndex)
         dataImportOrdinals.insert(ordinal, at: insertionIndex)
+        let shiftedIDs = dataImportItemIndices.compactMap { itemID, itemIndex in
+            itemIndex >= insertionIndex ? itemID : nil
+        }
+        for itemID in shiftedIDs {
+            dataImportItemIndices[itemID, default: insertionIndex] += 1
+        }
+        dataImportItemIndices[identifier] = insertionIndex
         if let slotIndex = pendingImportSlots.firstIndex(where: { $0.ordinal == ordinal }) {
             pendingImportSlots[slotIndex].assetID = identifier
             pendingImportSlots[slotIndex].name = item.name
@@ -742,7 +766,7 @@ final class ImageCollection: ObservableObject {
 
         return pendingImportSlots.compactMap { slot in
             guard let assetID = slot.assetID,
-                  let itemIndex = items.firstIndex(where: { $0.id == assetID }) else {
+                  let itemIndex = dataImportItemIndices[assetID] else {
                 return ThumbnailEntry(
                     id: slot.id,
                     itemIndex: nil,
@@ -755,7 +779,9 @@ final class ImageCollection: ObservableObject {
                 return nil
             }
             return ThumbnailEntry(
-                id: slot.id,
+                // Loaded entries use their source identity as soon as the payload arrives. This
+                // keeps that identity stable when finishDataImport clears the reservations.
+                id: assetID,
                 itemIndex: itemIndex,
                 placeholder: nil,
                 aspectRatio: item.libraryAspectRatio
@@ -872,6 +898,7 @@ final class ImageCollection: ObservableObject {
         items = []
         pendingImportSlots.removeAll()
         dataImportOrdinals.removeAll()
+        dataImportItemIndices.removeAll()
         selectedIndex = 0
         selection.clear()
         isThumbnailDemandDriven = false
