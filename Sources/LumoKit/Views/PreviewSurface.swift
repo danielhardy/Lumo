@@ -4,6 +4,12 @@ import MetalKit
 
 /// GPU-owned presentation state for one preview. It is separate from AppViewModel so an
 /// interactive frame does not invalidate the application's broad observation graph.
+struct PreviewFrameIdentity: Equatable, Sendable {
+    let sourceToken: String
+    let documentHash: String
+    let space: WorkingSpace
+}
+
 @MainActor
 final class PreviewSurface: ObservableObject {
     @Published private(set) var revision: UInt64 = 0
@@ -14,6 +20,8 @@ final class PreviewSurface: ObservableObject {
     /// drawable acquisition/presentation can fail independently of processing.
     private var lastValidImage: CIImage?
     private var lastValidSpace: WorkingSpace = .current
+    private var lastValidDetail: (identity: PreviewFrameIdentity, factor: CGFloat)?
+    private var currentDetail: (identity: PreviewFrameIdentity, factor: CGFloat)?
     private var pendingDisplayID: UInt64?
     private var pendingGPURevision: UInt64?
     private struct PendingTelemetry {
@@ -25,11 +33,28 @@ final class PreviewSurface: ObservableObject {
     private var submittedTelemetryRevisions: Set<UInt64> = []
     var onPresentationFailure: (() -> Void)?
 
+    @discardableResult
     func present(_ image: CIImage?, space: WorkingSpace = .current, revision: UInt64? = nil,
                  telemetry: LiveEditTelemetry? = nil, source: ImageSource? = nil,
-                 quality: RenderQuality = .interactive) {
+                 quality: RenderQuality = .interactive,
+                 detailIdentity: PreviewFrameIdentity? = nil,
+                 detailFactor: CGFloat? = nil) -> Bool {
+        if let detailIdentity, let detailFactor, detailFactor.isFinite,
+           let current = currentDetail,
+           current.identity == detailIdentity,
+           detailFactor + 0.000001 < current.factor {
+            // Navigation can legitimately request a cheaper interactive level, but it must not
+            // replace an already valid sharper frame for the same source/document. The settled
+            // request will still be accepted when it reaches the coordinator.
+            return false
+        }
         self.image = image
         self.space = space
+        if let detailIdentity, let detailFactor, detailFactor.isFinite {
+            currentDetail = (detailIdentity, detailFactor)
+        } else {
+            currentDetail = nil
+        }
         self.revision &+= 1
         pendingDisplayID = self.revision
         if let revision, let telemetry {
@@ -46,6 +71,7 @@ final class PreviewSurface: ObservableObject {
         } else {
             pendingGPURevision = nil
         }
+        return true
     }
     fileprivate func pendingPresentationRevision() -> UInt64? { pendingGPURevision }
     func pendingDisplayRevision() -> UInt64? { pendingDisplayID }
@@ -54,6 +80,7 @@ final class PreviewSurface: ObservableObject {
         guard pendingDisplayID == displayRevision else { return }
         lastValidImage = image
         lastValidSpace = space
+        lastValidDetail = currentDetail
         pendingDisplayID = nil
     }
 
@@ -62,6 +89,7 @@ final class PreviewSurface: ObservableObject {
         pendingDisplayID = nil
         image = lastValidImage
         space = lastValidSpace
+        currentDetail = lastValidDetail
         revision &+= 1
         onPresentationFailure?()
     }
@@ -136,6 +164,8 @@ final class PreviewSurface: ObservableObject {
         space = .current
         lastValidImage = nil
         lastValidSpace = .current
+        lastValidDetail = nil
+        currentDetail = nil
         revision &+= 1
         pendingDisplayID = nil
         // A source switch invalidates any telemetry attached to the previous drawable. Its
@@ -151,11 +181,15 @@ struct PreviewSurfaceView: NSViewRepresentable {
     @ObservedObject var surface: PreviewSurface
     var navigation: CanvasNavigation = CanvasNavigation()
     var onScrollZoom: ((CGFloat) -> Void)?
+    /// The drawable reports backing pixels, which is the only reliable size across mixed-DPI
+    /// windows and side-by-side panels. SwiftUI point geometry is not sufficient here.
+    var onDrawableSizeChange: ((CGSize) -> Void)?
 
     func makeNSView(context: Context) -> MTKView {
         let view = PreviewMTKView(frame: .zero, device: context.coordinator.device)
         context.coordinator.surface = surface
         context.coordinator.navigation = navigation
+        context.coordinator.onDrawableSizeChange = onDrawableSizeChange
         view.onScrollZoom = onScrollZoom
         view.delegate = context.coordinator
         view.enableSetNeedsDisplay = true
@@ -169,6 +203,7 @@ struct PreviewSurfaceView: NSViewRepresentable {
     func updateNSView(_ view: MTKView, context: Context) {
         context.coordinator.surface = surface
         context.coordinator.navigation = navigation
+        context.coordinator.onDrawableSizeChange = onDrawableSizeChange
         if let view = view as? PreviewMTKView { view.onScrollZoom = onScrollZoom }
         // SwiftUI may call updateNSView before the MTKView has a drawable (notably while a
         // NavigationSplitView is replacing the selected image). The delegate will retry when the
@@ -185,6 +220,7 @@ struct PreviewSurfaceView: NSViewRepresentable {
         weak var surface: PreviewSurface?
         weak var view: MTKView?
         var navigation = CanvasNavigation()
+        var onDrawableSizeChange: ((CGSize) -> Void)?
         private var lastDrawnRevision: UInt64?
         private var lastDrawnNavigation: CanvasNavigation?
         private var lastDrawableSize: (width: Int, height: Int)?
@@ -207,6 +243,7 @@ struct PreviewSurfaceView: NSViewRepresentable {
             )
 
             let drawableSize = (drawable.texture.width, drawable.texture.height)
+            onDrawableSizeChange?(CGSize(width: drawableSize.0, height: drawableSize.1))
             let sameDrawableSize = lastDrawableSize?.width == drawableSize.0 &&
                 lastDrawableSize?.height == drawableSize.1
             // A pan/zoom/fit change does not bump `surface.revision` — it is presentation-only
@@ -330,6 +367,7 @@ struct PreviewSurfaceView: NSViewRepresentable {
 
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
             lastDrawableSize = nil
+            onDrawableSizeChange?(CGSize(width: size.width.rounded(.down), height: size.height.rounded(.down)))
             view.setNeedsDisplay(view.bounds)
         }
     }

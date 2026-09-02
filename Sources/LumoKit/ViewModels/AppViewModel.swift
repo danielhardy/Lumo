@@ -674,6 +674,7 @@ public final class AppViewModel: ObservableObject {
         previewSurface.clear()
         originalPreviewSurface.clear()
         canvasNavigation.reset()
+        resolutionPlanner.reset()
         // Do not let the previous surface briefly show the photo we are leaving while the new
         // source is being decoded.
         sourceImage = nil
@@ -1286,20 +1287,20 @@ public final class AppViewModel: ObservableObject {
     /// Backing pixels of the visible canvas. PreviewView updates this from its live geometry;
     /// the fallback is only used before the first layout pass.
     private var previewBackingSize = CGSize(width: 1600, height: 1200)
+    private var resolutionPlanner = ResolutionPlanner()
     private static let intensityDebounceMs = 60
 
     /// Request enough source detail for the current display scale while leaving the final
     /// placement to `PreviewSurfaceView`. The coalescing coordinator keeps a zoom gesture from
     /// building a queue of obsolete high-resolution renders.
-    private var previewRenderTargetSize: CGSize {
+    private func previewRenderTargetSize(for document: EditDocument) -> CGSize {
         guard let imageSource else { return previewBackingSize }
-        let multiplier = canvasNavigation.renderResolutionMultiplier(
-            imageExtent: imageSource.nativeExtent, viewportSize: previewBackingSize
-        )
-        return CGSize(
-            width: previewBackingSize.width * multiplier,
-            height: previewBackingSize.height * multiplier
-        )
+        return resolutionPlanner.plan(
+            nativeExtent: imageSource.nativeExtent,
+            crop: document.crop,
+            viewportSize: previewBackingSize,
+            navigation: canvasNavigation
+        ).sourceSize
     }
 
     /// What the main preview panel should currently show, as a render request.
@@ -1345,7 +1346,8 @@ public final class AppViewModel: ObservableObject {
         let (requested, look) = displayRequest
         previewCoordinator.submit(RenderRequest(
                 source: imageSource, document: requested, lut: look,
-                targetSize: previewRenderTargetSize, quality: .preview, output: .raster, space: .current
+                targetSize: previewRenderTargetSize(for: requested), quality: .preview,
+                output: .raster, space: .current
             ), phase: .settled)
     }
 
@@ -1358,7 +1360,8 @@ public final class AppViewModel: ObservableObject {
         let (requested, lut) = displayRequest
         previewCoordinator.submit(RenderRequest(
             source: imageSource, document: requested, lut: lut,
-            targetSize: previewRenderTargetSize, quality: .interactive, output: .raster, space: .current
+            targetSize: previewRenderTargetSize(for: requested), quality: .interactive,
+            output: .raster, space: .current
         ), phase: .interactive)
     }
 
@@ -1615,21 +1618,32 @@ public final class AppViewModel: ObservableObject {
 
     private func publishPreview(_ publication: PreviewCoordinator.Publication) {
         guard publication.request.source == imageSource else { return }
+        let request = publication.request
+        let detailIdentity = PreviewFrameIdentity(
+            sourceToken: request.source.traceToken,
+            documentHash: request.document.editHash,
+            space: request.space
+        )
+        let detailFactor = request.renderScale.factor(for: request.source.nativeExtent)
         if let gpuImage = publication.gpuImage {
-            previewSurface.present(gpuImage, space: publication.request.space,
+            previewSurface.present(gpuImage, space: request.space,
                                    revision: publication.revision,
                                    telemetry: previewCoordinator.telemetry,
-                                   source: publication.request.source,
-                                   quality: publication.request.quality)
+                                   source: request.source,
+                                   quality: request.quality,
+                                   detailIdentity: detailIdentity,
+                                   detailFactor: detailFactor)
         } else if let cgImage = publication.image {
             // Non-GPU conformers retain a raster compatibility seam, but it terminates at the
             // same persistent surface. Production RenderEngine publishes `gpuImage`, so this does
             // not allocate or publish an NSImage on the normal preview path.
-            previewSurface.present(CIImage(cgImage: cgImage), space: publication.request.space,
+            previewSurface.present(CIImage(cgImage: cgImage), space: request.space,
                                    revision: publication.revision,
                                    telemetry: previewCoordinator.telemetry,
-                                   source: publication.request.source,
-                                   quality: publication.request.quality)
+                                   source: request.source,
+                                   quality: request.quality,
+                                   detailIdentity: detailIdentity,
+                                   detailFactor: detailFactor)
         }
         guard publication.gpuImage != nil || publication.image != nil else {
             if publication.phase == .settled {
@@ -1658,7 +1672,7 @@ public final class AppViewModel: ObservableObject {
             return
         }
         let baseline = document.comparisonBaseline
-        let box = previewRenderTargetSize
+        let box = previewRenderTargetSize(for: baseline)
         let sourceRevision = self.sourceRevision
         let comparisonRevision = self.comparisonRevision
 
@@ -1747,7 +1761,7 @@ public final class AppViewModel: ObservableObject {
             let (requested, lut) = displayRequest
             request = RenderRequest(
                 source: imageSource, document: requested, lut: lut,
-                targetSize: previewRenderTargetSize, quality: .preview,
+                targetSize: previewRenderTargetSize(for: requested), quality: .preview,
                 output: .raster, space: .current
             )
         }

@@ -103,7 +103,8 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
             guard case .preview(let box) = request.scale else {
                 return XCTFail("every on-screen render must use a preview scale, got \(request.scale)")
             }
-            XCTAssertEqual(box, CGSize(width: 1600, height: 1200))
+            XCTAssertEqual(box, CGSize(width: 64, height: 48),
+                           "preview planning must respect the native source bounds")
         }
     }
 
@@ -132,11 +133,11 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
         XCTAssertTrue(
             requests.contains {
                 if case .preview(let size) = $0.scale {
-                    return size == CGSize(width: 6_400, height: 4_800)
+                    return size == CGSize(width: 64, height: 48)
                 }
                 return false
             },
-            "explicit zoom must request enough detail for the presentation transform"
+            "explicit zoom must request native detail without exceeding the source bounds"
         )
     }
 

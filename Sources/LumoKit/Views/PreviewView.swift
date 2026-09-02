@@ -37,13 +37,6 @@ struct PreviewView: View {
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers)
         }
-        .background {
-            GeometryReader { geometry in
-                Color.clear
-                    .onAppear { reportBackingSize(geometry.size) }
-                    .onChange(of: geometry.size) { _, size in reportBackingSize(size) }
-            }
-        }
     }
 
     // MARK: - Side-by-side
@@ -148,7 +141,8 @@ struct PreviewView: View {
             PreviewSurfaceView(
                 surface: surface,
                 navigation: viewModel.canvasNavigation,
-                onScrollZoom: { factor in viewModel.zoomCanvas(by: factor) }
+                onScrollZoom: { factor in viewModel.zoomCanvas(by: factor) },
+                onDrawableSizeChange: { size in viewModel.updatePreviewBackingSize(size) }
             )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .allowsHitTesting(!viewModel.isCropToolActive)
@@ -197,12 +191,6 @@ struct PreviewView: View {
                 magnification = 1
                 viewModel.endCanvasInteraction()
             }
-    }
-
-    private func reportBackingSize(_ points: CGSize) {
-        let scale = NSScreen.main?.backingScaleFactor ?? 2
-        viewModel.updatePreviewBackingSize(CGSize(width: points.width * scale,
-                                                   height: points.height * scale))
     }
 
     // MARK: - Empty state

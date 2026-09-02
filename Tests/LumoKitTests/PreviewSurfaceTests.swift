@@ -55,4 +55,19 @@ final class PreviewSurfaceTests: XCTestCase {
         XCTAssertTrue(surface.image === second)
         XCTAssertNotNil(surface.pendingDisplayRevision())
     }
+
+    func testNavigationCannotReplaceAValidSharperFrameWithALowerDetailFrame() throws {
+        let surface = PreviewSurface()
+        let identity = PreviewFrameIdentity(sourceToken: "source", documentHash: "document", space: .current)
+        let sharp = CIImage(color: .red)
+        let cheap = CIImage(color: .blue)
+
+        surface.present(sharp, detailIdentity: identity, detailFactor: 1)
+        let sharpRevision = try XCTUnwrap(surface.pendingDisplayRevision())
+        surface.markPresentationSucceeded(displayRevision: sharpRevision)
+
+        XCTAssertFalse(surface.present(cheap, detailIdentity: identity, detailFactor: 0.5))
+        XCTAssertTrue(surface.image === sharp)
+        XCTAssertNil(surface.pendingDisplayRevision())
+    }
 }

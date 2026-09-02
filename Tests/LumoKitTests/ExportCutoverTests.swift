@@ -375,8 +375,8 @@ final class ExportCutoverTests: TempDirectoryTestCase {
         guard case .preview(let box) = request.scale else {
             return XCTFail("the histogram should share the preview's scale, got \(request.scale)")
         }
-        XCTAssertEqual(box, CGSize(width: 1600, height: 1200),
-                       "a private scale would evict the developed-source memo every tally")
+        XCTAssertEqual(box, CGSize(width: 96, height: 64),
+                       "histogram must share the planner's native-bounded preview scale")
         XCTAssertEqual(request.space, .current)
 
         try await waitUntil("the histogram to be published") { viewModel.histogram != nil }
