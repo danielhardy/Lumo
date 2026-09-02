@@ -69,6 +69,15 @@ protocol RenderEngining: Sendable {
     func rawCapabilities(for source: ImageSource) async -> RAWCapabilities?
 }
 
+/// Actor-local counters used by performance captures to separate RAW configuration, decoder output
+/// requests, and completed prefix work. They are diagnostics only and do not affect cache identity.
+struct RenderWorkStatistics: Sendable, Equatable {
+    let rawFilterConstructions: Int
+    let rawPropertyWrites: Int
+    let rawOutputRequests: Int
+    let processingPrefixMaterializations: Int
+}
+
 extension RenderEngining {
     func makeCIImage(_ request: RenderRequest) async -> sending CIImage? { nil }
 
@@ -202,11 +211,16 @@ actor RenderEngine: RenderEngining {
     private var toneCurveSpace: WorkingSpace?
     private let previewCache: BoundedLRUCache<PreviewCacheKey, RenderResult>
     private let developedSourceCache: BoundedLRUCache<DevelopedSourceCacheKey, CIImage>
+    private let processingPrefixCache: BoundedLRUCache<ProcessingPrefixCacheKey, CIImage>
     /// The interactive RAW decoder is deliberately a single-entry cache. `CIRAWFilter` is mutable
     /// and is only safe behind this actor; retaining one filter for the visible source avoids
     /// rebuilding its immutable source/decode setup on every pointer tick. It is discarded at the
     /// source boundary, so a replaced URL or a different photo can never reuse decoder state.
     private var interactiveRAWSession: InteractiveRAWFilterSession?
+    private var rawFilterConstructionCount = 0
+    private var rawPropertyWriteCount = 0
+    private var rawOutputRequestCount = 0
+    private var processingPrefixMaterializationCount = 0
     private var memoryPressureSource: DispatchSourceMemoryPressure?
 
     init(configuration: RenderCacheConfiguration = .default) {
@@ -230,6 +244,10 @@ actor RenderEngine: RenderEngining {
             maxEntries: configuration.developedSourceMaxEntries,
             maxCostBytes: configuration.developedSourceMaxCostBytes
         )
+        self.processingPrefixCache = BoundedLRUCache(
+            maxEntries: configuration.processingPrefixMaxEntries,
+            maxCostBytes: configuration.processingPrefixMaxCostBytes
+        )
         Task { [weak self] in await self?.installMemoryPressureMonitor() }
     }
 
@@ -248,6 +266,10 @@ actor RenderEngine: RenderEngining {
         self.developedSourceCache = BoundedLRUCache(
             maxEntries: configuration.developedSourceMaxEntries,
             maxCostBytes: configuration.developedSourceMaxCostBytes
+        )
+        self.processingPrefixCache = BoundedLRUCache(
+            maxEntries: configuration.processingPrefixMaxEntries,
+            maxCostBytes: configuration.processingPrefixMaxCostBytes
         )
         Task { [weak self] in await self?.installMemoryPressureMonitor() }
     }
@@ -490,7 +512,17 @@ actor RenderEngine: RenderEngining {
         RenderCacheStatistics(
             preview: previewCache.statistics,
             developedSource: developedSourceCache.statistics,
+            processingPrefix: processingPrefixCache.statistics,
             lutFilter: lutCache.statistics
+        )
+    }
+
+    func workStatistics() -> RenderWorkStatistics {
+        RenderWorkStatistics(
+            rawFilterConstructions: rawFilterConstructionCount,
+            rawPropertyWrites: rawPropertyWriteCount,
+            rawOutputRequests: rawOutputRequestCount,
+            processingPrefixMaterializations: processingPrefixMaterializationCount
         )
     }
 
@@ -498,6 +530,7 @@ actor RenderEngine: RenderEngining {
     func evictForMemoryPressure() {
         previewCache.removeAll(countAsEvictions: true)
         developedSourceCache.removeAll(countAsEvictions: true)
+        processingPrefixCache.removeAll(countAsEvictions: true)
         interactiveRAWSession = nil
         lutCache.removeAll()
         toneCurveCache.removeAll()
@@ -510,6 +543,7 @@ actor RenderEngine: RenderEngining {
     func invalidateRenderCaches() {
         previewCache.removeAll()
         developedSourceCache.removeAll()
+        processingPrefixCache.removeAll()
         toneCurveCache.removeAll()
         toneCurveSource = nil
         toneCurveSpace = nil
@@ -572,15 +606,129 @@ actor RenderEngine: RenderEngining {
             toneCurveSpace = space
         }
         guard let developed = developedSource(
-            source, document.rawDevelop, scale,
+            source, document.rawDevelop, scale, space: space,
             interactive: quality == .interactive
         ) else { return nil }
+        let includePostRenderWhiteBalance = source.kind == .standard
+        let upstream: CIImage
+        if !scale.isFull, RenderPipeline.hasPreLUTWork(
+            document, includePostRenderWhiteBalance: includePostRenderWhiteBalance
+        ) {
+            upstream = processingPrefix(
+                source: source, document: document, developed: developed, scale: scale,
+                space: space, includePostRenderWhiteBalance: includePostRenderWhiteBalance,
+                quality: quality
+            ) ?? RenderPipeline.buildPreLUTImage(
+                developed: developed, document: document, toneCurveCache: toneCurveCache,
+                includePostRenderWhiteBalance: includePostRenderWhiteBalance
+            )
+        } else {
+            upstream = RenderPipeline.buildPreLUTImage(
+                developed: developed, document: document, toneCurveCache: toneCurveCache,
+                includePostRenderWhiteBalance: includePostRenderWhiteBalance
+            )
+        }
         return RenderPipeline.buildImage(
-            developed: developed, document: document, lut: lut, space: space, lutCache: lutCache,
-            toneCurveCache: toneCurveCache,
-            includePostRenderWhiteBalance: source.kind == .standard,
+            preLUT: upstream, document: document, lut: lut, space: space, lutCache: lutCache,
             grainSeed: RenderPipeline.grainSeed(for: source)
         )
+    }
+
+    private struct MaterializedImage {
+        let image: CIImage
+        let costBytes: Int
+    }
+
+    /// Complete a prefix at half-float precision so later graph construction cannot pull the RAW
+    /// decoder or expensive spatial nodes back into the next LUT/grain evaluation. This is a
+    /// bounded, preview-only boundary; full-resolution/export requests stay on the original fused
+    /// graph and never pay for an intermediate readback.
+    private func materializedImage(_ image: CIImage, space: WorkingSpace) -> MaterializedImage? {
+        let rect = image.extent.integral
+        guard rect.isRasterizable,
+              rect.width <= CGFloat(Int.max), rect.height <= CGFloat(Int.max),
+              rect.width > 0, rect.height > 0 else { return nil }
+        let width = Int(rect.width)
+        let height = Int(rect.height)
+        let rowBytes = width.multipliedReportingOverflow(by: 8)
+        guard !rowBytes.overflow else { return nil }
+        let byteCount = rowBytes.partialValue.multipliedReportingOverflow(by: height)
+        guard !byteCount.overflow else { return nil }
+
+        var data = Data(repeating: 0, count: byteCount.partialValue)
+        data.withUnsafeMutableBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else { return }
+            context.render(
+                image, toBitmap: baseAddress, rowBytes: rowBytes.partialValue, bounds: rect,
+                format: .RGBAh, colorSpace: space.cgColorSpace
+            )
+        }
+        let image = CIImage(
+            bitmapData: data, bytesPerRow: rowBytes.partialValue, size: rect.size,
+            format: .RGBAh, colorSpace: space.cgColorSpace
+        )
+        let positioned = rect.origin == .zero
+            ? image
+            : image.transformed(by: CGAffineTransform(translationX: rect.minX, y: rect.minY))
+        return MaterializedImage(image: positioned, costBytes: byteCount.partialValue)
+    }
+
+    private func processingPrefix(
+        source: ImageSource,
+        document: EditDocument,
+        developed: CIImage,
+        scale: RenderScale,
+        space: WorkingSpace,
+        includePostRenderWhiteBalance: Bool,
+        quality: RenderQuality
+    ) -> CIImage? {
+        let key = ProcessingPrefixCacheKey(
+            source: RenderSourceFingerprint(source),
+            developHash: RenderCacheHash.digest(document.rawDevelop),
+            upstreamHash: prefixDocumentHash(
+                document, includePostRenderWhiteBalance: includePostRenderWhiteBalance
+            ),
+            scale: RenderScaleKey(scale, nativeExtent: source.nativeExtent),
+            space: space,
+            includePostRenderWhiteBalance: includePostRenderWhiteBalance,
+            pipelineVersion: RenderPipeline.cacheVersion
+        )
+        if let cached = processingPrefixCache.value(for: key) {
+            LumoObservability.event(.cacheHit, source: source, quality: quality,
+                                    detail: "layer=processingPrefix")
+            return cached
+        }
+        LumoObservability.event(.cacheMiss, source: source, quality: quality,
+                                detail: "layer=processingPrefix")
+
+        let prefix = RenderPipeline.buildPreLUTImage(
+            developed: developed, document: document, toneCurveCache: toneCurveCache,
+            includePostRenderWhiteBalance: includePostRenderWhiteBalance
+        )
+        guard let completed = materializedImage(prefix, space: space) else { return nil }
+        processingPrefixMaterializationCount += 1
+        processingPrefixCache.insert(completed.image, for: key, cost: completed.costBytes)
+        return completed.image
+    }
+
+    private func prefixDocumentHash(
+        _ document: EditDocument,
+        includePostRenderWhiteBalance: Bool
+    ) -> String {
+        let adjustments = includePostRenderWhiteBalance
+            ? document.adjustments
+            : document.adjustments.filter {
+                if case .temperatureTint = $0 { return false }
+                return true
+            }
+        return RenderCacheHash.digest(EditDocument(
+            version: document.version, rawDevelop: .neutral, light: document.light,
+            color: document.color,
+            effects: EffectsAdjustments(
+                texture: document.effects.texture, clarity: document.effects.clarity,
+                dehaze: document.effects.dehaze
+            ), crop: .neutral, adjustments: adjustments, lut: .none
+        ))
     }
 
     // MARK: - The developed-source cache
@@ -609,6 +757,7 @@ actor RenderEngine: RenderEngining {
         _ source: ImageSource,
         _ rawDevelop: RAWDevelopSettings,
         _ scale: RenderScale,
+        space: WorkingSpace,
         interactive: Bool = false
     ) -> CIImage? {
         if interactive, source.kind == .raw {
@@ -618,12 +767,20 @@ actor RenderEngine: RenderEngining {
                 // This is an explicit one-entry boundary: source changes release the old mutable
                 // Core Image object and its source-backed decode graph before creating another.
                 interactiveRAWSession = InteractiveRAWFilterSession(source: source)
+                if interactiveRAWSession != nil { rawFilterConstructionCount += 1 }
             }
             LumoObservability.event(
                 reused ? .cacheHit : .cacheMiss, source: source, quality: .interactive,
                 detail: "layer=interactiveRAWFilter reused=\(reused)"
             )
-            return interactiveRAWSession?.output(rawDevelop: rawDevelop, scale: scale)
+            guard let session = interactiveRAWSession else { return nil }
+            let result = session.output(
+                rawDevelop: rawDevelop, scale: scale,
+                materialize: { [self] image in materializedImage(image, space: space)?.image }
+            )
+            rawPropertyWriteCount += result.propertyWrites
+            if result.requestedOutput { rawOutputRequestCount += 1 }
+            return result.image
         }
         guard !scale.isFull else {
             return RenderPipeline.developedSource(source, rawDevelop: rawDevelop, scale: scale)
@@ -653,21 +810,37 @@ actor RenderEngine: RenderEngining {
             source, rawDevelop: rawDevelop, scale: scale
         ) else { return nil }
 
+        // RAW output is mutable-filter-backed. Complete it before putting it in the settled cache,
+        // otherwise a later render can ask Core Image to evaluate the same decoder graph again.
+        if source.kind == .raw, let completed = materializedImage(image, space: space) {
+            developedSourceCache.insert(completed.image, for: key, cost: completed.costBytes)
+            return completed.image
+        }
+
         let extent = image.extent.integral
-        let width = max(0, Int(min(extent.width, CGFloat(Int.max))))
-        let height = max(0, Int(min(extent.height, CGFloat(Int.max))))
-        let pixelCount = width.multipliedReportingOverflow(by: height)
-        let byteCount = pixelCount.overflow
-            ? Int.max
-            : pixelCount.partialValue.multipliedReportingOverflow(by: 4).partialValue
+        let byteCount = estimatedByteCost(extent: extent, bytesPerPixel: 4)
         developedSourceCache.insert(image, for: key, cost: byteCount)
         return image
+    }
+
+    private func estimatedByteCost(extent: CGRect, bytesPerPixel: Int) -> Int {
+        guard extent.width > 0, extent.height > 0,
+              extent.width <= CGFloat(Int.max), extent.height <= CGFloat(Int.max) else {
+            return Int.max
+        }
+        let width = Int(extent.width)
+        let height = Int(extent.height)
+        let row = width.multipliedReportingOverflow(by: max(0, bytesPerPixel))
+        guard !row.overflow else { return Int.max }
+        let total = row.partialValue.multipliedReportingOverflow(by: height)
+        return total.overflow ? Int.max : total.partialValue
     }
 
     /// Drop the developed-source memo. Not needed for correctness — the key covers every input — but
     /// it lets a caller release the intermediates when no image is on screen.
     func invalidateSourceCache() {
         developedSourceCache.removeAll()
+        processingPrefixCache.removeAll()
         interactiveRAWSession = nil
         toneCurveCache.removeAll()
         toneCurveSource = nil
@@ -678,9 +851,25 @@ actor RenderEngine: RenderEngining {
     /// are captured once because applying an optional setting cannot undo a value written on the
     /// previous tick (`nil` means decoder default, not "clear this mutable filter property").
     private final class InteractiveRAWFilterSession {
+        struct OutputResult {
+            let image: CIImage?
+            let propertyWrites: Int
+            let requestedOutput: Bool
+        }
+
+        private struct OutputKey: Equatable {
+            let sourceRevision: String
+            let developHash: String
+            let scale: RenderScaleKey
+        }
+
         let fingerprint: String
         private let filter: CIRAWFilter
         private let baseline: RAWFilterBaseline
+        private var appliedSettings: RAWDevelopSettings?
+        private var appliedScaleFactor: Float?
+        private var cachedOutputKey: OutputKey?
+        private var cachedOutput: CIImage?
 
         init?(source: ImageSource) {
             guard let filter = RenderPipeline.rawFilter(for: source.backing) else { return nil }
@@ -689,12 +878,43 @@ actor RenderEngine: RenderEngining {
             self.baseline = RAWFilterBaseline(filter: filter)
         }
 
-        func output(rawDevelop: RAWDevelopSettings, scale: RenderScale) -> CIImage? {
-            baseline.restore(to: filter)
-            rawDevelop.apply(to: filter)
+        func output(
+            rawDevelop: RAWDevelopSettings,
+            scale: RenderScale,
+            materialize: (CIImage) -> CIImage?
+        ) -> OutputResult {
             let factor = scale.factor(for: filter.nativeSize)
-            filter.scaleFactor = Float(factor)
-            return filter.outputImage
+            let key = OutputKey(
+                sourceRevision: fingerprint,
+                developHash: RenderCacheHash.digest(rawDevelop),
+                scale: RenderScaleKey(scale, nativeExtent: filter.nativeSize)
+            )
+            if cachedOutputKey == key, let cachedOutput {
+                return OutputResult(image: cachedOutput, propertyWrites: 0, requestedOutput: false)
+            }
+
+            let propertyWrites = baseline.apply(
+                changedFrom: appliedSettings, to: rawDevelop, filter: filter
+            )
+            appliedSettings = rawDevelop
+            let scaleFactor = Float(factor)
+            if appliedScaleFactor != scaleFactor {
+                filter.scaleFactor = scaleFactor
+                appliedScaleFactor = scaleFactor
+            }
+            guard let output = filter.outputImage else {
+                return OutputResult(image: nil, propertyWrites: propertyWrites, requestedOutput: true)
+            }
+            guard let completed = materialize(output) else {
+                // The mutable filter remains correctly configured, but do not retain its lazy
+                // output: a later property write could otherwise change the image behind the cache.
+                cachedOutputKey = nil
+                cachedOutput = nil
+                return OutputResult(image: output, propertyWrites: propertyWrites, requestedOutput: true)
+            }
+            cachedOutputKey = key
+            cachedOutput = completed
+            return OutputResult(image: completed, propertyWrites: propertyWrites, requestedOutput: true)
         }
     }
 
@@ -739,29 +959,93 @@ actor RenderEngine: RenderEngining {
             } else { highlightRecoveryEnabled = nil }
         }
 
-        func restore(to filter: CIRAWFilter) {
-            filter.exposure = exposure; filter.baselineExposure = baselineExposure
-            filter.shadowBias = shadowBias; filter.boostAmount = boostAmount
-            filter.boostShadowAmount = boostShadowAmount
-            filter.neutralTemperature = neutralTemperature; filter.neutralTint = neutralTint
-            filter.isGamutMappingEnabled = gamutMappingEnabled
-            filter.extendedDynamicRangeAmount = extendedDynamicRangeAmount
-            if filter.isSharpnessSupported { filter.sharpnessAmount = sharpnessAmount }
-            if filter.isContrastSupported { filter.contrastAmount = contrastAmount }
-            if filter.isDetailSupported { filter.detailAmount = detailAmount }
-            if filter.isMoireReductionSupported { filter.moireReductionAmount = moireReductionAmount }
-            if filter.isLocalToneMapSupported { filter.localToneMapAmount = localToneMapAmount }
-            if filter.isLuminanceNoiseReductionSupported {
-                filter.luminanceNoiseReductionAmount = luminanceNoiseReductionAmount
+        func apply(
+            changedFrom previous: RAWDevelopSettings?,
+            to next: RAWDevelopSettings,
+            filter: CIRAWFilter
+        ) -> Int {
+            var writeCount = 0
+            if previous?.exposure != next.exposure {
+                writeCount += 1
+                filter.exposure = next.exposure.map(Float.init) ?? exposure
             }
-            if filter.isColorNoiseReductionSupported {
-                filter.colorNoiseReductionAmount = colorNoiseReductionAmount
+            if previous?.baselineExposure != next.baselineExposure {
+                writeCount += 1
+                filter.baselineExposure = next.baselineExposure.map(Float.init) ?? baselineExposure
             }
-            if filter.isLensCorrectionSupported { filter.isLensCorrectionEnabled = lensCorrectionEnabled }
-            if let highlightRecoveryEnabled, #available(macOS 26, *),
-               filter.isHighlightRecoverySupported {
-                filter.isHighlightRecoveryEnabled = highlightRecoveryEnabled
+            if previous?.shadowBias != next.shadowBias {
+                writeCount += 1
+                filter.shadowBias = next.shadowBias.map(Float.init) ?? shadowBias
             }
+            if previous?.boostAmount != next.boostAmount {
+                writeCount += 1
+                filter.boostAmount = next.boostAmount.map(Float.init) ?? boostAmount
+            }
+            if previous?.boostShadowAmount != next.boostShadowAmount {
+                writeCount += 1
+                filter.boostShadowAmount = next.boostShadowAmount.map(Float.init) ?? boostShadowAmount
+            }
+            if previous?.neutralTemperature != next.neutralTemperature {
+                writeCount += 1
+                filter.neutralTemperature = next.neutralTemperature.map(Float.init) ?? neutralTemperature
+            }
+            if previous?.neutralTint != next.neutralTint {
+                writeCount += 1
+                filter.neutralTint = next.neutralTint.map(Float.init) ?? neutralTint
+            }
+            if previous?.gamutMappingEnabled != next.gamutMappingEnabled {
+                writeCount += 1
+                filter.isGamutMappingEnabled = next.gamutMappingEnabled ?? gamutMappingEnabled
+            }
+            if previous?.extendedDynamicRangeAmount != next.extendedDynamicRangeAmount {
+                writeCount += 1
+                filter.extendedDynamicRangeAmount =
+                    next.extendedDynamicRangeAmount.map(Float.init) ?? extendedDynamicRangeAmount
+            }
+            if filter.isSharpnessSupported, previous?.sharpnessAmount != next.sharpnessAmount {
+                writeCount += 1
+                filter.sharpnessAmount = next.sharpnessAmount.map(Float.init) ?? sharpnessAmount
+            }
+            if filter.isContrastSupported, previous?.contrastAmount != next.contrastAmount {
+                writeCount += 1
+                filter.contrastAmount = next.contrastAmount.map(Float.init) ?? contrastAmount
+            }
+            if filter.isDetailSupported, previous?.detailAmount != next.detailAmount {
+                writeCount += 1
+                filter.detailAmount = next.detailAmount.map(Float.init) ?? detailAmount
+            }
+            if filter.isMoireReductionSupported, previous?.moireReductionAmount != next.moireReductionAmount {
+                writeCount += 1
+                filter.moireReductionAmount = next.moireReductionAmount.map(Float.init) ?? moireReductionAmount
+            }
+            if filter.isLocalToneMapSupported, previous?.localToneMapAmount != next.localToneMapAmount {
+                writeCount += 1
+                filter.localToneMapAmount = next.localToneMapAmount.map(Float.init) ?? localToneMapAmount
+            }
+            if filter.isLuminanceNoiseReductionSupported,
+               previous?.luminanceNoiseReductionAmount != next.luminanceNoiseReductionAmount {
+                writeCount += 1
+                filter.luminanceNoiseReductionAmount =
+                    next.luminanceNoiseReductionAmount.map(Float.init) ?? luminanceNoiseReductionAmount
+            }
+            if filter.isColorNoiseReductionSupported,
+               previous?.colorNoiseReductionAmount != next.colorNoiseReductionAmount {
+                writeCount += 1
+                filter.colorNoiseReductionAmount =
+                    next.colorNoiseReductionAmount.map(Float.init) ?? colorNoiseReductionAmount
+            }
+            if filter.isLensCorrectionSupported,
+               previous?.lensCorrectionEnabled != next.lensCorrectionEnabled {
+                writeCount += 1
+                filter.isLensCorrectionEnabled = next.lensCorrectionEnabled ?? lensCorrectionEnabled
+            }
+            if previous?.highlightRecoveryEnabled != next.highlightRecoveryEnabled,
+               let baseline = highlightRecoveryEnabled,
+               #available(macOS 26, *), filter.isHighlightRecoverySupported {
+                writeCount += 1
+                filter.isHighlightRecoveryEnabled = next.highlightRecoveryEnabled ?? baseline
+            }
+            return writeCount
         }
     }
 

@@ -110,6 +110,136 @@ final class RenderCacheTests: TempDirectoryTestCase {
         XCTAssertEqual(stats.developedSource.hits, 1)
     }
 
+    func testDownstreamOnlyEditsReuseTheCompletedProcessingPrefix() async throws {
+        let source = try makeSource()
+        let engine = RenderEngine()
+        let firstDocument = EditDocument(
+            light: LightAdjustments(exposure: 0.25),
+            effects: EffectsAdjustments(texture: 20, grain: GrainAdjustments(amount: 15))
+        )
+        let secondDocument = EditDocument(
+            light: LightAdjustments(exposure: 0.25),
+            effects: EffectsAdjustments(texture: 20, grain: GrainAdjustments(amount: 65))
+        )
+
+        _ = await engine.makeCGImage(request(source: source, document: firstDocument))
+        _ = await engine.makeCGImage(request(source: source, document: secondDocument))
+
+        let stats = await engine.cacheStatistics()
+        XCTAssertEqual(stats.developedSource.misses, 1)
+        XCTAssertEqual(stats.developedSource.hits, 1)
+        XCTAssertEqual(stats.processingPrefix.misses, 1)
+        XCTAssertEqual(stats.processingPrefix.hits, 1,
+                       "grain-only edits must not rebuild the completed pre-LUT prefix")
+    }
+
+    func testCachedPrefixPreservesDownstreamCropGrainAndLUTPixels() async throws {
+        let source = try makeSource()
+        let lut = TestImages.warmLUT()
+        let engine = RenderEngine()
+        let first = EditDocument(
+            light: LightAdjustments(contrast: 25),
+            effects: EffectsAdjustments(
+                texture: 18,
+                vignette: VignetteAdjustments(amount: 30),
+                grain: GrainAdjustments(amount: 15)
+            ),
+            crop: CropAdjustments(normalizedRect: CGRect(x: 0.1, y: 0.15, width: 0.75, height: 0.7)),
+            lut: LUTSettings(lutID: lut.lutID, intensity: 0.35)
+        )
+        let second = EditDocument(
+            light: LightAdjustments(contrast: 25),
+            effects: EffectsAdjustments(
+                texture: 18,
+                vignette: VignetteAdjustments(amount: 30),
+                grain: GrainAdjustments(amount: 70)
+            ),
+            crop: first.crop,
+            lut: LUTSettings(lutID: lut.lutID, intensity: 0.8)
+        )
+        func makeRequest(_ document: EditDocument) -> RenderRequest {
+            RenderRequest(
+                source: source, document: document, lut: lut,
+                targetSize: CGSize(width: 64, height: 64), quality: .preview
+            )
+        }
+
+        _ = await engine.makeCGImage(makeRequest(first))
+        let cachedImage = await engine.makeCGImage(makeRequest(second))
+        let cached = try XCTUnwrap(cachedImage)
+        let freshEngine = RenderEngine()
+        let freshImage = await freshEngine.makeCGImage(makeRequest(second))
+        let fresh = try XCTUnwrap(freshImage)
+
+        XCTAssertEqual(cached.width, fresh.width)
+        XCTAssertEqual(cached.height, fresh.height)
+        assertPixelsEqual(try Pixels.bytes(of: cached), try Pixels.bytes(of: fresh), tolerance: 2,
+                          "a materialized prefix must preserve downstream LUT, crop, vignette, and grain")
+        let stats = await engine.cacheStatistics()
+        XCTAssertEqual(stats.processingPrefix.hits, 1)
+    }
+
+    func testUpstreamEditsInvalidateOnlyTheProcessingPrefix() async throws {
+        let source = try makeSource()
+        let engine = RenderEngine()
+        let first = EditDocument(light: LightAdjustments(exposure: 0.25))
+        let second = EditDocument(light: LightAdjustments(exposure: 0.75))
+
+        _ = await engine.makeCGImage(request(source: source, document: first))
+        _ = await engine.makeCGImage(request(source: source, document: second))
+
+        let stats = await engine.cacheStatistics()
+        XCTAssertEqual(stats.developedSource.misses, 1)
+        XCTAssertEqual(stats.developedSource.hits, 1,
+                       "a Light edit must reuse the unchanged developed source")
+        XCTAssertEqual(stats.processingPrefix.misses, 2)
+        XCTAssertEqual(stats.processingPrefix.hits, 0)
+    }
+
+    func testFullResolutionWorkNeverEntersTheProcessingPrefixCache() async throws {
+        let source = try makeSource()
+        let engine = RenderEngine()
+        let document = EditDocument(light: LightAdjustments(exposure: 0.5))
+        let request = RenderRequest(
+            source: source, document: document, quality: .export,
+            output: .encoded(format: .png, quality: 1)
+        )
+
+        _ = try await engine.render(request)
+        let stats = await engine.cacheStatistics()
+        XCTAssertEqual(stats.processingPrefix.count, 0)
+        XCTAssertEqual(stats.processingPrefix.misses, 0)
+    }
+
+    func testProcessingPrefixEvictionHonorsItsIndependentBudget() async throws {
+        let source = try makeSource()
+        let engine = RenderEngine(configuration: RenderCacheConfiguration(
+            previewMaxEntries: 12, previewMaxCostBytes: 10_000_000,
+            developedSourceMaxEntries: 2, developedSourceMaxCostBytes: 10_000_000,
+            processingPrefixMaxEntries: 1, processingPrefixMaxCostBytes: 10_000_000
+        ))
+
+        _ = await engine.makeCGImage(request(
+            source: source, document: EditDocument(light: LightAdjustments(exposure: 0.1))
+        ))
+        _ = await engine.makeCGImage(request(
+            source: source, document: EditDocument(light: LightAdjustments(exposure: 0.2))
+        ))
+
+        let stats = await engine.cacheStatistics()
+        XCTAssertEqual(stats.processingPrefix.count, 1)
+        XCTAssertGreaterThanOrEqual(stats.processingPrefix.evictions, 1)
+    }
+
+    func testCacheCostAccountingCannotOverflow() {
+        let cache = BoundedLRUCache<Int, Int>(maxEntries: 2, maxCostBytes: Int.max)
+        cache.insert(1, for: 1, cost: Int.max)
+        cache.insert(2, for: 2, cost: Int.max)
+
+        XCTAssertEqual(cache.count, 2)
+        XCTAssertEqual(cache.statistics.costBytes, Int.max)
+    }
+
     func testEffectiveInteractiveScaleCannotReuseSettledDevelopedSource() async throws {
         let url = try Fixtures.writeGradientPNG(
             width: 3_000, height: 2_000, named: "above-cap-cache.png", in: tempDirectory

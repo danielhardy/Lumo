@@ -29,7 +29,8 @@ enum RenderPipeline {
     /// GPU-backed Texture, Clarity, and Dehaze Effects stage. v12 adds the post-LUT vignette stage.
     /// v13 adds deterministic, resolution-aware post-LUT grain. v14 preserves the grain seed's
     /// full 32-bit entropy when passing it to the GPU kernel. v15 adds the post-LUT crop stage.
-    static let cacheVersion = 15
+    /// v16 formalizes the reusable pre-LUT prefix boundary.
+    static let cacheVersion = 16
 
     /// Build the graph for `document` over `source`.
     ///
@@ -89,6 +90,44 @@ enum RenderPipeline {
         includePostRenderWhiteBalance: Bool = true,
         grainSeed: UInt32 = 0
     ) -> CIImage {
+        let adjusted = buildPreLUTImage(
+            developed: developed, document: document, toneCurveCache: toneCurveCache,
+            includePostRenderWhiteBalance: includePostRenderWhiteBalance
+        )
+        return buildImage(
+            preLUT: adjusted, document: document, lut: lut, space: space, lutCache: lutCache,
+            grainSeed: grainSeed
+        )
+    }
+
+    /// Finish a graph from a completed or otherwise reusable pre-LUT image.
+    static func buildImage(
+        preLUT: CIImage,
+        document: EditDocument,
+        lut: CubeLUT?,
+        space: WorkingSpace = .current,
+        lutCache: LUTFilterCache? = nil,
+        grainSeed: UInt32 = 0
+    ) -> CIImage {
+        let adjusted = preLUT
+        let lutAdjusted = applyLUT(document.lut, lut: lut, to: adjusted, space: space, cache: lutCache)
+        // Crop is a composition stage: all look work above is evaluated over the source, while
+        // vignette and grain below describe the final cropped frame. This also keeps preview,
+        // comparison, and full-resolution export on one extent-changing path.
+        let cropped = applyCrop(document.crop, to: lutAdjusted)
+        let vignetted = applyVignette(document.effects.vignette, to: cropped)
+        return applyGrain(document.effects.grain, to: vignetted, seed: grainSeed)
+    }
+
+    /// Build the one intentionally materializable expensive prefix. Keeping it as one graph
+    /// preserves Core Image fusion within the prefix while allowing a caller to complete it once
+    /// and reuse the result when LUT/crop/vignette/grain changes.
+    static func buildPreLUTImage(
+        developed: CIImage,
+        document: EditDocument,
+        toneCurveCache: ToneCurveFilterCache? = nil,
+        includePostRenderWhiteBalance: Bool = true
+    ) -> CIImage {
         let lightAdjusted = applyLight(document.light, to: developed, cache: toneCurveCache)
         let colorAdjusted = applyColor(document.color, to: lightAdjusted)
         // Detail/atmosphere effects are pre-LUT. Vignette is deliberately held until after the LUT
@@ -97,14 +136,22 @@ enum RenderPipeline {
         let adjustmentNodes = includePostRenderWhiteBalance
             ? document.adjustments
             : document.adjustments.filter { $0.slot != .temperatureTint }
-        let adjusted = applyAdjustments(adjustmentNodes, to: effectsAdjusted)
-        let lutAdjusted = applyLUT(document.lut, lut: lut, to: adjusted, space: space, cache: lutCache)
-        // Crop is a composition stage: all look work above is evaluated over the source, while
-        // vignette and grain below describe the final cropped frame. This also keeps preview,
-        // comparison, and full-resolution export on one extent-changing path.
-        let cropped = applyCrop(document.crop, to: lutAdjusted)
-        let vignetted = applyVignette(document.effects.vignette, to: cropped)
-        return applyGrain(document.effects.grain, to: vignetted, seed: grainSeed)
+        return applyAdjustments(adjustmentNodes, to: effectsAdjusted)
+    }
+
+    /// Only cache a prefix when it contains work beyond the developed source. A neutral prefix is
+    /// intentionally left lazy so a normal image still benefits from Core Image's graph fusion.
+    static func hasPreLUTWork(
+        _ document: EditDocument,
+        includePostRenderWhiteBalance: Bool = true
+    ) -> Bool {
+        let hasAdjustment = document.adjustments.contains { node in
+            if !includePostRenderWhiteBalance, case .temperatureTint = node { return false }
+            return !node.isIdentity
+        }
+        return !document.light.isIdentity || !document.color.isIdentity
+            || document.effects.texture != 0 || document.effects.clarity != 0
+            || document.effects.dehaze != 0 || hasAdjustment
     }
 
     /// Apply a normalized freeform crop without rasterizing. The rectangle is bottom-left based,
@@ -401,7 +448,7 @@ enum RenderPipeline {
 
     /// Apply the detail/atmosphere controls that belong before the LUT. Kept separate from the
     /// convenience above so the full pipeline can place vignette after LUT exactly once.
-    private static func applyPreLUTEffects(_ effects: EffectsAdjustments, to image: CIImage) -> CIImage {
+    static func applyPreLUTEffects(_ effects: EffectsAdjustments, to image: CIImage) -> CIImage {
         guard effects.texture != 0 || effects.clarity != 0 || effects.dehaze != 0 else { return image }
         var result = image
 

@@ -66,6 +66,18 @@ struct DevelopedSourceCacheKey: Hashable, Sendable {
     let pipelineVersion: Int
 }
 
+/// Identity for the one intentionally materialized expensive prefix. It stops at the LUT because
+/// LUT intensity/content and the composition effects below it are common interactive edit targets.
+struct ProcessingPrefixCacheKey: Hashable, Sendable {
+    let source: RenderSourceFingerprint
+    let developHash: String
+    let upstreamHash: String
+    let scale: RenderScaleKey
+    let space: WorkingSpace
+    let includePostRenderWhiteBalance: Bool
+    let pipelineVersion: Int
+}
+
 /// Cache identity for a display raster. Full-resolution/export requests never create this key.
 struct PreviewCacheKey: Hashable, Sendable {
     let source: RenderSourceFingerprint

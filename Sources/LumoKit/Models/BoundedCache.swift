@@ -14,6 +14,10 @@ struct RenderCacheConfiguration: Sendable, Equatable {
     var previewMaxCostBytes = 64 * 1024 * 1024
     var developedSourceMaxEntries = 4
     var developedSourceMaxCostBytes = 256 * 1024 * 1024
+    /// Completed pre-LUT prefixes are larger than encoded previews, so they have their own budget.
+    /// Keeping this separate prevents a LUT/grain drag from evicting the final preview working set.
+    var processingPrefixMaxEntries = 4
+    var processingPrefixMaxCostBytes = 256 * 1024 * 1024
 
     static let `default` = Self()
 }
@@ -21,6 +25,7 @@ struct RenderCacheConfiguration: Sendable, Equatable {
 struct RenderCacheStatistics: Sendable, Equatable {
     let preview: CacheStatistics
     let developedSource: CacheStatistics
+    let processingPrefix: CacheStatistics
     let lutFilter: CacheStatistics
 }
 
@@ -61,9 +66,9 @@ final class BoundedLRUCache<Key: Hashable, Value> {
 
     func insert(_ value: Value, for key: Key, cost: Int) {
         let boundedCost = max(0, cost)
-        if let old = entries.removeValue(forKey: key) {
-            totalCostBytes -= old.cost
+        if entries.removeValue(forKey: key) != nil {
             recency.removeAll { $0 == key }
+            totalCostBytes = saturatedCost()
         }
 
         guard maxEntries > 0, maxCostBytes > 0, boundedCost <= maxCostBytes else {
@@ -73,7 +78,10 @@ final class BoundedLRUCache<Key: Hashable, Value> {
 
         entries[key] = Entry(value: value, cost: boundedCost)
         recency.append(key)
-        totalCostBytes += boundedCost
+        // Cost is an estimate supplied by a caller and can be close to Int.max for a malformed or
+        // enormous image. Recompute with saturating arithmetic rather than allowing accounting to
+        // wrap negative and disable the budget.
+        totalCostBytes = saturatedCost()
         trimToLimits()
     }
 
@@ -100,12 +108,22 @@ final class BoundedLRUCache<Key: Hashable, Value> {
 
     private func trimToLimits() {
         while entries.count > maxEntries || totalCostBytes > maxCostBytes {
-            guard let oldest = recency.first, let removed = entries.removeValue(forKey: oldest) else {
+            guard let oldest = recency.first, entries.removeValue(forKey: oldest) != nil else {
                 break
             }
             recency.removeFirst()
-            totalCostBytes -= removed.cost
+            totalCostBytes = saturatedCost()
             evictionCount += 1
+        }
+    }
+
+    private func saturatedCost() -> Int {
+        entries.values.reduce(into: 0) { total, entry in
+            if total > Int.max - entry.cost {
+                total = Int.max
+            } else {
+                total += entry.cost
+            }
         }
     }
 }

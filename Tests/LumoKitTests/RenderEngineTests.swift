@@ -611,5 +611,39 @@ final class RenderEngineTests: TempDirectoryTestCase {
             try Pixels.bytes(of: pushed), try Pixels.bytes(of: backToNeutral),
             "precondition: the exposure push must actually have changed the pushed frame"
         )
+
+        let work = await engine.workStatistics()
+        XCTAssertEqual(work.rawFilterConstructions, 1)
+        XCTAssertEqual(work.rawOutputRequests, 2)
+        XCTAssertEqual(work.rawPropertyWrites, 2,
+                       "the exposure write and its optional reset should be the only decoder writes")
+    }
+
+    func testInteractiveRAWDownstreamEditsReuseTheCompletedOutput() async throws {
+        guard let rawURL = Fixtures.localRAWURL else {
+            throw XCTSkip("no local RAW to develop; see Fixtures.localRAWURL")
+        }
+        let rawSource = ImageSource(url: rawURL, nativeExtent: CGSize(width: 4000, height: 3000))
+        let settings = RAWDevelopSettings(exposure: 0.5)
+        let engine = RenderEngine()
+        func request(grainAmount: Double) -> RenderRequest {
+            RenderRequest(
+                source: rawSource,
+                document: EditDocument(
+                    rawDevelop: settings,
+                    effects: EffectsAdjustments(grain: GrainAdjustments(amount: grainAmount))
+                ),
+                targetSize: CGSize(width: 256, height: 256), quality: .interactive
+            )
+        }
+
+        _ = await engine.makeCGImage(request(grainAmount: 10))
+        _ = await engine.makeCGImage(request(grainAmount: 80))
+
+        let work = await engine.workStatistics()
+        XCTAssertEqual(work.rawFilterConstructions, 1)
+        XCTAssertEqual(work.rawOutputRequests, 1,
+                       "a grain-only interactive edit must reuse the developed RAW output")
+        XCTAssertEqual(work.rawPropertyWrites, 1)
     }
 }
