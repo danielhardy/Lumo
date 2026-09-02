@@ -73,7 +73,13 @@ struct RenderRequest: Sendable, Equatable {
         case .fullResolution:
             return .full
         case .export:
-            return exportOptions?.sizing.renderTargetBox.map(RenderScale.preview) ?? .full
+            guard let options = exportOptions, options.sizing.longEdge != nil else {
+                return .full
+            }
+            // Use the durable pixel plan as the render box. RenderScale applies the tightest
+            // axis and the renderer's integral extent rounds outward, so bounding the unrounded
+            // image by these planned dimensions makes the encoded pixels match outputSize(for:).
+            return .preview(maxSize: options.outputSize(for: source.nativeExtent))
         }
     }
 }

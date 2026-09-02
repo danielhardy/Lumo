@@ -45,11 +45,6 @@ enum ExportSizing: Codable, Sendable, Equatable {
         )
     }
 
-    /// A square box used by `RenderScale` to express the long-edge constraint.
-    var renderTargetBox: CGSize? {
-        guard let edge = longEdge, edge > 0 else { return nil }
-        return CGSize(width: edge, height: edge)
-    }
 }
 
 /// The destination is represented as data so export options do not depend on an AppKit panel.

@@ -95,6 +95,49 @@ final class ExportOptionsTests: TempDirectoryTestCase {
         XCTAssertEqual(image.height, 20)
     }
 
+    func testRenderEngineMatchesPlannedDimensionsAtFractionalLongEdgeScale() async throws {
+        let sourceExtent = CGSize(width: 3333, height: 5000)
+        let url = try Fixtures.writeGradientPNG(
+            width: Int(sourceExtent.width), height: Int(sourceExtent.height),
+            named: "fractional-long-edge.png", in: tempDirectory
+        )
+        let source = ImageSource(url: url, nativeExtent: sourceExtent)
+        let options = ExportOptions(format: .png, sizing: .longEdge(2000))
+        let result = try await RenderEngine().render(RenderRequest(
+            source: source,
+            document: EditDocument(),
+            quality: .export,
+            output: .encoded(format: .png, quality: CGFloat(options.quality)),
+            exportOptions: options
+        ))
+
+        let planned = options.outputSize(for: sourceExtent)
+        let imageSource = try XCTUnwrap(CGImageSourceCreateWithData(result.data as CFData, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(imageSource, 0, nil))
+        XCTAssertEqual(planned, CGSize(width: 1333, height: 2000))
+        XCTAssertEqual(result.extent, planned)
+        XCTAssertEqual(CGSize(width: image.width, height: image.height), planned)
+    }
+
+    func testRenderEngineDoesNotUpscaleSmallLongEdgeExports() async throws {
+        let sourceExtent = CGSize(width: 100, height: 50)
+        let url = try Fixtures.writeGradientPNG(
+            width: Int(sourceExtent.width), height: Int(sourceExtent.height),
+            named: "small-long-edge.png", in: tempDirectory
+        )
+        let source = ImageSource(url: url, nativeExtent: sourceExtent)
+        let options = ExportOptions(format: .png, sizing: .longEdge(200))
+        let result = try await RenderEngine().render(RenderRequest(
+            source: source,
+            document: EditDocument(),
+            quality: .export,
+            output: .encoded(format: .png, quality: CGFloat(options.quality)),
+            exportOptions: options
+        ))
+
+        XCTAssertEqual(result.extent, sourceExtent)
+    }
+
     func testExportOptionsRoundTripAndRenderRequestStayValueOnly() throws {
         let options = ExportOptions(
             format: .tiff,
@@ -118,7 +161,7 @@ final class ExportOptionsTests: TempDirectoryTestCase {
             exportOptions: options
         )
         XCTAssertEqual(request.exportOptions, options)
-        XCTAssertEqual(request.renderScale, .preview(maxSize: CGSize(width: 2400, height: 2400)))
+        XCTAssertEqual(request.renderScale, .preview(maxSize: CGSize(width: 2400, height: 1600)))
     }
 
     func testFilenamePolicyIsIndependentOfTheExportPanel() {
