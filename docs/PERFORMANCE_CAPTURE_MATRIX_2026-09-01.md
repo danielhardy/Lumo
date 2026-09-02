@@ -14,6 +14,10 @@ swift build -c release
 # real drawable presentation; requires a logged-in display
 LUMO_METAL_BENCHMARK=1 swift test --filter MetalPresentationBenchmark/testRealMetalPresentationBenchmark
 
+# automated representative RAW drawable capture; writes a .trace and summary under /tmp
+# Set LUMO_CAPTURE_ID=LUMO-121 for a post-LUMO-107 capture.
+scripts/run-lumo-118-capture.sh realworldtest/DSC07826.ARW
+
 # tracing overhead; run with and without an active Instruments recording
 LUMO_TRACE_BENCHMARK=1 swift test --filter TracingOverheadBenchmark/testMeasureTracingOverhead
 ```
@@ -39,6 +43,7 @@ enabled/disabled delta per event. Both tests are opt-in and produce no hardware 
 | RAW40-60-LIGHT | Light: all controls | representative 40–60 MP RAW | cold + warm | off + histogram | requires licensed local RAW |
 | RAW40-60-ADJUST | Adjust: every visible control | representative 40–60 MP RAW | cold + warm | off + histogram | requires licensed local RAW |
 | RAW40-60-EFFECTS | Effects: every visible control | representative 40–60 MP RAW | cold + warm | off + histogram | requires licensed local RAW |
+| LUMO-121-RAW-REP | Completed-texture presentation + ordinary Light adjustments | DSC07826.ARW (`6000x4000`) | warm | off | [post-LUMO-107 summary](LUMO-121-DSC07826-20260901-222341-summary.md): target met for this representative run |
 
 For each completed row, attach the `.trace` from Points of Interest + Metal System Trace and a
 value-only summary containing: capture ID, Mac/chip/memory, OS, commit, Release configuration,
@@ -48,6 +53,9 @@ Do not substitute the fake renderer's 60 MP-class test for these rows: it is orc
 
 ## Current checkout record
 
-No camera RAW is shipped in `realworldtest/`, and no logged-in display capture was available during
-repository verification. Therefore the RAW rows and hardware latency claims remain explicitly
-pending rather than being fabricated from generated PNGs or unit-test timings.
+Two released Sony ILCE-7M2 ARW fixtures are available in `realworldtest/`
+(`DSC07826.ARW` and `DSC07241.ARW`). The post-LUMO-107 representative Release capture using
+`DSC07826.ARW` is recorded in [the LUMO-121 durable summary](LUMO-121-DSC07826-20260901-222341-summary.md);
+the generated `.trace` remains at the capture host's `/tmp` path recorded there. It measures the
+completed-texture warm-transform path and ordinary Light-adjustment settle path; it does not claim
+cold coverage, supporting-work coverage, exhaustive controls, or full source-size coverage.
