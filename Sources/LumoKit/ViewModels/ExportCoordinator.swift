@@ -30,6 +30,12 @@ final class ExportCoordinator: ObservableObject {
     @Published private(set) var isExporting: Bool = false
     /// Progress (0...1) during a multi-image "Export All" run.
     @Published private(set) var batchProgress: Double = 0
+    /// Number of items that have reached a terminal state in the current batch.
+    @Published private(set) var batchCompleted: Int = 0
+    /// Total number of items in the current batch. Zero means that no batch is active.
+    @Published private(set) var batchTotal: Int = 0
+    /// The source currently in the expensive decode/render/commit section.
+    @Published private(set) var batchCurrentItem: String?
     /// The format used by the most recently started export in this session.
     /// Both export dialogs use this to seed their accessory view.
     private(set) var lastUsedFormat: ExportFormat
@@ -44,6 +50,10 @@ final class ExportCoordinator: ObservableObject {
     /// is non-preemptible once Core Image enters it, so a batch cannot monopolize the display actor.
     /// The batch loop remains serial, retaining only one full-size result at a time.
     private let exportEngine: any RenderEngining
+    private var batchTask: Task<BatchOutcome, Never>?
+    /// This flag also makes the panel-free API cancellable: its caller may not own a task that the
+    /// coordinator can cancel, but the UI still needs a reliable boundary before the next item.
+    private var batchCancellationRequested = false
 
     /// The edit store is used for batch items that have not been opened in the current session.
     /// `lutResolver` is deliberately a value-returning main-actor seam: the store owns edit values,
@@ -111,6 +121,16 @@ final class ExportCoordinator: ObservableObject {
         let exported: Int
         let failed: Int
         let total: Int
+        let cancelled: Bool
+
+        init(exported: Int, failed: Int, total: Int, cancelled: Bool = false) {
+            self.exported = exported
+            self.failed = failed
+            self.total = total
+            self.cancelled = cancelled
+        }
+
+        var isCancelled: Bool { cancelled }
     }
 
     // MARK: - Naming
@@ -196,7 +216,7 @@ final class ExportCoordinator: ObservableObject {
         isExporting = true
         onStatus?("Exporting...")
 
-        Task { [exportEngine, options] in
+        Task { [weak self, exportEngine, options] in
             let hasDestinationScope = url.startAccessingSecurityScopedResource()
             defer {
                 if hasDestinationScope { url.stopAccessingSecurityScopedResource() }
@@ -214,12 +234,13 @@ final class ExportCoordinator: ObservableObject {
                     space: options.colorSpace,
                     exportOptions: options
                 )).data
+                try Task.checkCancellation()
                 try await Self.write(data, to: url)
-                self.isExporting = false
-                self.onStatus?("Exported: \(url.lastPathComponent)")
+                self?.isExporting = false
+                self?.onStatus?("Exported: \(url.lastPathComponent)")
             } catch {
-                self.isExporting = false
-                self.onError?("Export failed: \(error.localizedDescription)")
+                self?.isExporting = false
+                self?.onError?("Export failed: \(error.localizedDescription)")
             }
         }
     }
@@ -262,7 +283,22 @@ final class ExportCoordinator: ObservableObject {
             ?? lastUsedFormat
         // Record the choice as soon as the dialog completes, before the async batch starts.
         lastUsedFormat = format
-        Task { await performBatchExport(items, document: document, lut: lut, format: format, to: folder) }
+        batchTask = Task { [weak self] in
+            guard let self else {
+                return BatchOutcome(exported: 0, failed: items.count, total: items.count)
+            }
+            return await self.performBatchExport(items, document: document, lut: lut, format: format, to: folder)
+        }
+    }
+
+    /// Stop starting new items. If the renderer is at a cooperative cancellation point it also
+    /// stops the current render; otherwise the current item finishes without being committed and
+    /// the loop exits before another source is touched.
+    func cancelBatchExport() {
+        guard batchTotal > 0, isExporting else { return }
+        batchCancellationRequested = true
+        batchTask?.cancel()
+        onStatus?("Cancelling export…")
     }
 
     /// The batch core. Renders each item through the engine with progress; an
@@ -326,22 +362,41 @@ final class ExportCoordinator: ObservableObject {
         lastUsedFormat = options.format
         isExporting = true
         batchProgress = 0
+        batchCompleted = 0
+        batchTotal = items.count
+        batchCurrentItem = nil
+        batchCancellationRequested = false
         let total = items.count
         onStatus?("Exporting 0 of \(total)…")
 
         var exported = 0
         var failed = 0
+        var cancelled = false
+
+        // Reserve destinations in selection order before each render starts. The batch remains
+        // serial to keep at most one full-resolution raster and encoded Data alive, while the
+        // reservation set makes duplicate names deterministic and collision-free.
+        var reservedPaths = Set<String>()
 
         let hasDestinationScope = folder.startAccessingSecurityScopedResource()
         defer {
             if hasDestinationScope { folder.stopAccessingSecurityScopedResource() }
         }
 
-        for (index, item) in items.enumerated() {
-            guard !Task.isCancelled else { break }
+        for item in items {
+            guard !Task.isCancelled, !batchCancellationRequested else {
+                cancelled = true
+                break
+            }
+            batchCurrentItem = item.name
+            onStatus?("Exporting \(batchCompleted) of \(total)… \(item.name)")
             if let sourceAccess = Self.sourceAccess(for: item) {
                 let source = sourceAccess.source
                 let documentResolution = await resolvedDocument(for: item, fallback: document)
+                guard !Task.isCancelled, !batchCancellationRequested else {
+                    cancelled = true
+                    break
+                }
                 let itemDocument = documentResolution.document
                 let itemLUT: CubeLUT?
                 if let itemLUTValue = item.lut {
@@ -355,9 +410,20 @@ final class ExportCoordinator: ObservableObject {
                 }
                 let lookName = options.filenamePolicy == .sourceNameWithLook ? itemLUT?.name : nil
                 let base = options.filenamePolicy.baseName(source: item.name, look: lookName)
-                let dest = uniqueExportURL(in: folder, base: base, ext: options.format.fileExtension)
+                var dest = uniqueExportURL(
+                    in: folder, base: base, ext: options.format.fileExtension
+                )
+                var counter = 2
+                while reservedPaths.contains(dest.standardizedFileURL.path) {
+                    dest = folder.appendingPathComponent(
+                        "\(base) \(counter).\(options.format.fileExtension)"
+                    )
+                    counter += 1
+                }
+                reservedPaths.insert(dest.standardizedFileURL.path)
                 do {
                     try Task.checkCancellation()
+                    guard !batchCancellationRequested else { throw CancellationError() }
                     let hasSourceScope = sourceAccess.url?.startAccessingSecurityScopedResource() ?? false
                     defer {
                         if hasSourceScope { sourceAccess.url?.stopAccessingSecurityScopedResource() }
@@ -373,24 +439,41 @@ final class ExportCoordinator: ObservableObject {
                         space: options.colorSpace,
                         exportOptions: options
                     )).data
+                    try Task.checkCancellation()
+                    guard !batchCancellationRequested else { throw CancellationError() }
                     try await Self.write(data, to: dest)
+                    try Task.checkCancellation()
+                    guard !batchCancellationRequested else { throw CancellationError() }
                     exported += 1
+                } catch is CancellationError {
+                    cancelled = true
+                    break
                 } catch {
                     failed += 1
+                    onStatus?("Skipped \(item.name): \(error.localizedDescription)")
                 }
             } else {
                 failed += 1
+                onStatus?("Skipped \(item.name): source unavailable")
             }
 
-            let done = index + 1
+            let done = exported + failed
+            batchCompleted = done
             batchProgress = Double(done) / Double(total)
             onStatus?("Exporting \(done) of \(total)…")
         }
 
-        let outcome = BatchOutcome(exported: exported, failed: failed, total: total)
+        cancelled = cancelled || Task.isCancelled || batchCancellationRequested
+        let outcome = BatchOutcome(
+            exported: exported, failed: failed, total: total, cancelled: cancelled
+        )
         isExporting = false
         batchProgress = 0
+        batchCompleted = 0
+        batchTotal = 0
+        batchCurrentItem = nil
         onStatus?(Self.summary(for: outcome, folder: folder))
+        batchTask = nil
         return outcome
     }
 
@@ -401,7 +484,23 @@ final class ExportCoordinator: ObservableObject {
     /// to the main thread would stutter the window for exactly as long as the disk takes. `Data` and
     /// `URL` are `Sendable`, so getting it off costs nothing.
     private static func write(_ data: Data, to url: URL) async throws {
-        try await Task.detached(priority: .userInitiated) { try data.write(to: url) }.value
+        let temporaryURL = url.deletingLastPathComponent().appendingPathComponent(
+            ".\(url.lastPathComponent).\(UUID().uuidString).partial"
+        )
+        var committed = false
+        defer {
+            if !committed { try? FileManager.default.removeItem(at: temporaryURL) }
+        }
+
+        try Task.checkCancellation()
+        try await Task.detached(priority: .userInitiated) {
+            try data.write(to: temporaryURL, options: .atomic)
+        }.value
+        try Task.checkCancellation()
+        // moveItem does not replace an existing destination. That last boundary protects an
+        // already-exported file even if another process creates the same name after reservation.
+        try FileManager.default.moveItem(at: temporaryURL, to: url)
+        committed = true
     }
 
     /// A resolved source plus the URL that may need a temporary security scope. The source itself
@@ -458,6 +557,11 @@ final class ExportCoordinator: ObservableObject {
     /// The line shown when a batch finishes.
     nonisolated static func summary(for outcome: BatchOutcome, folder: URL) -> String {
         let destination = folder.lastPathComponent
+        if outcome.cancelled {
+            let processed = outcome.exported + outcome.failed
+            let remaining = max(0, outcome.total - processed)
+            return "Export cancelled after \(processed) of \(outcome.total) (\(outcome.exported) exported, \(outcome.failed) failed, \(remaining) not started) to \(destination)"
+        }
         if outcome.failed == 0 {
             let plural = outcome.exported == 1 ? "" : "s"
             return "Exported \(outcome.exported) image\(plural) to \(destination)"

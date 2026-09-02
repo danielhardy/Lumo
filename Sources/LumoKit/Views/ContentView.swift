@@ -143,7 +143,8 @@ public struct ContentView: View {
                         collection: viewModel.collection,
                         onOpen: viewModel.openActiveCollectionImage
                     )
-                    StatusBar(viewModel: viewModel, onCancelImport: cancelPhotosImport)
+                    StatusBar(viewModel: viewModel, onCancelImport: cancelPhotosImport,
+                              onCancelExport: viewModel.cancelExport)
                 }
             } else {
                 HStack(spacing: 0) {
@@ -166,7 +167,8 @@ public struct ContentView: View {
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
 
-                            StatusBar(viewModel: viewModel, onCancelImport: cancelPhotosImport)
+                            StatusBar(viewModel: viewModel, onCancelImport: cancelPhotosImport,
+                                      onCancelExport: viewModel.cancelExport)
                     }
                 }
             }

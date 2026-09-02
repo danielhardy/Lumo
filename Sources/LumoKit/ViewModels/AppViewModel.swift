@@ -438,6 +438,15 @@ public final class AppViewModel: ObservableObject {
     // Convenience passthroughs so views and the menu don't have to know which
     // collaborator owns a given piece of state.
     var isExporting: Bool { export.isExporting }
+    var isBatchExporting: Bool { export.isExporting && export.batchTotal > 0 }
+    var batchProgress: Double { export.batchProgress }
+    var batchCompleted: Int { export.batchCompleted }
+    var batchTotal: Int { export.batchTotal }
+    var batchCurrentItem: String? { export.batchCurrentItem }
+
+    func cancelExport() {
+        export.cancelBatchExport()
+    }
 
     /// The renderer. An `any RenderEngining` rather than the concrete actor so a test can drive the
     /// preview flow without a GPU — the reason Step 4 introduced the protocol.

@@ -6,6 +6,7 @@ import SwiftUI
 struct StatusBar: View {
     @ObservedObject var viewModel: AppViewModel
     var onCancelImport: () -> Void = {}
+    var onCancelExport: () -> Void = {}
 
     var body: some View {
         HStack(spacing: 0) {
@@ -20,6 +21,20 @@ struct StatusBar: View {
                     .lineLimit(1)
                     .padding(.leading, 8)
                 Button("Cancel") { onCancelImport() }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .padding(.leading, 8)
+            } else if viewModel.isBatchExporting {
+                ProgressView(value: viewModel.batchProgress)
+                    .frame(width: 110)
+                    .controlSize(.small)
+                Text("Exporting \(viewModel.batchCompleted)/\(viewModel.batchTotal)" +
+                     (viewModel.batchCurrentItem.map { "  \($0)" } ?? ""))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .padding(.leading, 8)
+                Button("Cancel") { onCancelExport() }
                     .buttonStyle(.borderless)
                     .font(.caption)
                     .padding(.leading, 8)

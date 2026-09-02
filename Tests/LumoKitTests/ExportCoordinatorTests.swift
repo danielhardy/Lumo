@@ -194,6 +194,8 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
     func testBatchExportSkipsAndCountsFailuresWithoutAborting() async throws {
         let coordinator = ExportCoordinator()
         coordinator.onError = { XCTFail("a per-item failure should not raise: \($0)") }
+        var statuses: [String] = []
+        coordinator.onStatus = { statuses.append($0) }
 
         var items = try makeSources(["good1", "good2"])
         // A source that cannot be decoded, sandwiched between two good ones.
@@ -211,6 +213,10 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: folder.appendingPathComponent("good2.jpg").path),
             "the item after the failure must still be exported"
+        )
+        XCTAssertTrue(
+            statuses.contains { $0.hasPrefix("Skipped broken:") },
+            "the failed source should be reported while the batch continues"
         )
     }
 
@@ -256,7 +262,63 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
 
         XCTAssertTrue(statuses.contains("Exporting 0 of 2…"), "\(statuses)")
         XCTAssertTrue(statuses.contains("Exporting 2 of 2…"), "\(statuses)")
+        XCTAssertTrue(statuses.contains("Exporting 0 of 2… a"), "current item missing: \(statuses)")
+        XCTAssertTrue(statuses.contains("Exporting 1 of 2… b"), "current item missing: \(statuses)")
         XCTAssertEqual(statuses.last, "Exported 2 images to out")
+    }
+
+    func testBatchExportCanBeCancelledBetweenItemsAndKeepsCompletedFiles() async throws {
+        let fake = FakeRenderEngine()
+        await fake.gateEncodeAfterFirst()
+        let coordinator = ExportCoordinator(engine: fake)
+        var statuses: [String] = []
+        coordinator.onStatus = { statuses.append($0) }
+
+        let items = try makeSources(["first", "second", "third"])
+        let folder = try destinationFolder()
+        let task = Task {
+            await coordinator.performBatchExport(
+                items, document: EditDocument(), lut: nil, format: .png, to: folder
+            )
+        }
+
+        try await waitUntil { coordinator.batchCurrentItem == "second" }
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: folder.appendingPathComponent("first.png").path
+        ))
+        coordinator.cancelBatchExport()
+        await fake.releaseEncode()
+
+        let outcome = await task.value
+        XCTAssertEqual(outcome, .init(exported: 1, failed: 0, total: 3, cancelled: true))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: folder.appendingPathComponent("first.png").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: folder.appendingPathComponent("second.png").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: folder.appendingPathComponent("third.png").path
+        ))
+        XCTAssertFalse(
+            try FileManager.default.contentsOfDirectory(atPath: folder.path)
+                .contains { $0.hasSuffix(".partial") },
+            "cancellation must remove incomplete temporary outputs"
+        )
+        XCTAssertTrue(statuses.contains { $0.hasPrefix("Export cancelled after 1 of 3") })
+    }
+
+    func testBatchExportKeepsFullResolutionWorkBoundedToOneItem() async throws {
+        let fake = FakeRenderEngine()
+        let coordinator = ExportCoordinator(engine: fake)
+        let folder = try destinationFolder()
+        _ = await coordinator.performBatchExport(
+            try makeSources(["a", "b", "c", "d"]),
+            document: EditDocument(), lut: nil, format: .png, to: folder
+        )
+
+        let maxConcurrentEncodes = await fake.maxConcurrentEncodes
+        XCTAssertEqual(maxConcurrentEncodes, 1)
     }
 
     /// A cube that maps everything to black, so both ends of the slider are unmistakable in the
@@ -384,6 +446,12 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
             ExportCoordinator.summary(for: .init(exported: 2, failed: 1, total: 3), folder: folder),
             "Exported 2 of 3 (1 failed) to Exports"
         )
+        XCTAssertEqual(
+            ExportCoordinator.summary(
+                for: .init(exported: 1, failed: 1, total: 4, cancelled: true), folder: folder
+            ),
+            "Export cancelled after 2 of 4 (1 exported, 1 failed, 2 not started) to Exports"
+        )
     }
 
     // MARK: - Helpers
@@ -411,4 +479,5 @@ final class ExportCoordinatorTests: TempDirectoryTestCase {
         }
         return (CGFloat(bytes[0]), CGFloat(bytes[1]), CGFloat(bytes[2]))
     }
+
 }

@@ -111,6 +111,12 @@ actor FakeRenderEngine: RenderEngining {
 
     /// Swap in a failure to exercise the caller's error path.
     var shouldFailEncode = false
+    /// Optional gates used by export lifecycle tests. The real engine owns one serial export lane;
+    /// these counters make that bound observable without allocating full-resolution images.
+    private var encodeGateAfterFirst = false
+    private var parkedEncodes: [CheckedContinuation<Void, Never>] = []
+    private(set) var activeEncodes = 0
+    private(set) var maxConcurrentEncodes = 0
     var previewResult: CGImage?
 
     init(previewResult: CGImage? = FakeRenderEngine.solidImage()) {
@@ -135,6 +141,13 @@ actor FakeRenderEngine: RenderEngining {
 
         case .encoded(let format, _):
             encodeRequests.append(record)
+            activeEncodes += 1
+            maxConcurrentEncodes = max(maxConcurrentEncodes, activeEncodes)
+            defer { activeEncodes -= 1 }
+            if encodeGateAfterFirst, encodeRequests.count >= 2 {
+                await withCheckedContinuation { parkedEncodes.append($0) }
+            }
+            try Task.checkCancellation()
             if shouldFailEncode { throw ImageError.exportFailed }
             return RenderResult(
                 data: Data("fake-\(format.rawValue)".utf8), extent: .zero,
@@ -285,6 +298,16 @@ actor FakeRenderEngine: RenderEngining {
     func setStubbedCapabilities(_ value: RAWCapabilities?) { stubbedCapabilities = value }
 
     func setShouldFailEncode(_ value: Bool) { shouldFailEncode = value }
+
+    /// Let the first encode finish but hold the second until the test chooses to release it.
+    func gateEncodeAfterFirst() { encodeGateAfterFirst = true }
+
+    func releaseEncode() {
+        encodeGateAfterFirst = false
+        let parked = parkedEncodes
+        parkedEncodes.removeAll()
+        parked.forEach { $0.resume() }
+    }
 
     /// A 2×2 opaque image — enough to be a real `CGImage`, cheap enough to make per call.
     static func solidImage() -> CGImage? {
