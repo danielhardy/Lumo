@@ -1,17 +1,16 @@
 import CoreGraphics
 import SwiftUI
 
-/// The first crop tool is intentionally small and explicit: freeform framing only, no hidden
-/// aspect-ratio lock, straighten, or rotation affordance. Coordinates are converted to the
-/// normalized bottom-left model space before they reach AppViewModel.
+/// Coordinates are converted to the normalized bottom-left model space before they reach
+/// AppViewModel. Ratio geometry lives in `CropOverlayInteraction` so it is shared with model tests.
 struct CropOverlayView: View {
-    enum Handle: CaseIterable, Hashable {
-        case topLeading, topTrailing, bottomLeading, bottomTrailing
-    }
+    typealias Handle = CropHandle
 
     let normalizedRect: CGRect
     let imageSize: CGSize
+    let aspectRatio: CropAspectRatio
     let onChange: (CGRect) -> Void
+    let onAspectRatioChange: (CropAspectRatio) -> Void
     let onApply: () -> Void
     let onReset: () -> Void
     let onCancel: () -> Void
@@ -52,6 +51,22 @@ struct CropOverlayView: View {
                 HStack(spacing: 8) {
                     Text("Crop")
                         .font(.headline)
+                    Menu {
+                        ForEach(CropAspectRatio.allCases, id: \.self) { ratio in
+                            Button {
+                                onAspectRatioChange(ratio)
+                            } label: {
+                                if ratio == aspectRatio {
+                                    Label(ratio.label, systemImage: "checkmark")
+                                } else {
+                                    Text(ratio.label)
+                                }
+                            }
+                        }
+                    } label: {
+                        Label(aspectRatio.label, systemImage: "aspectratio")
+                    }
+                    .accessibilityLabel("Crop aspect ratio")
                     Spacer()
                     Button("Reset", action: onReset)
                     Button("Cancel", action: onCancel)
@@ -65,8 +80,8 @@ struct CropOverlayView: View {
                 .padding(12)
             }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("Freeform crop")
-            .accessibilityHint("Drag the crop handles within the image bounds")
+            .accessibilityLabel("Crop, \(aspectRatio.label)")
+            .accessibilityHint("Choose an aspect ratio, then drag the crop frame or handles within the image bounds")
             .onExitCommand(perform: onCancel)
         }
     }
@@ -149,54 +164,16 @@ struct CropOverlayView: View {
             .onChanged { value in
                 let start = handleStarts[handle] ?? normalizedRect
                 handleStarts[handle] = start
-                onChange(resized(start, handle: handle, delta: value.translation, imageRect: imageRect))
+                onChange(CropOverlayInteraction.resized(
+                    start, handle: handle, delta: value.translation, imageRect: imageRect,
+                    aspectRatio: aspectRatio, imageSize: imageSize
+                ))
             }
             .onEnded { _ in handleStarts[handle] = nil }
     }
-
-    private func resized(_ rect: CGRect, handle: Handle, delta: CGSize, imageRect: CGRect) -> CGRect {
-        guard imageRect.width > 0, imageRect.height > 0 else { return rect }
-        let dx = delta.width / imageRect.width
-        let dy = -delta.height / imageRect.height
-        let minimum: CGFloat = 0.04
-        var minX = rect.minX
-        var minY = rect.minY
-        var maxX = rect.maxX
-        var maxY = rect.maxY
-
-        switch handle {
-        case .topLeading:
-            minX = min(max(rect.minX + dx, 0), rect.maxX - minimum)
-            maxY = min(max(rect.maxY + dy, rect.minY + minimum), 1)
-        case .topTrailing:
-            maxX = min(max(rect.maxX + dx, rect.minX + minimum), 1)
-            maxY = min(max(rect.maxY + dy, rect.minY + minimum), 1)
-        case .bottomLeading:
-            minX = min(max(rect.minX + dx, 0), rect.maxX - minimum)
-            minY = min(max(rect.minY + dy, 0), rect.maxY - minimum)
-        case .bottomTrailing:
-            maxX = min(max(rect.maxX + dx, rect.minX + minimum), 1)
-            minY = min(max(rect.minY + dy, 0), rect.maxY - minimum)
-        }
-        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
-    }
 }
 
-/// Normalized crop movement is kept separate from SwiftUI gesture delivery so its bottom-left
-/// coordinate conversion and image-bound clamping can be tested without a live view hierarchy.
-enum CropOverlayInteraction {
-    static func translated(_ rect: CGRect, delta: CGSize, imageRect: CGRect) -> CGRect {
-        guard imageRect.width > 0, imageRect.height > 0 else { return rect }
-        let dx = delta.width / imageRect.width
-        let dy = -delta.height / imageRect.height
-        return rect.offsetBy(
-            dx: min(max(dx, -rect.minX), 1 - rect.maxX),
-            dy: min(max(dy, -rect.minY), 1 - rect.maxY)
-        )
-    }
-}
-
-private extension CropOverlayView.Handle {
+private extension CropHandle {
     var label: String {
         switch self {
         case .topLeading: return "top left"

@@ -345,7 +345,7 @@ private struct CanvasToolbarControls: View {
         }
         .help(canvasState.isCropToolActive
               ? "Cancel the current crop"
-              : "Crop the photo with a freeform frame")
+              : "Crop the photo with a freeform or preset frame")
         .disabled(!hasImage)
 
         // Canvas navigation is presentation-only; these controls never touch the edit document.

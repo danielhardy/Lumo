@@ -80,6 +80,12 @@ final class EditClipboardTests: XCTestCase {
         let newer = Data("{\"version\":\(EditClipboardPayload.currentVersion + 1)}".utf8)
         XCTAssertThrowsError(try JSONDecoder().decode(EditClipboardPayload.self, from: newer))
     }
+
+    func testLegacyCropClipboardDefaultsToFreeform() throws {
+        let legacy = Data("{\"version\":1,\"crop\":{\"normalizedRect\":null}}".utf8)
+        let clipboard = try JSONDecoder().decode(EditClipboardPayload.self, from: legacy)
+        XCTAssertEqual(clipboard.crop.aspectRatio, .freeform)
+    }
 }
 
 @MainActor

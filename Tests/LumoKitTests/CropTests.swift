@@ -4,6 +4,60 @@ import XCTest
 @testable import LumoKit
 
 final class CropModelTests: XCTestCase {
+    func testCommonCropAspectRatiosHaveClearCentralizedLabels() {
+        XCTAssertEqual(CropAspectRatio.allCases.map(\.label), ["Freeform", "1:1", "3:2", "4:3", "16:9"])
+    }
+
+    func testPresetSelectionPreservesCenterAndAdaptsToImageOrientation() throws {
+        let sourceRect = CGRect(x: 0.1, y: 0.2, width: 0.6, height: 0.5)
+        let landscape = CropOverlayInteraction.applying(
+            .threeToTwo, to: sourceRect, imageSize: CGSize(width: 400, height: 200)
+        )
+        let portrait = CropOverlayInteraction.applying(
+            .threeToTwo, to: sourceRect, imageSize: CGSize(width: 200, height: 400)
+        )
+
+        XCTAssertEqual(landscape.midX, sourceRect.midX, accuracy: 0.000001)
+        XCTAssertEqual(landscape.midY, sourceRect.midY, accuracy: 0.000001)
+        XCTAssertEqual(landscape.width * 400 / (landscape.height * 200), 1.5, accuracy: 0.000001)
+        XCTAssertEqual(portrait.midX, sourceRect.midX, accuracy: 0.000001)
+        XCTAssertEqual(portrait.midY, sourceRect.midY, accuracy: 0.000001)
+        XCTAssertEqual(portrait.width * 200 / (portrait.height * 400), 2.0 / 3.0, accuracy: 0.000001)
+        XCTAssertGreaterThanOrEqual(landscape.minX, 0)
+        XCTAssertGreaterThanOrEqual(landscape.minY, 0)
+        XCTAssertLessThanOrEqual(landscape.maxX, 1)
+        XCTAssertLessThanOrEqual(landscape.maxY, 1)
+        XCTAssertGreaterThanOrEqual(portrait.minX, 0)
+        XCTAssertGreaterThanOrEqual(portrait.minY, 0)
+        XCTAssertLessThanOrEqual(portrait.maxX, 1)
+        XCTAssertLessThanOrEqual(portrait.maxY, 1)
+
+        let freeform = CropOverlayInteraction.applying(
+            .freeform, to: sourceRect, imageSize: CGSize(width: 400, height: 200)
+        )
+        XCTAssertEqual(freeform, sourceRect)
+    }
+
+    func testPresetResizePreservesPixelRatioAndClampsToBounds() {
+        let start = CropOverlayInteraction.applying(
+            .sixteenToNine, to: CropAdjustments.unitRect, imageSize: CGSize(width: 1600, height: 900)
+        )
+        let resized = CropOverlayInteraction.resized(
+            start,
+            handle: .bottomTrailing,
+            delta: CGSize(width: 10_000, height: 10_000),
+            imageRect: CGRect(x: 0, y: 0, width: 800, height: 450),
+            aspectRatio: .sixteenToNine,
+            imageSize: CGSize(width: 1600, height: 900)
+        )
+
+        XCTAssertEqual(resized.width * 1600 / (resized.height * 900), 16.0 / 9.0, accuracy: 0.000001)
+        XCTAssertGreaterThanOrEqual(resized.minX, 0)
+        XCTAssertGreaterThanOrEqual(resized.minY, 0)
+        XCTAssertLessThanOrEqual(resized.maxX, 1)
+        XCTAssertLessThanOrEqual(resized.maxY, 1)
+    }
+
     func testDraggingCropAreaTranslatesInNormalizedBottomLeftSpace() {
         let rect = CGRect(x: 0.2, y: 0.25, width: 0.5, height: 0.4)
         let imageRect = CGRect(x: 10, y: 20, width: 800, height: 400)
@@ -70,10 +124,14 @@ final class CropModelTests: XCTestCase {
     }
 
     func testCropIsCopiedSelectivelyAndComparisonKeepsItsFrame() {
-        let crop = CropAdjustments(normalizedRect: CGRect(x: 0.1, y: 0.2, width: 0.7, height: 0.6))
+        let crop = CropAdjustments(
+            normalizedRect: CGRect(x: 0.1, y: 0.2, width: 0.7, height: 0.6),
+            aspectRatio: .fourToThree
+        )
         let document = EditDocument(crop: crop, adjustments: [.exposure(ev: 0.5)])
         let clipboard = EditClipboardPayload(document: document)
         XCTAssertEqual(clipboard.crop.normalizedRect, crop.normalizedRect)
+        XCTAssertEqual(clipboard.crop.aspectRatio, .fourToThree)
 
         let result = clipboard.applying(
             to: EditDocument(), destinationIsRAW: false, categories: [.crop]
@@ -81,6 +139,19 @@ final class CropModelTests: XCTestCase {
         XCTAssertEqual(result.crop, crop)
         XCTAssertEqual(document.comparisonBaseline.crop, crop)
         XCTAssertTrue(document.hasVisibleLookEdits)
+    }
+
+    func testPresetSelectionIsPersistedAsPartOfTheCropEdit() throws {
+        let crop = CropAdjustments(
+            normalizedRect: CGRect(x: 0, y: 0.125, width: 1, height: 0.75),
+            aspectRatio: .sixteenToNine
+        )
+        let document = EditDocument(crop: crop)
+        let restored = try JSONDecoder().decode(
+            EditDocument.self, from: JSONEncoder().encode(document)
+        )
+        XCTAssertEqual(restored.crop, crop)
+        XCTAssertFalse(restored.isIdentity)
     }
 
     func testCropClampingRejectsDegenerateInput() {
@@ -113,7 +184,10 @@ final class CropPipelineTests: TempDirectoryTestCase {
         let engine = RenderEngine()
         let document = EditDocument(
             effects: EffectsAdjustments(vignette: VignetteAdjustments(amount: 45)),
-            crop: CropAdjustments(normalizedRect: CGRect(x: 0.25, y: 0.125, width: 0.5, height: 0.75))
+            crop: CropAdjustments(
+                normalizedRect: CGRect(x: 0.25, y: 0.125, width: 0.5, height: 0.75),
+                aspectRatio: .square
+            )
         )
         let rendered = await engine.makeCGImage(
             source: source, document: document, lut: nil, scale: .full, space: .current
@@ -131,6 +205,32 @@ final class CropPipelineTests: TempDirectoryTestCase {
         XCTAssertEqual(decoded.height, preview.height)
         assertPixelsEqual(try Pixels.bytes(of: preview), try Pixels.bytes(of: decoded),
                           "preview and export must retain crop and post-crop effects identically")
+    }
+
+    func testPresetCropPreviewAndFullResolutionExportHaveTheSameExtent() async throws {
+        let cropRect = CropOverlayInteraction.applying(
+            .sixteenToNine, to: CropAdjustments.unitRect, imageSize: CGSize(width: 96, height: 64)
+        )
+        let document = EditDocument(crop: CropAdjustments(
+            normalizedRect: cropRect, aspectRatio: .sixteenToNine
+        ))
+        let engine = RenderEngine()
+        let rendered = await engine.makeCGImage(
+            source: source, document: document, lut: nil, scale: .full, space: .current
+        )
+        let preview = try XCTUnwrap(rendered)
+        let exported = try await engine.encode(
+            source: source, document: document, lut: nil, scale: .full,
+            format: .png, quality: 1, space: .current
+        )
+        let decoded = try Pixels.decode(exported)
+
+        XCTAssertEqual(preview.width, 96)
+        XCTAssertEqual(preview.height, 54)
+        XCTAssertEqual(decoded.width, preview.width)
+        XCTAssertEqual(decoded.height, preview.height)
+        assertPixelsEqual(try Pixels.bytes(of: preview), try Pixels.bytes(of: decoded),
+                          "preset preview and export must retain the same crop extent")
     }
 }
 
@@ -186,6 +286,31 @@ final class CropWorkflowTests: TempDirectoryTestCase {
         XCTAssertTrue(viewModel.document.crop.isIdentity)
         viewModel.redo()
         XCTAssertEqual(viewModel.document.crop, committed)
+    }
+
+    func testSelectingPresetStaysDraftUntilApplyAndUndoRedoRestoresTheRatio() async throws {
+        let url = try Fixtures.writeGradientPNG(width: 32, height: 24, named: "preset-workflow.png", in: tempDirectory)
+        let viewModel = AppViewModel(
+            engine: FakeRenderEngine(),
+            editStore: EditDocumentStore(fileURL: tempDirectory.appendingPathComponent("preset-edits.json"))
+        )
+        viewModel.openImage(url: url)
+        try await waitUntil("the source image") { viewModel.sourceImage != nil }
+
+        viewModel.beginCrop()
+        let beforeSelection = viewModel.document
+        viewModel.selectCropAspectRatio(.sixteenToNine)
+        XCTAssertEqual(viewModel.document, beforeSelection, "preset selection must remain a draft")
+        XCTAssertEqual(viewModel.cropAspectRatio, .sixteenToNine)
+        XCTAssertTrue(viewModel.cropDraft != CropAdjustments.unitRect)
+
+        viewModel.commitCrop()
+        XCTAssertEqual(viewModel.document.crop.aspectRatio, .sixteenToNine)
+        XCTAssertEqual(viewModel.undoDepth, 1)
+        viewModel.undo()
+        XCTAssertEqual(viewModel.document.crop, .neutral)
+        viewModel.redo()
+        XCTAssertEqual(viewModel.document.crop.aspectRatio, .sixteenToNine)
     }
 
     /// Covers the LUMO-115 fix directly: while Crop is open, the pixels under the full-source

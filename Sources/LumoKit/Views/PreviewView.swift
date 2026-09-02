@@ -102,7 +102,9 @@ struct PreviewView: View {
                     CropOverlayView(
                         normalizedRect: canvasState.cropDraft ?? CropAdjustments.unitRect,
                         imageSize: viewModel.sourceSize,
+                        aspectRatio: canvasState.cropAspectRatio,
                         onChange: viewModel.updateCropDraft,
+                        onAspectRatioChange: viewModel.selectCropAspectRatio,
                         onApply: viewModel.commitCrop,
                         onReset: viewModel.resetCrop,
                         onCancel: viewModel.cancelCrop

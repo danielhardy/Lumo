@@ -25,16 +25,27 @@ struct EditClipboardPayload: Codable, Sendable, Equatable {
         var adjustments: [AdjustmentNode] = []
     }
 
-    /// The crop stage copied as a normalized, non-destructive framing value. Rotation/straighten
-    /// is out of scope for this crop tool (see `CropAdjustments`) and intentionally has no field
-    /// here — an unused property would imply the clipboard carries rotation when nothing does.
+    /// The crop stage copied as a normalized, non-destructive framing value, including its selected
+    /// ratio. Rotation/straighten remains out of scope for this crop tool.
     struct CropCategory: Codable, Sendable, Equatable {
         var normalizedRect: CGRect?
+        var aspectRatio: CropAspectRatio
 
-        static let neutral = CropCategory(normalizedRect: nil)
+        static let neutral = CropCategory(normalizedRect: nil, aspectRatio: .freeform)
 
-        init(normalizedRect: CGRect? = nil) {
+        init(normalizedRect: CGRect? = nil, aspectRatio: CropAspectRatio = .freeform) {
             self.normalizedRect = normalizedRect
+            self.aspectRatio = aspectRatio
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case normalizedRect, aspectRatio
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            normalizedRect = try container.decodeIfPresent(CGRect.self, forKey: .normalizedRect)
+            aspectRatio = try container.decodeIfPresent(CropAspectRatio.self, forKey: .aspectRatio) ?? .freeform
         }
     }
 
@@ -125,7 +136,10 @@ struct EditClipboardPayload: Codable, Sendable, Equatable {
         self.lightAdjustments = document.light
         self.colorAdjustments = document.color
         self.effectAdjustments = document.effects
-        self.crop = CropCategory(normalizedRect: document.crop.normalizedRect)
+        self.crop = CropCategory(
+            normalizedRect: document.crop.normalizedRect,
+            aspectRatio: document.crop.aspectRatio
+        )
     }
 
     /// Build a destination document from the selected categories. This API is deliberately present
@@ -157,7 +171,9 @@ struct EditClipboardPayload: Codable, Sendable, Equatable {
             result.effects = effectAdjustments
         }
         if categories.contains(.crop) {
-            result.crop = CropAdjustments(normalizedRect: crop.normalizedRect)
+            result.crop = CropAdjustments(
+                normalizedRect: crop.normalizedRect, aspectRatio: crop.aspectRatio
+            )
         }
         if categories.contains(.lut) {
             result.lut = lut

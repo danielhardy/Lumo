@@ -312,6 +312,7 @@ public final class AppViewModel: ObservableObject {
     var canvasNavigation: CanvasNavigation { canvasState.navigation }
     var isCropToolActive: Bool { canvasState.isCropToolActive }
     var cropDraft: CGRect? { canvasState.cropDraft }
+    var cropAspectRatio: CropAspectRatio { canvasState.cropAspectRatio }
 
     var isInspectorPresented: Bool {
         get { inspectorState.isPresented }
@@ -1615,9 +1616,9 @@ public final class AppViewModel: ObservableObject {
 
     // MARK: - Crop
 
-    /// Enter the freeform crop tool. The first draft is the committed crop, or the full image when
-    /// this is a new crop. Crop interaction uses a fit canvas so screen coordinates map directly to
-    /// the oriented source image and are not confused with presentation zoom/pan.
+    /// Enter the crop tool. The first draft is the committed crop, or the full image when this is a
+    /// new crop. Crop interaction uses a fit canvas so screen coordinates map directly to the
+    /// oriented source image and are not confused with presentation zoom/pan.
     func beginCrop() {
         guard sourceImage != nil else {
             statusMessage = "Open an image first"
@@ -1643,14 +1644,22 @@ public final class AppViewModel: ObservableObject {
         canvasState.updateCropDraft(normalizedRect)
     }
 
+    /// Select a crop ratio in the transient tool state. The current crop center and approximate
+    /// area are preserved, while the resulting frame is clamped to the source image bounds.
+    func selectCropAspectRatio(_ aspectRatio: CropAspectRatio) {
+        guard sourceSize != .zero else { return }
+        canvasState.selectCropAspectRatio(aspectRatio, imageSize: sourceSize)
+    }
+
     /// Commit the current draft as one ordinary document mutation, giving it persistence, undo,
     /// copy/paste, cache invalidation, and preview/export parity automatically.
     func commitCrop() {
         guard canvasState.isCropToolActive else { return }
         let committed = canvasState.cropDraft ?? CropAdjustments.unitRect
+        let aspectRatio = canvasState.cropAspectRatio
         canvasState.finishCrop()
         let previousDocument = document
-        updateDocument { $0.crop = CropAdjustments(normalizedRect: committed) }
+        updateDocument { $0.crop = CropAdjustments(normalizedRect: committed, aspectRatio: aspectRatio) }
         // Applying an unchanged draft is still a composition transition: updateDocument quite
         // correctly records no history entry, but the temporary uncropped preview must be replaced
         // by the committed framing.

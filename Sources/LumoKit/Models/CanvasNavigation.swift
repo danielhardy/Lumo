@@ -13,11 +13,13 @@ final class CanvasInteractionState: ObservableObject {
     @Published private(set) var navigation = CanvasNavigation()
     @Published private(set) var isCropToolActive = false
     @Published private(set) var cropDraft: CGRect?
+    @Published private(set) var cropAspectRatio: CropAspectRatio = .freeform
 
     func resetForSource() {
         navigation.reset()
         isCropToolActive = false
         cropDraft = nil
+        cropAspectRatio = .freeform
     }
 
     func fit() { navigation.fit() }
@@ -38,6 +40,7 @@ final class CanvasInteractionState: ObservableObject {
         navigation.fit()
         isCropToolActive = true
         cropDraft = committedCrop.normalizedRect ?? CropAdjustments.unitRect
+        cropAspectRatio = committedCrop.aspectRatio
         return true
     }
 
@@ -46,14 +49,25 @@ final class CanvasInteractionState: ObservableObject {
         cropDraft = CropAdjustments(normalizedRect: normalizedRect).normalizedRect
     }
 
+    func selectCropAspectRatio(_ aspectRatio: CropAspectRatio, imageSize: CGSize) {
+        guard isCropToolActive else { return }
+        let current = cropDraft ?? CropAdjustments.unitRect
+        cropAspectRatio = aspectRatio
+        cropDraft = CropOverlayInteraction.applying(
+            aspectRatio, to: current, imageSize: imageSize
+        )
+    }
+
     func finishCrop() {
         isCropToolActive = false
         cropDraft = nil
+        cropAspectRatio = .freeform
     }
 
     func resetCropDraft() {
         guard isCropToolActive else { return }
         cropDraft = CropAdjustments.unitRect
+        cropAspectRatio = .freeform
     }
 }
 
