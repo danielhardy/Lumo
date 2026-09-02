@@ -3,6 +3,7 @@ import CoreImage
 import CoreGraphics
 import ImageIO
 import Metal
+import UniformTypeIdentifiers
 
 /// What the app needs from a renderer, so a test can hand it something that is not the GPU.
 ///
@@ -424,21 +425,32 @@ actor RenderEngine: RenderEngining {
             }
             switch format {
             case .tiff:
-                guard let encoded = context.tiffRepresentation(
-                    of: encodedImage, format: representationFormat, colorSpace: colorSpace
-                ) else { throw ImageError.exportFailed }
-                data = encoded
+                data = try encode(
+                    encodedImage,
+                    format: format,
+                    representationFormat: representationFormat,
+                    colorSpace: colorSpace,
+                    quality: quality,
+                    metadata: exportMetadata(for: request)
+                )
             case .jpeg:
-                guard let encoded = context.jpegRepresentation(
-                    of: encodedImage, colorSpace: colorSpace,
-                    options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality]
-                ) else { throw ImageError.exportFailed }
-                data = encoded
+                data = try encode(
+                    encodedImage,
+                    format: format,
+                    representationFormat: .RGBA8,
+                    colorSpace: colorSpace,
+                    quality: quality,
+                    metadata: exportMetadata(for: request)
+                )
             case .png:
-                guard let encoded = context.pngRepresentation(
-                    of: encodedImage, format: representationFormat, colorSpace: colorSpace
-                ) else { throw ImageError.exportFailed }
-                data = encoded
+                data = try encode(
+                    encodedImage,
+                    format: format,
+                    representationFormat: representationFormat,
+                    colorSpace: colorSpace,
+                    quality: quality,
+                    metadata: exportMetadata(for: request)
+                )
             }
         }
 
@@ -461,6 +473,89 @@ actor RenderEngine: RenderEngining {
             color: CIColor(red: 1, green: 1, blue: 1, alpha: 1)
         ).cropped(to: image.extent)
         return image.composited(over: background)
+    }
+
+    /// Encode a completed Core Image graph through Image I/O so source metadata can be supplied to
+    /// the destination. Core Image's representation helpers do not expose the source property
+    /// dictionaries, while `CGImageDestinationAddImage` writes them for all three export formats.
+    private func encode(
+        _ image: CIImage,
+        format: ExportFormat,
+        representationFormat: CIFormat,
+        colorSpace: CGColorSpace,
+        quality: CGFloat,
+        metadata: [CFString: Any]?
+    ) throws -> Data {
+        guard let cgImage = context.createCGImage(
+            image,
+            from: image.extent.integral,
+            format: representationFormat,
+            colorSpace: colorSpace
+        ) else {
+            throw ImageError.exportFailed
+        }
+
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data, format.utType.identifier as CFString, 1, nil
+        ) else {
+            throw ImageError.exportFailed
+        }
+
+        var imageProperties = metadata ?? [:]
+        if format == .jpeg {
+            imageProperties[kCGImageDestinationLossyCompressionQuality] = quality
+        }
+        CGImageDestinationAddImage(destination, cgImage,
+                                   imageProperties.isEmpty ? nil : imageProperties as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else {
+            throw ImageError.exportFailed
+        }
+        return data as Data
+    }
+
+    /// Read only the source's metadata dictionaries. The image itself is rendered upright before
+    /// this is called, so copying the source orientation would apply that transform a second time.
+    /// Pixel dimensions are likewise omitted: a long-edge export may intentionally resize them.
+    private func exportMetadata(for request: RenderRequest) -> [CFString: Any]? {
+        let policy = request.exportOptions?.metadata ?? .preserve
+        guard policy == .preserve else { return nil }
+
+        let source: CGImageSource?
+        switch request.source.backing {
+        case .url(let url):
+            source = CGImageSourceCreateWithURL(url as CFURL, nil)
+        case .data(let data):
+            source = CGImageSourceCreateWithData(data as CFData, nil)
+        }
+        guard let source,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [CFString: Any]
+        else {
+            return nil
+        }
+
+        let dictionaryKeys: [CFString] = [
+            kCGImagePropertyTIFFDictionary,
+            kCGImagePropertyExifDictionary,
+            kCGImagePropertyGPSDictionary,
+        ]
+        var metadata: [CFString: Any] = [:]
+        for key in dictionaryKeys {
+            guard var dictionary = properties[key] as? [CFString: Any], !dictionary.isEmpty else {
+                continue
+            }
+            if key == kCGImagePropertyTIFFDictionary {
+                dictionary.removeValue(forKey: kCGImagePropertyTIFFOrientation)
+            } else if key == kCGImagePropertyExifDictionary {
+                dictionary.removeValue(forKey: kCGImagePropertyExifPixelXDimension)
+                dictionary.removeValue(forKey: kCGImagePropertyExifPixelYDimension)
+            }
+            if !dictionary.isEmpty {
+                metadata[key] = dictionary
+            }
+        }
+        return metadata.isEmpty ? nil : metadata
     }
 
     // MARK: - Histogram

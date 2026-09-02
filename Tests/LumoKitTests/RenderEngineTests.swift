@@ -152,6 +152,121 @@ final class RenderEngineTests: TempDirectoryTestCase {
                           "preview and export must rasterize to the same pixels")
     }
 
+    func testExportMetadataPolicyRoundTripsSourceMetadataForEveryFormat() async throws {
+        let url = try Fixtures.writeJPEG(
+            named: "metadata-source.jpg",
+            in: tempDirectory,
+            exif: [
+                kCGImagePropertyExifLensModel: "Lumo Prime 35mm",
+                kCGImagePropertyExifDateTimeOriginal: "2026:09:02 12:34:56",
+            ],
+            tiff: [
+                kCGImagePropertyTIFFMake: "Lumo",
+                kCGImagePropertyTIFFModel: "Test Body",
+                kCGImagePropertyTIFFSoftware: "Lumo Tests",
+            ],
+            gps: [
+                kCGImagePropertyGPSLatitude: 43.6150,
+                kCGImagePropertyGPSLatitudeRef: "N",
+                kCGImagePropertyGPSLongitude: 116.2023,
+                kCGImagePropertyGPSLongitudeRef: "W",
+            ]
+        )
+        let source = ImageSource(url: url, nativeExtent: CGSize(width: 64, height: 48))
+        let engine = RenderEngine()
+
+        for format in ExportFormat.allCases {
+            let result = try await engine.encode(
+                source: source,
+                document: EditDocument(),
+                lut: nil,
+                options: ExportOptions(format: format, metadata: .preserve)
+            )
+            let imageSource = try XCTUnwrap(CGImageSourceCreateWithData(result as CFData, nil))
+            let properties = try XCTUnwrap(
+                CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any]
+            )
+            let exif = try XCTUnwrap(properties[kCGImagePropertyExifDictionary] as? [CFString: Any])
+            let tiff = try XCTUnwrap(properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any])
+            let gps = try XCTUnwrap(properties[kCGImagePropertyGPSDictionary] as? [CFString: Any])
+
+            XCTAssertEqual(exif[kCGImagePropertyExifLensModel] as? String, "Lumo Prime 35mm", format.rawValue)
+            XCTAssertEqual(exif[kCGImagePropertyExifDateTimeOriginal] as? String, "2026:09:02 12:34:56", format.rawValue)
+            XCTAssertEqual(tiff[kCGImagePropertyTIFFMake] as? String, "Lumo", format.rawValue)
+            XCTAssertEqual(tiff[kCGImagePropertyTIFFModel] as? String, "Test Body", format.rawValue)
+            XCTAssertEqual(tiff[kCGImagePropertyTIFFSoftware] as? String, "Lumo Tests", format.rawValue)
+            let latitude = try XCTUnwrap(gps[kCGImagePropertyGPSLatitude] as? Double)
+            let longitude = try XCTUnwrap(gps[kCGImagePropertyGPSLongitude] as? Double)
+            XCTAssertEqual(latitude, 43.6150, accuracy: 0.0001, format.rawValue)
+            XCTAssertEqual(longitude, 116.2023, accuracy: 0.0001, format.rawValue)
+        }
+    }
+
+    func testStripMetadataDoesNotCopySourcePhotographicDictionaries() async throws {
+        let url = try Fixtures.writeJPEG(
+            named: "metadata-strip-source.jpg",
+            in: tempDirectory,
+            exif: [kCGImagePropertyExifLensModel: "Lumo Prime 35mm"],
+            tiff: [kCGImagePropertyTIFFMake: "Lumo", kCGImagePropertyTIFFModel: "Test Body"],
+            gps: [kCGImagePropertyGPSLatitude: 43.6150, kCGImagePropertyGPSLongitude: 116.2023]
+        )
+        let source = ImageSource(url: url, nativeExtent: CGSize(width: 64, height: 48))
+        let engine = RenderEngine()
+
+        for format in ExportFormat.allCases {
+            let result = try await engine.encode(
+                source: source,
+                document: EditDocument(),
+                lut: nil,
+                options: ExportOptions(format: format, metadata: .strip)
+            )
+            let imageSource = try XCTUnwrap(CGImageSourceCreateWithData(result as CFData, nil))
+            let properties = try XCTUnwrap(
+                CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any]
+            )
+            let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any]
+            let tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
+            let gps = properties[kCGImagePropertyGPSDictionary] as? [CFString: Any]
+            XCTAssertNil(exif?[kCGImagePropertyExifLensModel], format.rawValue)
+            XCTAssertNil(tiff?[kCGImagePropertyTIFFMake], format.rawValue)
+            XCTAssertNil(tiff?[kCGImagePropertyTIFFModel], format.rawValue)
+            XCTAssertNil(gps?[kCGImagePropertyGPSLatitude], format.rawValue)
+            XCTAssertNil(gps?[kCGImagePropertyGPSLongitude], format.rawValue)
+        }
+    }
+
+    func testPreservedMetadataDoesNotReapplySourceOrientation() async throws {
+        let url = try Fixtures.writeJPEG(
+            width: 80, height: 60, orientation: 6,
+            named: "oriented-metadata-source.jpg", in: tempDirectory
+        )
+        let source = ImageSource(url: url, nativeExtent: CGSize(width: 60, height: 80))
+        let result = try await RenderEngine().encode(
+            source: source,
+            document: EditDocument(),
+            lut: nil,
+            options: ExportOptions(format: .jpeg, metadata: .preserve)
+        )
+        let imageSource = try XCTUnwrap(CGImageSourceCreateWithData(result as CFData, nil))
+        let properties = try XCTUnwrap(
+            CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any]
+        )
+
+        XCTAssertEqual(Fixtures.storedSize(of: write(result, named: "oriented-output.jpg")),
+                       CGSize(width: 60, height: 80))
+        let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue
+        XCTAssertTrue(orientation != 6)
+        let tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
+        let tiffOrientation = (tiff?[kCGImagePropertyTIFFOrientation] as? NSNumber)?.intValue
+        XCTAssertTrue(tiffOrientation != 6)
+    }
+
+    private func write(_ data: Data, named name: String) -> URL {
+        let url = tempDirectory.appendingPathComponent(name)
+        try? data.write(to: url)
+        return url
+    }
+
     /// And parity has to hold in a *non-default* space, or the test above would pass for a pipeline
     /// that hard-coded sRGB in both halves — which is precisely the bug Step 1 fixed.
     func testParityHoldsInEveryWorkingSpace() async throws {
