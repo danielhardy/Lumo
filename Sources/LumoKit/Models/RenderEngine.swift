@@ -143,6 +143,28 @@ extension RenderEngining {
         )
         return try await render(request).data
     }
+
+    /// Encode with the complete durable export policy, without involving a panel or destination I/O.
+    func encode(
+        source: ImageSource,
+        document: EditDocument,
+        lut: CubeLUT?,
+        options: ExportOptions
+    ) async throws -> Data {
+        try options.validate()
+        return try await render(RenderRequest(
+            source: source,
+            document: document,
+            lut: lut,
+            quality: .export,
+            output: .encoded(
+                format: options.format,
+                quality: CGFloat(options.quality)
+            ),
+            space: options.colorSpace,
+            exportOptions: options
+        )).data
+    }
 }
 
 /// The render contexts have deliberately separate ownership domains. The processing context and
@@ -333,6 +355,18 @@ actor RenderEngine: RenderEngining {
         // before doing any work so cancellation drops queued superseded values instead of making
         // the coordinator wait for an obsolete graph to rasterize.
         try Task.checkCancellation()
+        if let options = request.exportOptions {
+            try options.validate()
+            guard case .encoded(let format, _) = request.output, format == options.format else {
+                let actual: ExportFormat
+                if case .encoded(let format, _) = request.output {
+                    actual = format
+                } else {
+                    actual = options.format
+                }
+                throw ExportOptionsError.outputFormatMismatch(expected: options.format, actual: actual)
+            }
+        }
         let scale = request.renderScale
         let previewKey = previewCacheKey(for: request, scale: scale)
         if let previewKey {
@@ -349,15 +383,16 @@ actor RenderEngine: RenderEngining {
         }
 
         let image: CIImage?
+        let outputSpace = request.exportOptions?.colorSpace ?? request.space
         if scale.isFull {
             var decodeInterval = LumoObservability.begin(
                 .decode, source: request.source, quality: request.quality
             )
-            image = buildImage(request.source, request.document, request.lut, scale, request.space,
+            image = buildImage(request.source, request.document, request.lut, scale, outputSpace,
                                quality: request.quality)
             decodeInterval.end()
         } else {
-            image = buildImage(request.source, request.document, request.lut, scale, request.space,
+            image = buildImage(request.source, request.document, request.lut, scale, outputSpace,
                                quality: request.quality)
         }
         guard let image else {
@@ -366,7 +401,7 @@ actor RenderEngine: RenderEngining {
         try Task.checkCancellation()
         let rect = image.extent.integral
         guard rect.isRasterizable else { throw ImageError.processingFailed }
-        let colorSpace = request.space.cgColorSpace
+        let colorSpace = outputSpace.cgColorSpace
 
         let data: Data
         switch request.output {
@@ -377,21 +412,31 @@ actor RenderEngine: RenderEngining {
             data = raster
 
         case .encoded(let format, let quality):
+            let options = request.exportOptions
+            let bitDepth = options?.bitDepth ?? format.defaultBitDepth
+            let alpha = options?.alpha ?? format.defaultAlpha
+            let encodedImage = alpha == .opaque ? opaqueImage(image) : image
+            let representationFormat: CIFormat
+            switch (bitDepth, alpha) {
+            case (.sixteen, .preserve): representationFormat = .RGBA16
+            case (.sixteen, .opaque): representationFormat = .RGBA16
+            case (.eight, .preserve), (.eight, .opaque): representationFormat = .RGBA8
+            }
             switch format {
             case .tiff:
                 guard let encoded = context.tiffRepresentation(
-                    of: image, format: .RGBA16, colorSpace: colorSpace
+                    of: encodedImage, format: representationFormat, colorSpace: colorSpace
                 ) else { throw ImageError.exportFailed }
                 data = encoded
             case .jpeg:
                 guard let encoded = context.jpegRepresentation(
-                    of: image, colorSpace: colorSpace,
+                    of: encodedImage, colorSpace: colorSpace,
                     options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality]
                 ) else { throw ImageError.exportFailed }
                 data = encoded
             case .png:
                 guard let encoded = context.pngRepresentation(
-                    of: image, format: .RGBA8, colorSpace: colorSpace
+                    of: encodedImage, format: representationFormat, colorSpace: colorSpace
                 ) else { throw ImageError.exportFailed }
                 data = encoded
             }
@@ -400,7 +445,7 @@ actor RenderEngine: RenderEngining {
         try Task.checkCancellation()
 
         let result = RenderResult(
-            data: data, extent: rect.size, colorSpace: request.space,
+            data: data, extent: rect.size, colorSpace: outputSpace,
             quality: request.quality, output: request.output
         )
         if let previewKey {
@@ -408,6 +453,14 @@ actor RenderEngine: RenderEngining {
         }
         try Task.checkCancellation()
         return result
+    }
+
+    /// Flatten an opaque export against white while keeping the Core Image graph actor-local.
+    private func opaqueImage(_ image: CIImage) -> CIImage {
+        let background = CIImage(
+            color: CIColor(red: 1, green: 1, blue: 1, alpha: 1)
+        ).cropped(to: image.extent)
+        return image.composited(over: background)
     }
 
     // MARK: - Histogram

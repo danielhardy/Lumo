@@ -52,9 +52,6 @@ final class ExportCoordinator: ObservableObject {
         self.lastUsedFormat = Self.defaultFormat
     }
 
-    /// Quality for the lossy encoders. Hardcoded as it always was; a UI for it is Step 12's
-    /// export descriptor.
-    private static let exportQuality: CGFloat = 0.95
     private static let defaultFormat: ExportFormat = .jpeg
 
     // MARK: - Types
@@ -139,11 +136,31 @@ final class ExportCoordinator: ObservableObject {
         format: ExportFormat,
         to url: URL
     ) {
-        lastUsedFormat = format
+        performExport(
+            source: source, document: document, lut: lut,
+            options: ExportOptions(format: format, destination: .file(url)), to: url
+        )
+    }
+
+    /// Validate and start one export from a complete, panel-independent policy.
+    func performExport(
+        source: ImageSource,
+        document: EditDocument,
+        lut: CubeLUT?,
+        options: ExportOptions,
+        to url: URL
+    ) {
+        do {
+            try options.validate()
+        } catch {
+            onError?("Export failed: \(error.localizedDescription)")
+            return
+        }
+        lastUsedFormat = options.format
         isExporting = true
         onStatus?("Exporting...")
 
-        Task { [exportEngine, format] in
+        Task { [exportEngine, options] in
             var interval = LumoObservability.begin(.export, source: source, quality: .export)
             defer { interval.end() }
             do {
@@ -151,8 +168,11 @@ final class ExportCoordinator: ObservableObject {
                 let data = try await exportEngine.render(RenderRequest(
                     source: source, document: document, lut: lut,
                     quality: .export,
-                    output: .encoded(format: format, quality: Self.exportQuality),
-                    space: .current
+                    output: .encoded(
+                        format: options.format, quality: CGFloat(options.quality)
+                    ),
+                    space: options.colorSpace,
+                    exportOptions: options
                 )).data
                 try await Self.write(data, to: url)
                 self.isExporting = false
@@ -162,6 +182,20 @@ final class ExportCoordinator: ObservableObject {
                 self.onError?("Export failed: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// Start a single export using the file destination embedded in options.
+    func performExport(
+        source: ImageSource,
+        document: EditDocument,
+        lut: CubeLUT?,
+        options: ExportOptions
+    ) {
+        guard case .file(let url)? = options.destination else {
+            onError?("Export failed: a file destination is required.")
+            return
+        }
+        performExport(source: source, document: document, lut: lut, options: options, to: url)
     }
 
     // MARK: - Batch export
@@ -210,7 +244,46 @@ final class ExportCoordinator: ObservableObject {
         format: ExportFormat,
         to folder: URL
     ) async -> BatchOutcome {
-        lastUsedFormat = format
+        await performBatchExport(
+            items, document: document, lut: lut,
+            options: ExportOptions(format: format, destination: .folder(folder)), to: folder
+        )
+    }
+
+    /// Start a batch export using the folder destination embedded in options.
+    @discardableResult
+    func performBatchExport(
+        _ items: [BatchItem],
+        document: EditDocument,
+        lut: CubeLUT?,
+        options: ExportOptions
+    ) async -> BatchOutcome {
+        guard case .folder(let folder)? = options.destination else {
+            onError?("Export failed: a folder destination is required.")
+            return BatchOutcome(exported: 0, failed: items.count, total: items.count)
+        }
+        return await performBatchExport(
+            items, document: document, lut: lut, options: options, to: folder
+        )
+    }
+
+    /// Batch export using a complete, panel-independent policy.
+    @discardableResult
+    func performBatchExport(
+        _ items: [BatchItem],
+        document: EditDocument,
+        lut: CubeLUT?,
+        options: ExportOptions,
+        to folder: URL
+    ) async -> BatchOutcome {
+        do {
+            try options.validate()
+        } catch {
+            onError?("Export failed: \(error.localizedDescription)")
+            return BatchOutcome(exported: 0, failed: items.count, total: items.count)
+        }
+
+        lastUsedFormat = options.format
         isExporting = true
         batchProgress = 0
         let total = items.count
@@ -222,8 +295,9 @@ final class ExportCoordinator: ObservableObject {
         for (index, item) in items.enumerated() {
             guard !Task.isCancelled else { break }
             if let source = Self.source(for: item) {
-                let base = Self.exportBaseName(source: item.name, lut: lut)
-                let dest = uniqueExportURL(in: folder, base: base, ext: format.fileExtension)
+                let lookName = options.filenamePolicy == .sourceNameWithLook ? lut?.name : nil
+                let base = options.filenamePolicy.baseName(source: item.name, look: lookName)
+                let dest = uniqueExportURL(in: folder, base: base, ext: options.format.fileExtension)
                 do {
                     try Task.checkCancellation()
                     var interval = LumoObservability.begin(.export, source: source, quality: .export)
@@ -231,8 +305,11 @@ final class ExportCoordinator: ObservableObject {
                     let data = try await exportEngine.render(RenderRequest(
                         source: source, document: document, lut: lut,
                         quality: .export,
-                        output: .encoded(format: format, quality: Self.exportQuality),
-                        space: .current
+                        output: .encoded(
+                            format: options.format, quality: CGFloat(options.quality)
+                        ),
+                        space: options.colorSpace,
+                        exportOptions: options
                     )).data
                     try await Self.write(data, to: dest)
                     exported += 1

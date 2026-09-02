@@ -24,12 +24,15 @@ struct RenderRequest: Sendable, Equatable {
     let source: ImageSource
     let document: EditDocument
     let lut: CubeLUT?
-    /// Maximum output dimensions for downsampled tiers. Full-resolution and export ignore it.
+    /// Maximum output dimensions for preview tiers. Export sizing is carried by exportOptions.
     let targetSize: CGSize?
     let quality: RenderQuality
     let frameBudgetMilliseconds: Double
     let output: Output
     let space: WorkingSpace
+    /// Full export policy when this is an encoded request. Kept separate from `RenderOutput` so the
+    /// legacy format/quality spelling remains source-compatible for existing renderer clients.
+    let exportOptions: ExportOptions?
 
     init(
         source: ImageSource,
@@ -39,7 +42,8 @@ struct RenderRequest: Sendable, Equatable {
         quality: RenderQuality,
         frameBudgetMilliseconds: Double = 16.7,
         output: Output = .raster,
-        space: WorkingSpace = .current
+        space: WorkingSpace = .current,
+        exportOptions: ExportOptions? = nil
     ) {
         self.source = source
         self.document = document
@@ -49,6 +53,7 @@ struct RenderRequest: Sendable, Equatable {
         self.frameBudgetMilliseconds = frameBudgetMilliseconds
         self.output = output
         self.space = space
+        self.exportOptions = exportOptions
     }
 
     /// The scale policy used by the existing deterministic pipeline.
@@ -65,8 +70,10 @@ struct RenderRequest: Sendable, Equatable {
                 maxSize: targetSize ?? source.nativeExtent,
                 frameBudgetMilliseconds: frameBudgetMilliseconds
             )
-        case .fullResolution, .export:
+        case .fullResolution:
             return .full
+        case .export:
+            return exportOptions?.sizing.renderTargetBox.map(RenderScale.preview) ?? .full
         }
     }
 }

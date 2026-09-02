@@ -9,7 +9,7 @@ import UniformTypeIdentifiers
 /// `fileExtension`. Dropping `Identifiable` or changing the raw values would break both — quietly,
 /// because a picker with duplicate or missing IDs still compiles. So `CaseIterable`, `Identifiable`,
 /// `Sendable` and the exact raw strings all remain part of the export-format contract.
-enum ExportFormat: String, CaseIterable, Identifiable, Sendable {
+enum ExportFormat: String, CaseIterable, Identifiable, Codable, Sendable {
     case tiff = "TIFF"
     case jpeg = "JPEG"
     case png  = "PNG"
@@ -30,5 +30,36 @@ enum ExportFormat: String, CaseIterable, Identifiable, Sendable {
         case .jpeg: return "jpg"
         case .png:  return "png"
         }
+    }
+
+    var capabilities: ExportFormatCapabilities {
+        switch self {
+        case .tiff:
+            return ExportFormatCapabilities(
+                bitDepths: [.eight, .sixteen],
+                colorSpaces: [.sRGB, .displayP3],
+                alphaModes: [.opaque, .preserve]
+            )
+        case .jpeg:
+            return ExportFormatCapabilities(
+                bitDepths: [.eight],
+                colorSpaces: [.sRGB, .displayP3],
+                alphaModes: [.opaque]
+            )
+        case .png:
+            return ExportFormatCapabilities(
+                bitDepths: [.eight, .sixteen],
+                colorSpaces: [.sRGB, .displayP3],
+                alphaModes: [.opaque, .preserve]
+            )
+        }
+    }
+
+    var defaultBitDepth: ExportBitDepth {
+        self == .tiff ? .sixteen : .eight
+    }
+
+    var defaultAlpha: ExportAlpha {
+        self == .jpeg ? .opaque : .preserve
     }
 }
