@@ -15,6 +15,11 @@ import Metal
 /// for free; a fake has to earn it.
 protocol RenderEngining: Sendable {
 
+    /// Prepare source value state without requesting source pixels. The production renderer owns
+    /// RAW preparation so the same decoder session can answer geometry/capability questions and
+    /// later develop the visible image.
+    func prepareSource(_ source: ImageSource) async -> ImageSourcePreparation?
+
     /// Completed Core Image output for the persistent GPU presentation surface.
     ///
     /// A production implementation must not return a lazy source graph here. The returned image
@@ -79,6 +84,21 @@ struct RenderWorkStatistics: Sendable, Equatable {
 }
 
 extension RenderEngining {
+    func prepareSource(_ source: ImageSource) async -> ImageSourcePreparation? {
+        guard source.kind == .standard else { return nil }
+        let extent: CGSize?
+        switch source.backing {
+        case .url(let url):
+            extent = try? ImageDecoder.prepareStandard(from: url)
+        case .data(let data):
+            extent = try? ImageDecoder.prepareStandard(from: data, name: "import")
+        }
+        guard let extent else { return nil }
+        return ImageSourcePreparation(source: ImageSource(
+            backing: source.backing, kind: source.kind, nativeExtent: extent
+        ))
+    }
+
     func makeCIImage(_ request: RenderRequest) async -> sending CIImage? { nil }
 
     func makeCGImage(_ request: RenderRequest) async -> sending CGImage? {
@@ -445,7 +465,36 @@ actor RenderEngine: RenderEngining {
 
     // MARK: - RAW capabilities
 
-    /// Build a throwaway `CIRAWFilter` and read its flags and its own defaults.
+    /// Admit a source using value geometry only. Standard-image dimensions come from ImageIO;
+    /// RAW dimensions come from the renderer-owned session without touching `outputImage`.
+    func prepareSource(_ source: ImageSource) -> ImageSourcePreparation? {
+        switch source.kind {
+        case .standard:
+            guard let prepared = try? standardPreparation(for: source) else { return nil }
+            return prepared
+        case .raw:
+            guard let session = session(for: source) else { return nil }
+            let preparedSource = ImageSource(
+                backing: source.backing, kind: .raw, nativeExtent: session.nativeSize
+            )
+            return ImageSourcePreparation(source: preparedSource)
+        }
+    }
+
+    private func standardPreparation(for source: ImageSource) throws -> ImageSourcePreparation {
+        let extent: CGSize
+        switch source.backing {
+        case .url(let url):
+            extent = try ImageDecoder.prepareStandard(from: url)
+        case .data(let data):
+            extent = try ImageDecoder.prepareStandard(from: data, name: "import")
+        }
+        return ImageSourcePreparation(source: ImageSource(
+            backing: source.backing, kind: .standard, nativeExtent: extent
+        ))
+    }
+
+    /// Read capabilities from the same renderer-owned session used for preparation and preview.
     ///
     /// **`outputImage` is deliberately never touched.** That is the difference between ~25 ms and
     /// ~183 ms on a 30 MB DNG (measured; see the Step 10a design doc), and it is why this can run on
@@ -459,41 +508,49 @@ actor RenderEngine: RenderEngining {
     /// withdraws the control on the same flag.
     func rawCapabilities(for source: ImageSource) -> RAWCapabilities? {
         guard case .raw = source.kind else { return nil }
-        guard let filter = RenderPipeline.rawFilter(for: source.backing) else { return nil }
-
-        var highlightRecovery = false
-        if #available(macOS 26, *) {
-            highlightRecovery = filter.isHighlightRecoverySupported
-        }
-
+        guard let session = session(for: source) else { return nil }
+        let captured = session.capabilities()
+        // Keep the capability-to-seed relationship explicit at this API boundary. The session has
+        // already captured these values before any mutable development output can change them.
         return RAWCapabilities(
-            isSharpnessSupported: filter.isSharpnessSupported,
-            isContrastSupported: filter.isContrastSupported,
-            isDetailSupported: filter.isDetailSupported,
-            isMoireReductionSupported: filter.isMoireReductionSupported,
-            isLocalToneMapSupported: filter.isLocalToneMapSupported,
-            isLuminanceNoiseReductionSupported: filter.isLuminanceNoiseReductionSupported,
-            isColorNoiseReductionSupported: filter.isColorNoiseReductionSupported,
-            isLensCorrectionSupported: filter.isLensCorrectionSupported,
-            isHighlightRecoverySupported: highlightRecovery,
-            asShotTemperature: Double(filter.neutralTemperature),
-            asShotTint: Double(filter.neutralTint),
-            baselineExposure: Double(filter.baselineExposure),
-            shadowBias: Double(filter.shadowBias),
-            sharpnessAmount: filter.isSharpnessSupported ? Double(filter.sharpnessAmount) : 0,
-            contrastAmount: filter.isContrastSupported ? Double(filter.contrastAmount) : 0,
-            detailAmount: filter.isDetailSupported ? Double(filter.detailAmount) : 0,
+            isSharpnessSupported: captured.isSharpnessSupported,
+            isContrastSupported: captured.isContrastSupported,
+            isDetailSupported: captured.isDetailSupported,
+            isMoireReductionSupported: captured.isMoireReductionSupported,
+            isLocalToneMapSupported: captured.isLocalToneMapSupported,
+            isLuminanceNoiseReductionSupported: captured.isLuminanceNoiseReductionSupported,
+            isColorNoiseReductionSupported: captured.isColorNoiseReductionSupported,
+            isLensCorrectionSupported: captured.isLensCorrectionSupported,
+            isHighlightRecoverySupported: captured.isHighlightRecoverySupported,
+            asShotTemperature: captured.asShotTemperature,
+            asShotTint: captured.asShotTint,
+            baselineExposure: captured.baselineExposure,
+            shadowBias: captured.shadowBias,
+            sharpnessAmount: captured.isSharpnessSupported ? captured.sharpnessAmount : 0,
+            contrastAmount: captured.isContrastSupported ? captured.contrastAmount : 0,
+            detailAmount: captured.isDetailSupported ? captured.detailAmount : 0,
             moireReductionAmount:
-                filter.isMoireReductionSupported ? Double(filter.moireReductionAmount) : 0,
+                captured.isMoireReductionSupported ? captured.moireReductionAmount : 0,
             localToneMapAmount:
-                filter.isLocalToneMapSupported ? Double(filter.localToneMapAmount) : 0,
-            luminanceNoiseReductionAmount: filter.isLuminanceNoiseReductionSupported
-                ? Double(filter.luminanceNoiseReductionAmount) : 0,
-            colorNoiseReductionAmount: filter.isColorNoiseReductionSupported
-                ? Double(filter.colorNoiseReductionAmount) : 0,
+                captured.isLocalToneMapSupported ? captured.localToneMapAmount : 0,
+            luminanceNoiseReductionAmount: captured.isLuminanceNoiseReductionSupported
+                ? captured.luminanceNoiseReductionAmount : 0,
+            colorNoiseReductionAmount: captured.isColorNoiseReductionSupported
+                ? captured.colorNoiseReductionAmount : 0,
             lensCorrectionEnabled:
-                filter.isLensCorrectionSupported ? filter.isLensCorrectionEnabled : false
+                captured.isLensCorrectionSupported ? captured.lensCorrectionEnabled : false
         )
+    }
+
+    private func session(for source: ImageSource) -> InteractiveRAWFilterSession? {
+        let fingerprint = source.decoderFingerprint
+        if interactiveRAWSession?.fingerprint != fingerprint {
+            // This is the one renderer-owned RAW session. Replacing it releases the old source
+            // graph before the new source is admitted, keeping rapid navigation bounded.
+            interactiveRAWSession = InteractiveRAWFilterSession(source: source)
+            if interactiveRAWSession != nil { rawFilterConstructionCount += 1 }
+        }
+        return interactiveRAWSession
     }
 
     // MARK: - Cache
@@ -760,20 +817,16 @@ actor RenderEngine: RenderEngining {
         space: WorkingSpace,
         interactive: Bool = false
     ) -> CIImage? {
-        if interactive, source.kind == .raw {
-            let fingerprint = source.cacheFingerprint
+        let canUsePreparedSession = source.kind == .raw && !scale.isFull &&
+            (interactive || interactiveRAWSession?.fingerprint == source.decoderFingerprint)
+        if canUsePreparedSession {
+            let fingerprint = source.decoderFingerprint
             let reused = interactiveRAWSession?.fingerprint == fingerprint
-            if interactiveRAWSession?.fingerprint != fingerprint {
-                // This is an explicit one-entry boundary: source changes release the old mutable
-                // Core Image object and its source-backed decode graph before creating another.
-                interactiveRAWSession = InteractiveRAWFilterSession(source: source)
-                if interactiveRAWSession != nil { rawFilterConstructionCount += 1 }
-            }
+            guard let session = session(for: source) else { return nil }
             LumoObservability.event(
                 reused ? .cacheHit : .cacheMiss, source: source, quality: .interactive,
                 detail: "layer=interactiveRAWFilter reused=\(reused)"
             )
-            guard let session = interactiveRAWSession else { return nil }
             let result = session.output(
                 rawDevelop: rawDevelop, scale: scale,
                 materialize: { [self] image in materializedImage(image, space: space)?.image }
@@ -866,16 +919,59 @@ actor RenderEngine: RenderEngining {
         let fingerprint: String
         private let filter: CIRAWFilter
         private let baseline: RAWFilterBaseline
+        private let capturedCapabilities: RAWCapabilities
         private var appliedSettings: RAWDevelopSettings?
         private var appliedScaleFactor: Float?
         private var cachedOutputKey: OutputKey?
         private var cachedOutput: CIImage?
 
+        var nativeSize: CGSize { filter.nativeSize }
+
         init?(source: ImageSource) {
             guard let filter = RenderPipeline.rawFilter(for: source.backing) else { return nil }
-            self.fingerprint = source.cacheFingerprint
+            self.fingerprint = source.decoderFingerprint
             self.filter = filter
             self.baseline = RAWFilterBaseline(filter: filter)
+            self.capturedCapabilities = Self.captureCapabilities(filter)
+        }
+
+        func capabilities() -> RAWCapabilities {
+            capturedCapabilities
+        }
+
+        private static func captureCapabilities(_ filter: CIRAWFilter) -> RAWCapabilities {
+            var highlightRecovery = false
+            if #available(macOS 26, *) {
+                highlightRecovery = filter.isHighlightRecoverySupported
+            }
+            return RAWCapabilities(
+                isSharpnessSupported: filter.isSharpnessSupported,
+                isContrastSupported: filter.isContrastSupported,
+                isDetailSupported: filter.isDetailSupported,
+                isMoireReductionSupported: filter.isMoireReductionSupported,
+                isLocalToneMapSupported: filter.isLocalToneMapSupported,
+                isLuminanceNoiseReductionSupported: filter.isLuminanceNoiseReductionSupported,
+                isColorNoiseReductionSupported: filter.isColorNoiseReductionSupported,
+                isLensCorrectionSupported: filter.isLensCorrectionSupported,
+                isHighlightRecoverySupported: highlightRecovery,
+                asShotTemperature: Double(filter.neutralTemperature),
+                asShotTint: Double(filter.neutralTint),
+                baselineExposure: Double(filter.baselineExposure),
+                shadowBias: Double(filter.shadowBias),
+                sharpnessAmount: filter.isSharpnessSupported ? Double(filter.sharpnessAmount) : 0,
+                contrastAmount: filter.isContrastSupported ? Double(filter.contrastAmount) : 0,
+                detailAmount: filter.isDetailSupported ? Double(filter.detailAmount) : 0,
+                moireReductionAmount:
+                    filter.isMoireReductionSupported ? Double(filter.moireReductionAmount) : 0,
+                localToneMapAmount:
+                    filter.isLocalToneMapSupported ? Double(filter.localToneMapAmount) : 0,
+                luminanceNoiseReductionAmount: filter.isLuminanceNoiseReductionSupported
+                    ? Double(filter.luminanceNoiseReductionAmount) : 0,
+                colorNoiseReductionAmount: filter.isColorNoiseReductionSupported
+                    ? Double(filter.colorNoiseReductionAmount) : 0,
+                lensCorrectionEnabled:
+                    filter.isLensCorrectionSupported ? filter.isLensCorrectionEnabled : false
+            )
         }
 
         func output(

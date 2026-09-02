@@ -17,9 +17,9 @@ import ImageIO
 ///
 /// Note `RenderPipeline.developedSource` is the decoder the *render* stack uses — it re-develops
 /// from the file at a chosen scale, because `CIRAWFilter` must be configured before it yields an
-/// image (§4.2). `load(from:)` here is the eager, full-resolution decode the view model still does
-/// once at open to learn the image's dimensions. Both read `orientedLoadOptions`, which is why that
-/// lives here rather than in either of them.
+/// image (§4.2). Source preparation below deliberately does not produce a `CIImage`; it only reads
+/// value geometry for standard images. RAW preparation belongs to `RenderEngine`, which can reuse
+/// its renderer-owned filter session for geometry, capabilities, and development.
 enum ImageDecoder {
 
     // MARK: - Supported formats (single source of truth)
@@ -49,6 +49,48 @@ enum ImageDecoder {
     }()
 
     // MARK: - Loading
+
+    /// Value state needed to admit a source into the editor. No pixel graph is requested here.
+    ///
+    /// The source's native extent is upright/display-oriented. It is the only geometry the render
+    /// pipeline needs to choose a scale; pixels remain renderer-owned and are produced on demand.
+    static func prepareStandard(from url: URL) throws -> CGSize {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            throw ImageError.cannotLoad(url.lastPathComponent)
+        }
+        return try orientedExtent(from: source, name: url.lastPathComponent)
+    }
+
+    static func prepareStandard(from data: Data, name: String) throws -> CGSize {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            throw ImageError.cannotLoad(name)
+        }
+        return try orientedExtent(from: source, name: name)
+    }
+
+    private static func orientedExtent(from source: CGImageSource, name: String) throws -> CGSize {
+        guard CGImageSourceGetCount(source) > 0,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber
+        else {
+            throw ImageError.cannotLoad(name)
+        }
+
+        let storedWidth = width.doubleValue
+        let storedHeight = height.doubleValue
+        guard storedWidth >= 1, storedHeight >= 1,
+              storedWidth.isFinite, storedHeight.isFinite else {
+            throw ImageError.cannotLoad(name)
+        }
+
+        let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        let swapsAxes = [5, 6, 7, 8].contains(orientation)
+        return swapsAxes
+            ? CGSize(width: storedHeight, height: storedWidth)
+            : CGSize(width: storedWidth, height: storedHeight)
+    }
 
     /// Load any supported image file as a CIImage, upright.
     static func load(from url: URL) throws -> CIImage {

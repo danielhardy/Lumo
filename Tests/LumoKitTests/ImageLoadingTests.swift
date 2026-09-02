@@ -45,6 +45,15 @@ final class ImageLoadingTests: TempDirectoryTestCase {
         XCTAssertEqual(image.extent.height, 60)
     }
 
+    func testStandardPreparationReturnsOrientedGeometryWithoutDecodingPixels() throws {
+        let url = try Fixtures.writeJPEG(
+            width: 80, height: 60, orientation: 6,
+            named: "prepared-portrait.jpg", in: tempDirectory
+        )
+
+        XCTAssertEqual(try ImageDecoder.prepareStandard(from: url), CGSize(width: 60, height: 80))
+    }
+
     /// The Photos-import path decodes from `Data`, not a URL, and had the same
     /// defect independently.
     func testLoadFromDataAppliesOrientation() throws {

@@ -203,6 +203,45 @@ actor FakeRenderEngine: RenderEngining {
     /// open" is a requirement, not a detail — a count is the only way to see it.
     private(set) var capabilityProbeCount = 0
 
+    /// A controllable preparation seam for navigation tests. It stands in for a decoder operation
+    /// that cannot be interrupted after it has entered the framework.
+    private(set) var sourcePreparationCount = 0
+    private var sourcePreparationIsGated = false
+    private var parkedSourcePreparation: CheckedContinuation<Void, Never>?
+
+    func gateSourcePreparation() { sourcePreparationIsGated = true }
+
+    func releaseSourcePreparation() {
+        sourcePreparationIsGated = false
+        parkedSourcePreparation?.resume()
+        parkedSourcePreparation = nil
+    }
+
+    func prepareSource(_ source: ImageSource) async -> ImageSourcePreparation? {
+        sourcePreparationCount += 1
+        if sourcePreparationIsGated {
+            await withCheckedContinuation { parkedSourcePreparation = $0 }
+        }
+        if source.kind == .raw {
+            // The fake has no decoder, but it still needs to model the value-state transition that
+            // production performs with CIRAWFilter.nativeSize.
+            let extent = source.nativeExtent == .zero
+                ? CGSize(width: 4_000, height: 3_000) : source.nativeExtent
+            return ImageSourcePreparation(source: ImageSource(
+                backing: source.backing, kind: .raw, nativeExtent: extent
+            ))
+        }
+        let extent: CGSize?
+        switch source.backing {
+        case .url(let url): extent = try? ImageDecoder.prepareStandard(from: url)
+        case .data(let data): extent = try? ImageDecoder.prepareStandard(from: data, name: "fake")
+        }
+        guard let extent else { return nil }
+        return ImageSourcePreparation(source: ImageSource(
+            backing: source.backing, kind: source.kind, nativeExtent: extent
+        ))
+    }
+
     /// What the fake reports. `nil` models a standard image.
     ///
     /// Distinctively seeded rather than `.everyGateOpen`: that value leaves every seed at its

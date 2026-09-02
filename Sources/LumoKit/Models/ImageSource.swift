@@ -1,9 +1,19 @@
 import Foundation
 import CoreGraphics
+import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
 import CryptoKit
 import Darwin
+
+/// The value-only result of opening a source. It contains enough information to start rendering,
+/// but intentionally contains no decoded pixels or Core Image objects.
+struct ImageSourcePreparation: Sendable, Equatable {
+    let source: ImageSource
+
+    var nativeExtent: CGSize { source.nativeExtent }
+    var isRAW: Bool { source.kind == .raw }
+}
 
 /// How to *reproduce* the source image, rather than the image itself.
 ///
@@ -79,6 +89,10 @@ struct ImageSource: Sendable, Equatable {
         self.init(backing: .data(data), kind: Self.kind(forData: data), nativeExtent: nativeExtent)
     }
 
+    init(preparation: ImageSourcePreparation) {
+        self = preparation.source
+    }
+
     // MARK: - Classification
 
     static func kind(forExtension ext: String) -> Kind {
@@ -93,7 +107,14 @@ struct ImageSource: Sendable, Equatable {
               let uti = CGImageSourceGetType(source),
               let type = UTType(uti as String)
         else { return .standard }
-        return type.conforms(to: .rawImage) ? .raw : .standard
+        if type.conforms(to: .rawImage) {
+            return .raw
+        }
+        // Some camera RAW payloads are TIFF containers without a filename, so ImageIO reports
+        // public.tiff after the bytes lose their extension. CIRAWFilter's initializer identifies
+        // those sources without asking for outputImage or developing pixels.
+        guard type.conforms(to: .tiff) else { return .standard }
+        return CIRAWFilter(imageData: data, identifierHint: nil) != nil ? .raw : .standard
     }
 
     /// A cache identity that changes when a URL-backed file is replaced in place.
@@ -103,10 +124,17 @@ struct ImageSource: Sendable, Equatable {
     /// imports are hashed once during initialization because their bytes already live in memory.
     var cacheFingerprint: String {
         let extent = "\(Double(nativeExtent.width).bitPattern):\(Double(nativeExtent.height).bitPattern)"
+        return "\(decoderFingerprint):\(extent)"
+    }
+
+    /// Identity used by the renderer-owned RAW session. Geometry is intentionally excluded so the
+    /// session created while preparing a zero-extent source is reused after preparation fills in
+    /// the decoder's authoritative dimensions.
+    var decoderFingerprint: String {
         switch backing {
         case .data:
             let fingerprint = dataFingerprint ?? "missing"
-            return "data:\(fingerprint):\(kind):\(extent)"
+            return "data:\(fingerprint):\(kind)"
         case .url(let url):
             let values = try? url.resourceValues(forKeys: [
                 .fileSizeKey, .contentModificationDateKey, .fileResourceIdentifierKey
@@ -129,7 +157,7 @@ struct ImageSource: Sendable, Equatable {
             } else {
                 posixFingerprint = "missing"
             }
-            return "url:\(url.standardizedFileURL.path):\(size):\(modified):\(resourceID):\(posixFingerprint):\(kind):\(extent)"
+            return "url:\(url.standardizedFileURL.path):\(size):\(modified):\(resourceID):\(posixFingerprint):\(kind)"
         }
     }
 

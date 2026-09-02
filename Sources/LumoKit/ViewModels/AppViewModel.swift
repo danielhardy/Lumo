@@ -185,6 +185,10 @@ public final class AppViewModel: ObservableObject {
     private var capabilitiesTask: Task<Void, Never>?
 
     private var editSessions: [PhotoAssetID: PhotoEditSession] = [:]
+    /// Changes made while a source is being prepared. A late edit-store result may fill a missing
+    /// session, but it must never replace this newer in-memory state.
+    private var editSessionRevisions: [PhotoAssetID: UInt64] = [:]
+    private var nextEditSessionRevision: UInt64 = 0
     private var activeAssetID: PhotoAssetID?
     private var activeHistory = EditHistory()
     private var activeSourceReference: EditSourceReference?
@@ -441,7 +445,21 @@ public final class AppViewModel: ObservableObject {
     private let engine: any RenderEngining
     private let preferences: UserDefaults
     private let previewCoordinator: PreviewCoordinator
+    private struct SourceLoadRequest: Sendable {
+        let name: String
+        let source: ImageSource
+        let sourceReference: EditSourceReference
+        let assetID: PhotoAssetID
+        let sourceRevision: UInt64
+        let editSessionRevision: UInt64
+        let hadInMemorySession: Bool
+        let traceQuality: String
+    }
+    /// One non-cancellable source preparation is allowed to run. New navigation replaces this one
+    /// pending value, so a burst cannot build a queue of obsolete RAW decoder operations.
+    private var pendingSourceLoad: SourceLoadRequest?
     private var loadTask: Task<Void, Never>?
+    private let adjacentPreviewPrefetchJobID = ImageWorkScheduler.JobID("adjacent-preview-prefetch")
     private var metadataTask: Task<Void, Never>?
     private var originalPreviewTask: Task<Void, Never>?
     private var previewDebounceTask: Task<Void, Never>?
@@ -643,9 +661,9 @@ public final class AppViewModel: ObservableObject {
         load(name: url.lastPathComponent, url: url, data: nil, assetID: assetID)
     }
 
-    /// Decode an image **off the main actor**, then publish it and render the
-    /// previews. RAW demosaicing is expensive enough (hundreds of ms) that
-    /// doing it inline would freeze the window on every ←/→ step.
+    /// Prepare a source without decoding pixels, then publish it and render the previews. RAW
+    /// demosaicing remains renderer-owned and happens at the requested preview scale. The worker
+    /// below deliberately has one active preparation and one replaceable pending request.
     private func load(
         name: String, url: URL?, data: Data?, assetID: PhotoAssetID? = nil,
         traceQuality: String = "open"
@@ -687,10 +705,10 @@ public final class AppViewModel: ObservableObject {
         // Space comparison is transient and belongs to the source being left. The user's
         // single-vs-side-by-side preference intentionally remains intact across photo switches.
         isShowingOriginal = false
-        loadTask?.cancel()
         metadataTask?.cancel()
         metadata = ImageMetadata()
         originalPreviewTask?.cancel()
+        workScheduler.cancel(id: adjacentPreviewPrefetchJobID)
         previewDebounceTask?.cancel()
         capabilitiesTask?.cancel()
         rawCapabilities = nil
@@ -704,80 +722,170 @@ public final class AppViewModel: ObservableObject {
         isLoading = true
         statusMessage = "Loading \(name)..."
 
-        loadTask = Task {
-            var interval = LumoSignpostInterval(
-                .photoSwitch,
-                context: LumoTraceContext(sourceFingerprint: name, quality: "interactive")
-            )
-            defer { interval.end() }
+        let source: ImageSource
+        if let url {
+            source = ImageSource(url: url, nativeExtent: .zero)
+        } else if let data {
+            source = ImageSource(data: data, nativeExtent: .zero)
+        } else {
+            source = ImageSource(backing: .data(Data()), kind: .standard, nativeExtent: .zero)
+        }
+        pendingSourceLoad = SourceLoadRequest(
+            name: name, source: source, sourceReference: sourceReference, assetID: assetID,
+            sourceRevision: sourceRevision,
+            editSessionRevision: editSessionRevisions[assetID] ?? 0,
+            hadInMemorySession: session != nil,
+            traceQuality: traceQuality
+        )
+        startSourceLoadWorkerIfNeeded()
+    }
 
-            let decoded: Result<CIImage, Error> = await Task.detached {
-                do {
-                    if let url {
-                        return .success(try ImageDecoder.load(from: url))
-                    }
-                    if let data {
-                        return .success(try ImageDecoder.load(
-                            from: data, name: name, traceQuality: traceQuality
-                        ))
-                    }
-                    return .failure(ImageError.cannotLoad(name))
-                } catch {
-                    return .failure(error)
+    private func startSourceLoadWorkerIfNeeded() {
+        guard loadTask == nil else { return }
+        loadTask = Task { [weak self] in
+            while let self, let request = self.pendingSourceLoad {
+                self.pendingSourceLoad = nil
+                await self.prepareAndInstall(request)
+            }
+            self?.loadTask = nil
+        }
+    }
+
+    private func prepareAndInstall(
+        _ request: SourceLoadRequest
+    ) async {
+        var interval = LumoSignpostInterval(
+            .photoSwitch,
+            context: LumoTraceContext(sourceFingerprint: request.name, quality: request.traceQuality)
+        )
+        defer { interval.end() }
+
+        // The edit lookup is independent of source preparation. Starting it first lets its actor
+        // work overlap a RAW geometry/session probe without putting it on the source-critical path.
+        let storedTask = Task { await self.editStore.load(for: request.sourceReference) }
+        let preparation = await engine.prepareSource(request.source)
+
+        guard request.sourceRevision == sourceRevision else {
+            // Do not publish an obsolete source or its error. The worker will consume only the
+            // newest pending request after this single in-flight preparation completes.
+            storedTask.cancel()
+            return
+        }
+
+        guard let preparation else {
+            isLoading = false
+            presentError("Error: Cannot load \(request.name)")
+            storedTask.cancel()
+            return
+        }
+
+        install(preparation: preparation, request: request)
+
+        let stored = await storedTask.value
+        guard request.sourceRevision == sourceRevision else { return }
+        adoptStoredEdits(stored, for: request)
+    }
+
+    private func install(
+        preparation: ImageSourcePreparation, request: SourceLoadRequest
+    ) {
+        imageSource = preparation.source
+        if case .url(let url) = request.source.backing {
+            sourceURL = url
+        } else {
+            sourceURL = nil
+        }
+        sourceName = request.name
+        sourceSize = preparation.nativeExtent
+        // This marker is availability state only. It is never sent to RenderEngine, histogram, or
+        // detail assessment; the authoritative color-managed pixels come from the edited render.
+        sourceImage = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(
+            to: CGRect(origin: .zero, size: preparation.nativeExtent)
+        )
+        statusMessage = "\(request.name)  \(Int(preparation.nativeExtent.width))\u{00D7}\(Int(preparation.nativeExtent.height))"
+        isLoading = false
+        keepInspectorTabValid()
+        schedulePreview()
+        scheduleOriginalPreview()
+        switch request.source.backing {
+        case .url(let url): refreshMetadata(url: url, data: nil)
+        case .data(let data): refreshMetadata(url: nil, data: data)
+        }
+        refreshCapabilities()
+        scheduleAdjacentPreviewPrefetch()
+    }
+
+    private func adoptStoredEdits(
+        _ stored: EditDocumentLoadResult, for request: SourceLoadRequest
+    ) {
+        // A pre-existing session or a mutation made while preparation was in flight owns the
+        // current document. Only a still-pristine, never-seen session may adopt disk state.
+        let changedInMemory = (editSessionRevisions[request.assetID] ?? 0) != request.editSessionRevision
+        let shouldAdopt = !request.hadInMemorySession && !changedInMemory
+        if shouldAdopt {
+            activeHistory = EditHistory()
+            document = stored.document
+            editSessions[request.assetID] = PhotoEditSession(document: document, history: activeHistory)
+            refreshLUTResolutionStatus()
+            documentRevision &+= 1
+            comparisonRevision &+= 1
+            schedulePreview()
+            scheduleOriginalPreview()
+            scheduleAdjacentPreviewPrefetch()
+        }
+        if stored.status.isActionable {
+            editStoreStatus = stored.status.message
+        } else {
+            editStoreStatus = nil
+        }
+    }
+
+    /// Warm at most the two nearest filtered neighbours after the active render has had an idle
+    /// window. The request is cancellable at the orchestration layer and the snapshot is value-only;
+    /// an obsolete prefetch may finish in the renderer, but it cannot publish or start source-load
+    /// work for a photo the user has already left.
+    private func scheduleAdjacentPreviewPrefetch() {
+        workScheduler.cancel(id: adjacentPreviewPrefetchJobID)
+        guard collection.isActive else { return }
+
+        let selected = collection.selectedIndex
+        let candidates = collection.filteredIndices
+            .filter { $0 != selected && abs($0 - selected) <= 2 }
+            .sorted { abs($0 - selected) < abs($1 - selected) }
+            .prefix(2)
+            .compactMap { index -> (ImageSource, EditDocument, CubeLUT?)? in
+                let item = collection.items[index]
+                guard let dimensions = item.asset.dimensions,
+                      dimensions.width > 0, dimensions.height > 0 else { return nil }
+                let extent = CGSize(width: dimensions.width, height: dimensions.height)
+                let source: ImageSource
+                if let url = item.url {
+                    source = ImageSource(url: url, nativeExtent: extent)
+                } else if let data = item.imageData {
+                    source = ImageSource(data: data, nativeExtent: extent)
+                } else {
+                    return nil
                 }
-            }.value
+                let document = editSessions[item.id]?.document ?? EditDocument()
+                return (source, document, resolvedLUT(document.lut.lutID))
+            }
+        guard !candidates.isEmpty else { return }
 
-            let stored = await self.editStore.load(for: sourceReference)
-
-            guard !Task.isCancelled, sourceRevision == self.sourceRevision else { return }
-
-            switch decoded {
-            case .failure(let error):
-                self.isLoading = false
-                self.presentError("Error: \(error.localizedDescription)")
-
-            case .success(let ci):
-                // An edit made while the source was decoding is newer than the disk snapshot. The
-                // in-memory session wins in that case; otherwise adopt the persisted document.
-                let loadedSession = self.editSessions[assetID]
-                let loadedDocument = loadedSession?.document ?? stored.document
-                let loadedHistory = loadedSession?.history ?? EditHistory()
-                self.activeHistory = loadedHistory
-                self.editSessions[assetID] = PhotoEditSession(
-                    document: loadedDocument, history: loadedHistory
+        let revision = sourceRevision
+        let engine = self.engine
+        workScheduler.enqueue(
+            id: adjacentPreviewPrefetchJobID, lane: .editor, priority: .background
+        ) { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled, let self, self.sourceRevision == revision else { return }
+            for (source, document, lut) in candidates {
+                guard !Task.isCancelled else { return }
+                let request = RenderRequest(
+                    source: source, document: document, lut: lut,
+                    targetSize: self.previewBackingSize,
+                    quality: .preview, output: .raster, space: .current
                 )
-                self.document = loadedDocument
-                self.refreshLUTResolutionStatus()
-                if stored.status.isActionable {
-                    self.editStoreStatus = stored.status.message
-                } else {
-                    self.editStoreStatus = nil
-                }
-                // The renderer works from the file, not the decoded image, so a RAW can be
-                // re-developed per render. `nativeExtent` comes from the decode we just did.
-                if let url {
-                    self.imageSource = ImageSource(url: url, nativeExtent: ci.extent.size)
-                } else if let data {
-                    self.imageSource = ImageSource(data: data, nativeExtent: ci.extent.size)
-                } else {
-                    self.imageSource = nil
-                }
-                // Install the source before publishing pixels. A view update must never see the
-                // new image paired with the previous image's RAW classification or capabilities.
-                self.sourceImage = ci
-                self.sourceURL = url
-                self.sourceName = name
-                self.sourceSize = ci.extent.size
-                self.statusMessage = "\(name)  \(Int(ci.extent.width))\u{00D7}\(Int(ci.extent.height))"
-                self.isLoading = false
-                self.keepInspectorTabValid()
-
-                self.schedulePreview()
-                // The visible render is submitted first. The coordinator starts it before this
-                // supporting baseline task, preserving the visible-image priority at open.
-                self.scheduleOriginalPreview()
-                self.refreshMetadata(url: url, data: data)
-                self.refreshCapabilities()
+                _ = try? await engine.render(request)
             }
         }
     }
@@ -1998,6 +2106,8 @@ public final class AppViewModel: ObservableObject {
     private func saveActiveDocument(force: Bool = false) {
         guard let activeAssetID, let activeSourceReference else { return }
         editSessions[activeAssetID] = PhotoEditSession(document: document, history: activeHistory)
+        nextEditSessionRevision &+= 1
+        editSessionRevisions[activeAssetID] = nextEditSessionRevision
 
         queuePersistence(document, for: activeSourceReference, reportsStatus: true, force: force)
     }

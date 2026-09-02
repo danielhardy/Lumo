@@ -213,4 +213,28 @@ final class EditPersistenceIntegrationTests: TempDirectoryTestCase {
         }
         XCTAssertTrue(viewModel.errorMessage?.contains("gone.png") == true)
     }
+
+    func testLateEditStoreResultCannotOverwriteAnInMemoryEdit() async throws {
+        let imageURL = try Fixtures.writeGradientPNG(
+            width: 32, height: 24, named: "late-store.png", in: tempDirectory
+        )
+        let store = EditDocumentStore(
+            fileURL: tempDirectory.appendingPathComponent("late-store-edits.json")
+        )
+        try await store.save(
+            EditDocument(adjustments: [.exposure(ev: 0.1)]),
+            for: EditSourceReference(assetID: .file(imageURL), url: imageURL)
+        )
+        let engine = FakeRenderEngine()
+        await engine.gateSourcePreparation()
+        let viewModel = AppViewModel(engine: engine, editStore: store)
+
+        viewModel.openImage(url: imageURL)
+        while await engine.sourcePreparationCount < 1 { await Task.yield() }
+        viewModel.updateDocument { $0.adjustments = [.exposure(ev: 0.9)] }
+        await engine.releaseSourcePreparation()
+
+        try await waitUntil("the prepared source") { viewModel.sourceImage != nil }
+        XCTAssertEqual(viewModel.document.adjustments, [.exposure(ev: 0.9)])
+    }
 }
