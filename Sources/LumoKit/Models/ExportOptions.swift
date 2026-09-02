@@ -5,17 +5,12 @@ import CoreGraphics
 enum ExportBitDepth: Int, Codable, CaseIterable, Sendable, Equatable {
     case eight = 8
     case sixteen = 16
-
-    static let bit8 = eight
-    static let bit16 = sixteen
 }
 
 /// Whether an export may carry transparent pixels.
 enum ExportAlpha: String, Codable, CaseIterable, Sendable, Equatable {
     case opaque
     case preserve
-
-    static let none = opaque
 }
 
 /// How much of the source is written. Source extents are upright/display-oriented.
@@ -129,10 +124,6 @@ struct ExportOptions: Codable, Sendable, Equatable {
 
     static let `default` = ExportOptions()
 
-    /// Alias for callers that describe sizing as a size policy.
-    var size: ExportSizing { sizing }
-    var metadataPolicy: ExportMetadataPolicy { metadata }
-
     func validate() throws {
         guard quality.isFinite, (0...1).contains(quality) else {
             throw ExportOptionsError.invalidQuality(quality)
@@ -168,6 +159,7 @@ struct ExportOptions: Codable, Sendable, Equatable {
 enum ExportOptionsError: LocalizedError, Codable, Sendable, Equatable {
     case invalidQuality(Double)
     case invalidLongEdge(Int)
+    case outputRequiresEncoded(expected: ExportFormat)
     case outputFormatMismatch(expected: ExportFormat, actual: ExportFormat)
     case unsupportedBitDepth(format: ExportFormat, bitDepth: ExportBitDepth)
     case unsupportedColorSpace(format: ExportFormat, colorSpace: WorkingSpace)
@@ -179,6 +171,8 @@ enum ExportOptionsError: LocalizedError, Codable, Sendable, Equatable {
             return "Export quality must be between 0 and 1 (received \(quality))."
         case .invalidLongEdge(let edge):
             return "Export long edge must be greater than zero (received \(edge) px)."
+        case .outputRequiresEncoded(let expected):
+            return "Export options request \(expected.rawValue), but the render output is raster; export options require encoded output."
         case .outputFormatMismatch(let expected, let actual):
             return "Export options request \(expected.rawValue), but the render requested \(actual.rawValue)."
         case .unsupportedBitDepth(let format, let bitDepth):
@@ -190,6 +184,3 @@ enum ExportOptionsError: LocalizedError, Codable, Sendable, Equatable {
         }
     }
 }
-
-typealias ExportAlphaMode = ExportAlpha
-typealias ExportResize = ExportSizing

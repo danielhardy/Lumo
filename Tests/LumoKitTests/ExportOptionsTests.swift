@@ -56,6 +56,30 @@ final class ExportOptionsTests: TempDirectoryTestCase {
         }
     }
 
+    func testRasterOutputWithExportOptionsReportsTheActualOutputKind() async throws {
+        let options = ExportOptions(format: .jpeg)
+        let request = RenderRequest(
+            source: ImageSource(data: Data(), nativeExtent: CGSize(width: 1, height: 1)),
+            document: EditDocument(),
+            quality: .preview,
+            output: .raster,
+            exportOptions: options
+        )
+
+        do {
+            _ = try await RenderEngine().render(request)
+            XCTFail("Expected export options to reject raster output")
+        } catch let error as ExportOptionsError {
+            XCTAssertEqual(error, .outputRequiresEncoded(expected: .jpeg))
+            XCTAssertEqual(
+                error.errorDescription,
+                "Export options request JPEG, but the render output is raster; export options require encoded output."
+            )
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     func testLongEdgeSizingPreservesAspectRatioAndDoesNotUpscaleOrientation() {
         let sizing = ExportSizing.longEdge(2000)
         XCTAssertEqual(

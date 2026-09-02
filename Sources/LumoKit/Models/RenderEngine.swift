@@ -358,14 +358,11 @@ actor RenderEngine: RenderEngining {
         try Task.checkCancellation()
         if let options = request.exportOptions {
             try options.validate()
-            guard case .encoded(let format, _) = request.output, format == options.format else {
-                let actual: ExportFormat
-                if case .encoded(let format, _) = request.output {
-                    actual = format
-                } else {
-                    actual = options.format
-                }
-                throw ExportOptionsError.outputFormatMismatch(expected: options.format, actual: actual)
+            guard case .encoded(let format, _) = request.output else {
+                throw ExportOptionsError.outputRequiresEncoded(expected: options.format)
+            }
+            guard format == options.format else {
+                throw ExportOptionsError.outputFormatMismatch(expected: options.format, actual: format)
             }
         }
         let scale = request.renderScale
