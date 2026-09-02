@@ -1246,7 +1246,16 @@ public final class AppViewModel: ObservableObject {
             selectLook(nil)
             return
         }
-        guard let look = resolvedLUT(id) else { return }
+        guard let look = resolvedLUT(id) else {
+            if library.isScanning {
+                statusMessage = "Look is still loading. Try selecting it again when scanning finishes."
+            } else {
+                // Keep an unresolved persisted ID intact, but make an attempted selection
+                // observable and recoverable through the inspector's clear action.
+                refreshLUTResolutionStatus()
+            }
+            return
+        }
         selectLook(look)
     }
 

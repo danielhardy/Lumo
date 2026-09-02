@@ -40,6 +40,7 @@ struct LookInspectorView: View {
             searchField
             Divider()
             lookList
+            unresolvedLookSection
             intensitySection
         }
         .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
@@ -169,10 +170,18 @@ struct LookInspectorView: View {
                 ForEach(filteredCategories) { category in
                     Section(isExpanded: isExpandedBinding(category.id)) {
                         ForEach(category.luts) { lut in
-                            LookRow(
-                                look: lut,
-                                isSelected: viewModel.selectedLookID == lut.lutID
-                            )
+                            Button {
+                                // Keep the click path ID-based. The library may replace the
+                                // in-memory CubeLUT during a rescan, while the document stores
+                                // only this stable identity.
+                                viewModel.selectLook(id: lut.lutID)
+                            } label: {
+                                LookRow(
+                                    look: lut,
+                                    isSelected: viewModel.selectedLookID == lut.lutID
+                                )
+                            }
+                            .buttonStyle(.plain)
                             .tag(Optional(lut.lutID))
                         }
                     } header: {
@@ -258,6 +267,31 @@ struct LookInspectorView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(.bar)
+    }
+
+    @ViewBuilder
+    private var unresolvedLookSection: some View {
+        if viewModel.selectedLookID != nil && viewModel.selectedLook == nil {
+            VStack(alignment: .leading, spacing: 6) {
+                Label(
+                    viewModel.lutResolutionStatus ?? "This Look is still resolving.",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+                Button("Clear Look Reference") {
+                    viewModel.selectLook(nil)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Remove the unavailable Look from this photo")
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color.orange.opacity(0.08))
+        }
     }
 
     // MARK: - Folder collapse state

@@ -144,7 +144,7 @@ final class LUTWorkflowTests: TempDirectoryTestCase {
         XCTAssertEqual(viewModel.selectedLookID, first.lutID)
     }
 
-    func testExternalImportSelectsTheLookAndSendsItThroughPreviewRequest() async throws {
+    func testExternalImportCanBeSelectedByIDAndSendsItThroughPreviewRequest() async throws {
         let source = try Fixtures.writeGradientPNG(
             width: 24, height: 16, named: "import-source.png", in: tempDirectory
         )
@@ -163,9 +163,20 @@ final class LUTWorkflowTests: TempDirectoryTestCase {
         while viewModel.library.isImporting { try await Task.sleep(for: .milliseconds(10)) }
         let imported = try XCTUnwrap(viewModel.library.allLUTs.first { $0.url == lookURL })
 
+        // Import audition selects the new file automatically. Clear that selection, then invoke
+        // the same ID-based action used by a browser row click. This catches a passive custom row
+        // whose tag changes but never reaches AppViewModel.
+        viewModel.setCanvasZoom(2)
+        XCTAssertEqual(viewModel.canvasState.navigation.zoom, 2, "exercise the over-100% canvas path")
+        viewModel.selectLook(nil)
+        let requestsBeforeClick = await fake.previewRequests.count
+        viewModel.selectLook(id: imported.lutID)
+
         XCTAssertEqual(viewModel.selectedLookID, imported.lutID)
         XCTAssertEqual(viewModel.selectedLook, imported)
         try await waitForLUTRequest(fake, id: imported.lutID, intensity: 1)
+        let requestsAfterClick = await fake.previewRequests.count
+        XCTAssertGreaterThan(requestsAfterClick, requestsBeforeClick)
 
         viewModel.setLookIntensity(0.35)
         await viewModel.flushPendingWrites()
