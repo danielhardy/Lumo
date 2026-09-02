@@ -13,6 +13,13 @@ final class RenderRequestTests: TempDirectoryTestCase {
         return ImageSource(url: url, nativeExtent: CGSize(width: 96, height: 64))
     }
 
+    private func makeLargeSource() throws -> ImageSource {
+        let url = try Fixtures.writeClarityPNG(
+            width: 2048, height: 1536, named: "large-clarity.png", in: tempDirectory
+        )
+        return ImageSource(url: url, nativeExtent: CGSize(width: 2048, height: 1536))
+    }
+
     private func decodedSize(_ data: Data) throws -> CGSize {
         let source = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil))
         let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
@@ -141,5 +148,75 @@ final class RenderRequestTests: TempDirectoryTestCase {
                 "preview/export Dehaze \(value) must use the same bounded geometry"
             )
         }
+    }
+
+    func testClarityFullRangeKeepsInteractiveSettledAndExportFramesAligned() async throws {
+        let source = try makeLargeSource()
+        let engine = RenderEngine()
+        var settledByValue: [Double: [UInt8]] = [:]
+
+        for value in [-100.0, -1.0, 0.0, 1.0, 100.0] {
+            let document = EditDocument(effects: EffectsAdjustments(clarity: value))
+            let preview = try await engine.render(RenderRequest(
+                source: source,
+                document: document,
+                targetSize: source.nativeExtent,
+                quality: .preview,
+                output: .raster
+            ))
+            let interactive = try await engine.render(RenderRequest(
+                source: source,
+                document: document,
+                targetSize: source.nativeExtent,
+                quality: .interactive,
+                output: .raster
+            ))
+            let exported = try await engine.render(RenderRequest(
+                source: source,
+                document: document,
+                quality: .export,
+                output: .encoded(format: .png, quality: 1)
+            ))
+
+            XCTAssertEqual(preview.extent, source.nativeExtent,
+                           "settled Clarity \(value) changed the source frame")
+            XCTAssertEqual(exported.extent, source.nativeExtent,
+                           "export Clarity \(value) changed the source frame")
+            XCTAssertGreaterThan(interactive.extent.width, 0)
+            XCTAssertGreaterThan(interactive.extent.height, 0)
+            XCTAssertEqual(
+                interactive.extent.width / interactive.extent.height,
+                source.nativeExtent.width / source.nativeExtent.height,
+                accuracy: 0.01,
+                "interactive Clarity \(value) changed the aspect ratio"
+            )
+
+            let previewImage = try Pixels.decode(preview.data)
+            let interactiveImage = try Pixels.decode(interactive.data)
+            let exportImage = try Pixels.decode(exported.data)
+            let previewBytes = try Pixels.bytes(of: previewImage)
+            let interactiveBytes = try Pixels.bytes(of: interactiveImage)
+            let exportBytes = try Pixels.bytes(of: exportImage)
+            XCTAssertTrue(previewBytes.contains(where: { $0 != 0 }),
+                          "settled Clarity \(value) produced a blank frame")
+            XCTAssertTrue(interactiveBytes.contains(where: { $0 != 0 }),
+                          "interactive Clarity \(value) produced a blank frame")
+            XCTAssertTrue(exportBytes.contains(where: { $0 != 0 }),
+                          "export Clarity \(value) produced a blank frame")
+            assertPixelsEqual(
+                previewBytes, exportBytes,
+                "preview/export Clarity \(value) must use the same bounded pipeline"
+            )
+            settledByValue[value] = previewBytes
+        }
+
+        assertPixelsDiffer(
+            settledByValue[100] ?? [], settledByValue[0] ?? [],
+            "maximum Clarity must remain visually distinct from its neutral render"
+        )
+        assertPixelsDiffer(
+            settledByValue[-100] ?? [], settledByValue[0] ?? [],
+            "minimum Clarity must remain visually distinct from its neutral render"
+        )
     }
 }

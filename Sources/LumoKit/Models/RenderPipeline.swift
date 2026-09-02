@@ -30,8 +30,9 @@ enum RenderPipeline {
     /// v13 adds deterministic, resolution-aware post-LUT grain. v14 preserves the grain seed's
     /// full 32-bit entropy when passing it to the GPU kernel. v15 adds the post-LUT crop stage.
     /// v16 formalizes the reusable pre-LUT prefix boundary. v17 bounds and sanitizes the Dehaze
-    /// output before it can be reused or presented.
-    static let cacheVersion = 17
+    /// output before it can be reused or presented. v18 applies the same finite-input and exact-
+    /// extent contract to Clarity's spatial stage.
+    static let cacheVersion = 18
 
     /// Build the graph for `document` over `source`.
     ///
@@ -450,15 +451,16 @@ enum RenderPipeline {
     /// Apply the detail/atmosphere controls that belong before the LUT. Kept separate from the
     /// convenience above so the full pipeline can place vignette after LUT exactly once.
     static func applyPreLUTEffects(_ effects: EffectsAdjustments, to image: CIImage) -> CIImage {
+        let clarity = sanitizedClarity(effects.clarity)
         let dehaze = sanitizedDehaze(effects.dehaze)
-        guard effects.texture != 0 || effects.clarity != 0 || dehaze != 0 else { return image }
+        guard effects.texture != 0 || clarity != 0 || dehaze != 0 else { return image }
         var result = image
 
         if effects.texture != 0 {
             result = applyTexture(effects.texture, to: result)
         }
-        if effects.clarity != 0 {
-            result = applyClarity(effects.clarity, to: result)
+        if clarity != 0 {
+            result = applyClarity(clarity, to: result)
         }
         if dehaze != 0 {
             result = applyDehaze(dehaze, to: result)
@@ -518,18 +520,33 @@ enum RenderPipeline {
     }
 
     /// Clarity is broader local contrast, restricted by a smooth midtone weighting. The mask keeps
-    /// skies and deep shadows from receiving the same edge emphasis as photographic midtones.
+    /// skies and deep shadows from receiving the same edge emphasis as photographic midtones. The
+    /// stage is deliberately bounded before blending: Core Image's spatial filters are lazy and
+    /// may advertise an implementation-defined extent, but Clarity is an in-frame adjustment and
+    /// must never hand a transformed or unbounded image to the next stage.
     private static func applyClarity(_ value: Double, to image: CIImage) -> CIImage {
+        let value = sanitizedClarity(value)
+        guard value != 0,
+              image.extent.width.isFinite,
+              image.extent.height.isFinite,
+              image.extent.width > 0,
+              image.extent.height > 0
+        else { return image }
+
+        let inputExtent = image.extent
         let amount = CGFloat(abs(value) / EffectsAdjustments.clarityRange.upperBound)
         let radius = normalizedRadius(0.028, for: image)
-        let effect = value > 0
+        let candidate = value > 0
             ? image.applyingFilter("CISharpenLuminance", parameters: [
                 "inputRadius": radius,
                 "inputSharpness": 0.95 * amount,
             ])
             : croppedBlur(image, radius: radius * 0.7)
-        let mask = midtoneMask(for: image, amount: amount)
-        return blend(effect: effect, over: image, amount: 1, mask: mask, extent: image.extent)
+        let effect = boundedOutput(candidate, to: inputExtent, fallback: image)
+        let mask = boundedOutput(midtoneMask(for: image, amount: amount),
+                                 to: inputExtent,
+                                 fallback: image)
+        return blend(effect: effect, over: image, amount: 1, mask: mask, extent: inputExtent)
     }
 
     /// Dehaze combines broad local contrast with global tone and colour separation. The global
@@ -593,15 +610,22 @@ enum RenderPipeline {
     /// The model clamps normal UI edits, but the renderer is also a public value boundary used by
     /// decoded documents, tests, and future callers. Keep malformed values from becoming NaN or
     /// infinity in Core Image parameters even if a caller bypasses model construction.
+    private static func sanitizedClarity(_ value: Double) -> Double {
+        guard value.isFinite else { return 0 }
+        return min(max(value, EffectsAdjustments.clarityRange.lowerBound),
+                   EffectsAdjustments.clarityRange.upperBound)
+    }
+
     private static func sanitizedDehaze(_ value: Double) -> Double {
         guard value.isFinite else { return 0 }
         return min(max(value, EffectsAdjustments.dehazeRange.lowerBound),
                    EffectsAdjustments.dehazeRange.upperBound)
     }
 
-    /// Spatial filters may advertise an unbounded or implementation-defined extent. Dehaze is a
-    /// tonal/detail operation, so its output must remain in the exact input frame before the graph
-    /// is materialized for preview or passed to the full-resolution/export rasterizer.
+    /// Spatial filters may advertise an unbounded or implementation-defined extent. Clarity and
+    /// Dehaze are tonal/detail operations, so their output must remain in the exact input frame
+    /// before the graph is materialized for preview or passed to the full-resolution/export
+    /// rasterizer.
     private static func boundedOutput(_ candidate: CIImage?, to extent: CGRect,
                                       fallback: CIImage) -> CIImage {
         guard let candidate,

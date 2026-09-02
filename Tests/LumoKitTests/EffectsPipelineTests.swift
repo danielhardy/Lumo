@@ -278,6 +278,53 @@ final class EffectsPipelineTests: XCTestCase {
         }
     }
 
+    func testClarityFullRangePreservesLargeOffsetExtentOrientationAndFinitePixels() throws {
+        let width = 2048
+        let height = 1536
+        let extent = CGRect(x: 113, y: 67, width: width, height: height)
+        let source = try grayscaleImage(
+            values: (0..<(width * height)).map { index in
+                let x = index % width
+                let y = index / width
+                let ramp = 0.12 + 0.76 * CGFloat(y) / CGFloat(height - 1)
+                let detail = (x + y).isMultiple(of: 2) ? 0.025 : -0.025
+                return ramp + detail
+            }, width: width, height: height
+        ).transformed(by: CGAffineTransform(translationX: extent.minX, y: extent.minY))
+        let sourceValues = values(of: source, width: width, height: height, bounds: extent)
+        let sourceLow = sourceValues.prefix(width * height / 8).reduce(0, +)
+            / Float(width * height / 8)
+        let sourceHigh = sourceValues.suffix(width * height / 8).reduce(0, +)
+            / Float(width * height / 8)
+        let sourceDirection = sourceHigh - sourceLow
+        let sourceBytes = try Pixels.bytes(of: source)
+
+        for value in [-100.0, -1.0, 0.0, 1.0, 100.0] {
+            let output = RenderPipeline.applyEffects(
+                EffectsAdjustments(clarity: value), to: source
+            )
+            XCTAssertEqual(output.extent, extent, "Clarity \(value) changed the image frame")
+
+            let outputValues = values(of: output, width: width, height: height, bounds: extent)
+            XCTAssertTrue(outputValues.allSatisfy { $0.isFinite },
+                          "Clarity \(value) produced a non-finite pixel")
+            if abs(value) == 100 {
+                assertPixelsDiffer(
+                    try Pixels.bytes(of: output), sourceBytes,
+                    "maximum Clarity must remain an actual local-contrast adjustment"
+                )
+            }
+            let outputLow = outputValues.prefix(width * height / 8).reduce(0, +)
+                / Float(width * height / 8)
+            let outputHigh = outputValues.suffix(width * height / 8).reduce(0, +)
+                / Float(width * height / 8)
+            XCTAssertGreaterThan(
+                (outputHigh - outputLow) * sourceDirection, 0,
+                "Clarity (value) inverted the source orientation"
+            )
+        }
+    }
+
     func testEffectsUseRelativeRadiiAtPreviewScale() throws {
         let source = try highFrequencyFixture(width: 128, height: 64)
         let effects = EffectsAdjustments(texture: 70, clarity: 45, dehaze: 30)

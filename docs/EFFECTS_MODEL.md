@@ -26,7 +26,8 @@ preview source downscale. Size maps to 48–192 grain cells per shortest output 
 larger cells), so a preview and a full-resolution export preserve the same relative photographic
 scale when viewed at their respective output sizes.
 
-The render cache version is 17. The current version includes the reusable pre-LUT prefix boundary
-and the coordinate-safe Dehaze blend; old documents remain neutral where their newer fields are
-absent and preserve their look. Grain is part of `EditDocument.effects`, so preview cache keys
+The render cache version is 18. The current version includes the reusable pre-LUT prefix boundary,
+the coordinate-safe Dehaze blend, and the bounded Clarity spatial stage; old documents remain
+neutral where their newer fields are absent and preserve their look. Grain is part of
+`EditDocument.effects`, so preview cache keys
 include all three grain parameters through the document hash; no random frame output is cached.

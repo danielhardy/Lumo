@@ -182,6 +182,53 @@ enum Fixtures {
         return url
     }
 
+    /// Write a large grayscale ramp with fine alternating detail. This is intentionally unlike a
+    /// flat or purely smooth fixture: both positive and negative Clarity must have visible local
+    /// contrast to adjust while the broad ramp remains available for orientation checks.
+    @discardableResult
+    static func writeClarityPNG(
+        width: Int,
+        height: Int,
+        named name: String,
+        in directory: URL
+    ) throws -> URL {
+        let url = directory.appendingPathComponent(name)
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let ramp = 0.12 + 0.76 * CGFloat(y) / CGFloat(max(height - 1, 1))
+                let detail = (x + y).isMultiple(of: 2) ? 0.08 : -0.08
+                let value = UInt8(min(max((ramp + detail) * 255, 0), 255))
+                let offset = (y * width + x) * 4
+                pixels[offset] = value
+                pixels[offset + 1] = value
+                pixels[offset + 2] = value
+                pixels[offset + 3] = 255
+            }
+        }
+        let provider = CGDataProvider(data: Data(pixels) as CFData)!
+        let image = CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )!
+        guard let dest = CGImageDestinationCreateWithURL(
+            url as CFURL, UTType.png.identifier as CFString, 1, nil
+        ) else { throw FixtureError.cannotCreateDestination }
+        CGImageDestinationAddImage(dest, image, nil)
+        guard CGImageDestinationFinalize(dest) else { throw FixtureError.cannotWriteImage }
+        return url
+    }
+
     // MARK: - Local-only RAW
 
     /// A real RAW file, if this checkout happens to have one.
