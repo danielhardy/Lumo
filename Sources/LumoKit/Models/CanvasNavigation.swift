@@ -1,5 +1,61 @@
 import CoreGraphics
 import Foundation
+import Combine
+
+/// High-frequency, presentation-only state for the editor canvas.
+///
+/// This object is intentionally separate from `AppViewModel`. Pan, zoom, and crop-handle
+/// updates occur at pointer frequency and should invalidate only the canvas subtree. The
+/// `AppViewModel` remains the owner of the committed `EditDocument`, history, rendering, and
+/// persistence boundaries.
+@MainActor
+final class CanvasInteractionState: ObservableObject {
+    @Published private(set) var navigation = CanvasNavigation()
+    @Published private(set) var isCropToolActive = false
+    @Published private(set) var cropDraft: CGRect?
+
+    func resetForSource() {
+        navigation.reset()
+        isCropToolActive = false
+        cropDraft = nil
+    }
+
+    func fit() { navigation.fit() }
+    func fill() { navigation.fill() }
+    func reset() { navigation.reset() }
+
+    func setZoom(_ value: CGFloat) {
+        navigation.setZoom(value)
+    }
+
+    func pan(by delta: CGSize, imageExtent: CGRect, viewportSize: CGSize) {
+        navigation.pan(by: delta, imageExtent: imageExtent, viewportSize: viewportSize)
+    }
+
+    @discardableResult
+    func beginCrop(using committedCrop: CropAdjustments) -> Bool {
+        guard !isCropToolActive else { return false }
+        navigation.fit()
+        isCropToolActive = true
+        cropDraft = committedCrop.normalizedRect ?? CropAdjustments.unitRect
+        return true
+    }
+
+    func updateCropDraft(_ normalizedRect: CGRect) {
+        guard isCropToolActive else { return }
+        cropDraft = CropAdjustments(normalizedRect: normalizedRect).normalizedRect
+    }
+
+    func finishCrop() {
+        isCropToolActive = false
+        cropDraft = nil
+    }
+
+    func resetCropDraft() {
+        guard isCropToolActive else { return }
+        cropDraft = CropAdjustments.unitRect
+    }
+}
 
 /// Transient presentation state for the editor canvas.
 ///

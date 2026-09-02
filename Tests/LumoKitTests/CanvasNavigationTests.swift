@@ -1,5 +1,7 @@
 import XCTest
 import CoreGraphics
+import CoreImage
+import Combine
 @testable import LumoKit
 
 final class CanvasNavigationTests: XCTestCase {
@@ -83,5 +85,65 @@ final class CanvasNavigationTests: XCTestCase {
             navigation.renderResolutionMultiplier(imageExtent: landscape.size, viewportSize: viewport),
             CanvasNavigation.maximumZoom
         )
+    }
+}
+
+@MainActor
+final class CanvasObservationTests: XCTestCase {
+    func testHighFrequencyCanvasAndCropUpdatesBypassBroadModelPublisher() {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        viewModel.sourceImage = CIImage(color: .gray).cropped(
+            to: CGRect(x: 0, y: 0, width: 100, height: 80)
+        )
+
+        var appChanges = 0
+        var canvasChanges = 0
+        var inspectorChanges = 0
+        let appSubscription = viewModel.objectWillChange.sink { _ in appChanges += 1 }
+        let canvasSubscription = viewModel.canvasState.objectWillChange.sink {
+            _ in canvasChanges += 1
+        }
+        let inspectorSubscription = viewModel.inspectorState.objectWillChange.sink {
+            _ in inspectorChanges += 1
+        }
+
+        // A wheel/pinch update is presentation-only and must not fan out through AppViewModel.
+        viewModel.setCanvasZoom(2)
+        XCTAssertEqual(appChanges, 0)
+        XCTAssertGreaterThan(canvasChanges, 0)
+
+        // Crop-handle movement has the same contract. The opening transition may update status,
+        // so begin first and measure only the pointer-frequency draft mutation.
+        viewModel.beginCrop()
+        appChanges = 0
+        canvasChanges = 0
+        viewModel.updateCropDraft(CGRect(x: 0.1, y: 0.1, width: 0.7, height: 0.7))
+        XCTAssertEqual(appChanges, 0)
+        XCTAssertGreaterThan(canvasChanges, 0)
+
+        // Inspector chrome is independently observable and is not forwarded through the broad
+        // model publisher either.
+        appChanges = 0
+        viewModel.inspectorState.tab = .effects
+        XCTAssertEqual(appChanges, 0)
+        XCTAssertGreaterThan(inspectorChanges, 0)
+
+        withExtendedLifetime((appSubscription, canvasSubscription, inspectorSubscription)) {}
+    }
+
+    func testSourceResetClearsNavigationAndCropTransientState() {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        viewModel.sourceImage = CIImage(color: .gray).cropped(
+            to: CGRect(x: 0, y: 0, width: 100, height: 80)
+        )
+        viewModel.setCanvasZoom(3)
+        viewModel.beginCrop()
+        viewModel.updateCropDraft(CGRect(x: 0.2, y: 0.2, width: 0.5, height: 0.5))
+
+        viewModel.canvasState.resetForSource()
+
+        XCTAssertEqual(viewModel.canvasState.navigation, CanvasNavigation())
+        XCTAssertFalse(viewModel.canvasState.isCropToolActive)
+        XCTAssertNil(viewModel.canvasState.cropDraft)
     }
 }

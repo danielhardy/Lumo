@@ -8,17 +8,21 @@ import AppKit
 /// `LumoCommands`); everything else in the module stays internal.
 public struct ContentView: View {
     @StateObject private var viewModel: AppViewModel
+    @ObservedObject private var inspectorState: AppViewModel.InspectorState
     @State private var photosSelection: [PhotosPickerItem] = []
     @State private var photosImportTask: Task<Void, Never>?
 
     public init() {
-        _viewModel = StateObject(wrappedValue: AppViewModel())
+        let viewModel = AppViewModel()
+        _viewModel = StateObject(wrappedValue: viewModel)
+        _inspectorState = ObservedObject(wrappedValue: viewModel.inspectorState)
     }
 
     /// Allows the application delegate to share the model that owns the persistence queue, so clean
     /// termination can flush the same edit catalog the window has been using.
     public init(viewModel: AppViewModel) {
         _viewModel = StateObject(wrappedValue: viewModel)
+        _inspectorState = ObservedObject(wrappedValue: viewModel.inspectorState)
     }
 
     public var body: some View {
@@ -125,8 +129,8 @@ public struct ContentView: View {
             detailContent
         }
         .background(LumoTheme.windowBackground)
-        .inspector(isPresented: $viewModel.isInspectorPresented) {
-            InfoInspectorView(viewModel: viewModel)
+        .inspector(isPresented: $inspectorState.isPresented) {
+            InfoInspectorView(viewModel: viewModel, inspectorState: inspectorState)
                 .inspectorColumnWidth(min: 240, ideal: 280, max: 360)
         }
     }
@@ -188,19 +192,11 @@ public struct ContentView: View {
         .frame(width: 142)
         .help("Library (G) or Edit (E)")
 
-        // Crop is a committed edit, but its in-progress rectangle stays transient until Apply.
-        Button {
-            viewModel.toggleCropTool()
-        } label: {
-            Label(
-                viewModel.isCropToolActive ? "Cancel Crop" : "Crop",
-                systemImage: viewModel.isCropToolActive ? "xmark" : "crop"
-            )
-        }
-        .help(viewModel.isCropToolActive
-              ? "Cancel the current crop"
-              : "Crop the photo with a freeform frame")
-        .disabled(viewModel.sourceImage == nil)
+        CanvasToolbarControls(
+            viewModel: viewModel,
+            canvasState: viewModel.canvasState,
+            hasImage: viewModel.sourceImage != nil
+        )
 
         // Side-by-side is only meaningful when the LUMO-047 comparison gate has something to show.
         // Removing the control in the unsupported state keeps every visible view affordance
@@ -219,22 +215,6 @@ public struct ContentView: View {
             .accessibilityHint("Switch comparison view (V)")
             .help("Switch between single-photo and side-by-side comparison (V)")
         }
-
-        // Canvas navigation is presentation-only; these controls never touch the edit document.
-        Menu {
-            Button("Fit") { viewModel.fitCanvas() }
-            Button("Fill") { viewModel.fillCanvas() }
-            Divider()
-            ForEach([0.25, 0.5, 1.0, 2.0, 4.0, 8.0], id: \.self) { zoom in
-                Button("\(Int(zoom * 100))%") { viewModel.setCanvasZoom(CGFloat(zoom)) }
-            }
-            Divider()
-            Button("Reset View") { viewModel.resetCanvas() }
-        } label: {
-            Label("\(viewModel.canvasNavigation.zoomPercent)%", systemImage: "magnifyingglass")
-        }
-        .help("Canvas zoom: fit, fill, or explicit zoom")
-        .disabled(viewModel.sourceImage == nil)
 
         // Source folder browser
         Button {
@@ -259,10 +239,10 @@ public struct ContentView: View {
         // while Reset Photo clears every edit on the active source. The File menu retains the
         // keyboard shortcut for the latter.
         Menu {
-            Button("Reset " + viewModel.inspectorTab.title) {
+            Button("Reset " + inspectorState.tab.title) {
                 viewModel.resetInspectorSection()
             }
-            .disabled(viewModel.inspectorTab == .info)
+            .disabled(inspectorState.tab == .info)
 
             Divider()
 
@@ -342,6 +322,47 @@ public struct ContentView: View {
             .help("Apply the current Look to all imported images and export to a folder (⌘⇧E)")
             .disabled(viewModel.isExporting)
         }
+    }
+}
+
+/// Toolbar controls backed by the narrow canvas publisher. A zoom or crop-handle update can
+/// refresh this small control group without causing `ContentView`'s broad model observation to
+/// participate in the interaction.
+private struct CanvasToolbarControls: View {
+    let viewModel: AppViewModel
+    @ObservedObject var canvasState: CanvasInteractionState
+    let hasImage: Bool
+
+    var body: some View {
+        // Crop is a committed edit, but its in-progress rectangle stays transient until Apply.
+        Button {
+            viewModel.toggleCropTool()
+        } label: {
+            Label(
+                canvasState.isCropToolActive ? "Cancel Crop" : "Crop",
+                systemImage: canvasState.isCropToolActive ? "xmark" : "crop"
+            )
+        }
+        .help(canvasState.isCropToolActive
+              ? "Cancel the current crop"
+              : "Crop the photo with a freeform frame")
+        .disabled(!hasImage)
+
+        // Canvas navigation is presentation-only; these controls never touch the edit document.
+        Menu {
+            Button("Fit") { viewModel.fitCanvas() }
+            Button("Fill") { viewModel.fillCanvas() }
+            Divider()
+            ForEach([0.25, 0.5, 1.0, 2.0, 4.0, 8.0], id: \.self) { zoom in
+                Button("\(Int(zoom * 100))%") { viewModel.setCanvasZoom(CGFloat(zoom)) }
+            }
+            Divider()
+            Button("Reset View") { viewModel.resetCanvas() }
+        } label: {
+            Label("\(canvasState.navigation.zoomPercent)%", systemImage: "magnifyingglass")
+        }
+        .help("Canvas zoom: fit, fill, or explicit zoom")
+        .disabled(!hasImage)
     }
 }
 

@@ -4,6 +4,7 @@ import SwiftUI
 /// metadata listed below. Toggled from the toolbar (and ⌘I).
 struct InfoInspectorView: View {
     @ObservedObject var viewModel: AppViewModel
+    @ObservedObject var inspectorState: AppViewModel.InspectorState
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,7 +18,7 @@ struct InfoInspectorView: View {
 
                 Divider()
 
-                switch viewModel.inspectorTab.content {
+                switch inspectorState.tab.content {
                 case .info:
                     infoContent
                 case .light:
@@ -38,7 +39,7 @@ struct InfoInspectorView: View {
     }
 
     private var tabSwitcher: some View {
-        Picker("Inspector view", selection: $viewModel.inspectorTab) {
+        Picker("Inspector view", selection: $inspectorState.tab) {
             ForEach(viewModel.availableInspectorTabs, id: \.self) { tab in
                 Label(tab.title, systemImage: tab.iconName)
                     // Keep the full title in the semantic label while showing only the compact
@@ -46,7 +47,7 @@ struct InfoInspectorView: View {
                     .labelStyle(.iconOnly)
                     .accessibilityLabel(tab.title)
                     .accessibilityHint(tab.purpose)
-                    .accessibilityValue(viewModel.inspectorTab == tab ? "Selected" : "Not selected")
+                    .accessibilityValue(inspectorState.tab == tab ? "Selected" : "Not selected")
                     .help(tab.helpText)
                     .tag(tab)
             }

@@ -4,10 +4,16 @@ import SwiftUI
 /// and single-image mode. Hold Space to flash original in single mode.
 struct PreviewView: View {
     @ObservedObject var viewModel: AppViewModel
+    @ObservedObject var canvasState: CanvasInteractionState
     @State private var dragTranslation: CGSize = .zero
     @State private var magnification: CGFloat = 1
     @State private var isDraggingCanvas = false
     @State private var isMagnifyingCanvas = false
+
+    init(viewModel: AppViewModel) {
+        _viewModel = ObservedObject(wrappedValue: viewModel)
+        _canvasState = ObservedObject(wrappedValue: viewModel.canvasState)
+    }
 
     /// The shell around the Metal image surface follows the window appearance. The Metal
     /// surface's letterbox remains intentionally dark because it is part of image presentation,
@@ -19,7 +25,7 @@ struct PreviewView: View {
             bgColor
 
             if viewModel.sourceImage != nil {
-                if viewModel.isCropToolActive {
+                if canvasState.isCropToolActive {
                     singleView
                 } else if viewModel.isSideBySideVisible {
                     sideBySideView
@@ -92,9 +98,9 @@ struct PreviewView: View {
                         .padding(8)
                 }
 
-                if viewModel.isCropToolActive, viewModel.sourceSize != .zero {
+                if canvasState.isCropToolActive, viewModel.sourceSize != .zero {
                     CropOverlayView(
-                        normalizedRect: viewModel.cropDraft ?? CropAdjustments.unitRect,
+                        normalizedRect: canvasState.cropDraft ?? CropAdjustments.unitRect,
                         imageSize: viewModel.sourceSize,
                         onChange: viewModel.updateCropDraft,
                         onApply: viewModel.commitCrop,
@@ -140,12 +146,12 @@ struct PreviewView: View {
         GeometryReader { geometry in
             PreviewSurfaceView(
                 surface: surface,
-                navigation: viewModel.canvasNavigation,
+                navigation: canvasState.navigation,
                 onScrollZoom: { factor in viewModel.zoomCanvas(by: factor) },
                 onDrawableSizeChange: { size in viewModel.updatePreviewBackingSize(size) }
             )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .allowsHitTesting(!viewModel.isCropToolActive)
+                .allowsHitTesting(!canvasState.isCropToolActive)
                 .contentShape(Rectangle())
                 .gesture(dragGesture(viewportSize: geometry.size))
                 .simultaneousGesture(magnificationGesture(viewportSize: geometry.size))

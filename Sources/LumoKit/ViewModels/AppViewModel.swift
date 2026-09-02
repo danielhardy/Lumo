@@ -35,6 +35,15 @@ struct PhotosImportProgress: Equatable, Sendable {
 @MainActor
 public final class AppViewModel: ObservableObject {
 
+    /// Inspector presentation state has its own observation boundary. The editor model still
+    /// owns histogram scheduling and tab validity, but changing the inspector chrome does not
+    /// need to publish through the model observed by the library and canvas shells.
+    @MainActor
+    final class InspectorState: ObservableObject {
+        @Published var isPresented = false
+        @Published var tab: InspectorTab = .info
+    }
+
     // MARK: - Published state
 
     @Published var sourceImage: CIImage?
@@ -288,46 +297,33 @@ public final class AppViewModel: ObservableObject {
     let previewSurface = PreviewSurface()
     let originalPreviewSurface = PreviewSurface()
 
-    /// Transient canvas presentation state. It is intentionally separate from `document`: zoom,
-    /// pan, fit, and fill are how the editor is viewed, never edits that should reach export.
-    @Published private(set) var canvasNavigation = CanvasNavigation()
+    /// High-frequency canvas and transient crop state live outside the broad application
+    /// publisher. Only the views that observe `canvasState` reevaluate for pointer interaction.
+    let canvasState = CanvasInteractionState()
 
-    /// Crop interaction state is deliberately transient. Only `document.crop` is committed,
-    /// persisted, copied, and placed in history; an abandoned drag can never leak into export.
-    @Published private(set) var isCropToolActive = false
-    @Published private(set) var cropDraft: CGRect?
+    /// Inspector chrome has a separate observation boundary for the same reason. The view model
+    /// keeps compatibility accessors below so existing commands and tests retain their API while
+    /// SwiftUI views can observe the narrow state object directly.
+    let inspectorState = InspectorState()
+
+    var canvasNavigation: CanvasNavigation { canvasState.navigation }
+    var isCropToolActive: Bool { canvasState.isCropToolActive }
+    var cropDraft: CGRect? { canvasState.cropDraft }
+
+    var isInspectorPresented: Bool {
+        get { inspectorState.isPresented }
+        set { inspectorState.isPresented = newValue }
+    }
+
+    var inspectorTab: InspectorTab {
+        get { inspectorState.tab }
+        set { inspectorState.tab = newValue }
+    }
 
     var hasCropAdjustments: Bool { !document.crop.isIdentity }
 
     /// Inspector visibility. Computing the histogram is gated on this — plus on the Info tab being
     /// the one on screen — so we don't tally pixels for a panel nobody's looking at.
-    @Published var isInspectorPresented: Bool = false {
-        didSet {
-            if isInspectorPresented {
-                updateHistogram()
-            } else {
-                cancelHistogram(clear: true)
-            }
-        }
-    }
-
-    /// Which panel of the inspector is showing.
-    ///
-    /// The histogram lives on `.info` only, so this gates it exactly as `isInspectorPresented` does:
-    /// an open inspector showing Develop is as much "a panel nobody's looking at" as a closed one,
-    /// and without this every settled render of a develop drag would tally an off-screen histogram.
-    /// Switching **back** recomputes, or the panel would return blank (or stale) after a detour
-    /// through Develop.
-    @Published var inspectorTab: InspectorTab = .info {
-        didSet {
-            if isInspectorPresented, inspectorTab == .info {
-                updateHistogram()
-            } else {
-                cancelHistogram(clear: true)
-            }
-        }
-    }
-
     enum InspectorTab: String, CaseIterable, Sendable {
         case info, light, develop, adjust
         case effects
@@ -520,6 +516,20 @@ public final class AppViewModel: ObservableObject {
             })
         }
 
+        // Inspector chrome is observed by its own view subtree. Histogram work still belongs to
+        // this model, so react after the published state has been assigned without forwarding the
+        // inspector publisher through AppViewModel's broad objectWillChange stream.
+        cancellables.append(inspectorState.objectWillChange.sink { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if self.inspectorState.isPresented, self.inspectorState.tab == .info {
+                    self.updateHistogram()
+                } else {
+                    self.cancelHistogram(clear: true)
+                }
+            }
+        })
+
         previewCoordinator.onPublication = { [weak self] publication in
             self?.publishPreview(publication)
         }
@@ -691,7 +701,7 @@ public final class AppViewModel: ObservableObject {
         previewCoordinator.cancel()
         previewSurface.clear()
         originalPreviewSurface.clear()
-        canvasNavigation.reset()
+        canvasState.resetForSource()
         resolutionPlanner.reset()
         // Do not let the previous surface briefly show the photo we are leaving while the new
         // source is being decoded.
@@ -1407,7 +1417,7 @@ public final class AppViewModel: ObservableObject {
             nativeExtent: imageSource.nativeExtent,
             crop: document.crop,
             viewportSize: previewBackingSize,
-            navigation: canvasNavigation
+            navigation: canvasState.navigation
         ).sourceSize
     }
 
@@ -1429,7 +1439,7 @@ public final class AppViewModel: ObservableObject {
         // reuse) while making the saved rectangle line up with recognizable content. Vignette and
         // grain consequently describe this temporary full-source frame; the committed request
         // below restores their existing post-crop semantics.
-        if isCropToolActive {
+        if canvasState.isCropToolActive {
             requested.crop = .neutral
         }
 
@@ -1524,12 +1534,10 @@ public final class AppViewModel: ObservableObject {
             statusMessage = "Open an image first"
             return
         }
-        guard !isCropToolActive else { return }
+        guard !canvasState.isCropToolActive else { return }
         endUndoGrouping()
         isShowingOriginal = false
-        canvasNavigation.fit()
-        isCropToolActive = true
-        cropDraft = document.crop.normalizedRect ?? CropAdjustments.unitRect
+        canvasState.beginCrop(using: document.crop)
         statusMessage = "Adjust crop, then Apply"
         // The committed preview may already be cropped. Ask for the same adjusted stage without
         // the composition crop so the full-source overlay has actual pixels underneath it.
@@ -1543,17 +1551,15 @@ public final class AppViewModel: ObservableObject {
     /// Update only the transient framing rectangle. The model clamps it to image bounds and rejects
     /// invalid/degenerate values, so every pointer update remains safe to display.
     func updateCropDraft(_ normalizedRect: CGRect) {
-        guard isCropToolActive else { return }
-        cropDraft = CropAdjustments(normalizedRect: normalizedRect).normalizedRect
+        canvasState.updateCropDraft(normalizedRect)
     }
 
     /// Commit the current draft as one ordinary document mutation, giving it persistence, undo,
     /// copy/paste, cache invalidation, and preview/export parity automatically.
     func commitCrop() {
-        guard isCropToolActive else { return }
-        let committed = cropDraft ?? CropAdjustments.unitRect
-        isCropToolActive = false
-        cropDraft = nil
+        guard canvasState.isCropToolActive else { return }
+        let committed = canvasState.cropDraft ?? CropAdjustments.unitRect
+        canvasState.finishCrop()
         let previousDocument = document
         updateDocument { $0.crop = CropAdjustments(normalizedRect: committed) }
         // Applying an unchanged draft is still a composition transition: updateDocument quite
@@ -1567,9 +1573,8 @@ public final class AppViewModel: ObservableObject {
 
     /// Abandon the draft and restore the committed framing without adding an undo entry.
     func cancelCrop() {
-        guard isCropToolActive else { return }
-        isCropToolActive = false
-        cropDraft = nil
+        guard canvasState.isCropToolActive else { return }
+        canvasState.finishCrop()
         // Restore the committed framing without touching history or persistence.
         schedulePreview()
         statusMessage = hasCropAdjustments ? "Crop unchanged" : "Crop cancelled"
@@ -1578,8 +1583,8 @@ public final class AppViewModel: ObservableObject {
     /// While editing, Reset returns the draft to the full image. Outside the tool it clears the
     /// committed crop through the normal history/persistence path.
     func resetCrop() {
-        if isCropToolActive {
-            cropDraft = CropAdjustments.unitRect
+        if canvasState.isCropToolActive {
+            canvasState.resetCropDraft()
             statusMessage = "Crop reset"
         } else {
             endUndoGrouping()
@@ -1590,24 +1595,24 @@ public final class AppViewModel: ObservableObject {
     // MARK: - Canvas navigation
 
     func fitCanvas() {
-        canvasNavigation.fit()
+        canvasState.fit()
         schedulePreview()
     }
 
     func fillCanvas() {
-        canvasNavigation.fill()
+        canvasState.fill()
         schedulePreview()
     }
 
     func resetCanvas() {
-        canvasNavigation.reset()
+        canvasState.reset()
         schedulePreview()
     }
 
     func setCanvasZoom(_ value: CGFloat) {
-        let oldValue = canvasNavigation.zoom
-        canvasNavigation.setZoom(value)
-        guard canvasNavigation.zoom != oldValue else { return }
+        let oldValue = canvasState.navigation.zoom
+        canvasState.setZoom(value)
+        guard canvasState.navigation.zoom != oldValue else { return }
         displayRevision &+= 1
         cancelHistogram(clear: false)
         if isPreviewInteractionActive {
@@ -1619,7 +1624,7 @@ public final class AppViewModel: ObservableObject {
 
     func zoomCanvas(by factor: CGFloat) {
         guard factor.isFinite, factor > 0 else { return }
-        setCanvasZoom(canvasNavigation.zoom * factor)
+        setCanvasZoom(canvasState.navigation.zoom * factor)
     }
 
     /// Pinch-zoom is presentation-only, unlike a slider drag, so this deliberately does not call
@@ -1640,7 +1645,7 @@ public final class AppViewModel: ObservableObject {
     /// not wait for a new render; zoom is the operation that asks the coordinator for more detail.
     func panCanvas(by delta: CGSize, viewportSize: CGSize) {
         guard let imageSource else { return }
-        canvasNavigation.pan(
+        canvasState.pan(
             by: CGSize(width: delta.width, height: -delta.height),
             imageExtent: CGRect(origin: .zero, size: imageSource.nativeExtent),
             viewportSize: viewportSize
