@@ -25,6 +25,23 @@ final class PreviewSurfaceTests: XCTestCase {
         XCTAssertEqual(surface.space, .current)
     }
 
+    func testHeadlessSurfaceConfirmsACompletedPresentationImmediately() {
+        let surface = PreviewSurface()
+        let telemetry = LiveEditTelemetry()
+        let source = ImageSource(
+            url: URL(fileURLWithPath: "/tmp/presentation-test.png"),
+            nativeExtent: CGSize(width: 2, height: 2)
+        )
+        var confirmed = false
+
+        surface.present(
+            CIImage(color: .red), revision: 1, telemetry: telemetry, source: source,
+            onPresented: { confirmed = true }
+        )
+
+        XCTAssertTrue(confirmed, "headless tests should not wait for a drawable that does not exist")
+    }
+
     func testAFailedReplacementKeepsTheLastValidFrame() throws {
         let surface = PreviewSurface()
         let first = CIImage(color: .red)

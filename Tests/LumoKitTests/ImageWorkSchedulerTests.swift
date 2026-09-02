@@ -117,6 +117,34 @@ final class ImageWorkSchedulerTests: XCTestCase {
         XCTAssertEqual(scheduler.droppedThumbnailCount, 0)
     }
 
+    func testVisibleEditorDropsQueuedSupportBeforeItIsAdmitted() async throws {
+        let scheduler = ImageWorkScheduler(configuration: .init(
+            maxConcurrentThumbnails: 1, maxQueuedThumbnails: 4, maxQueuedEditorJobs: 2
+        ))
+        let gate = Gate()
+        var started: [String] = []
+
+        scheduler.enqueue(id: .init("support-running"), lane: .editor, priority: .histogram) {
+            started.append("support-running")
+            await gate.wait()
+        }
+        try await waitUntil("the support job to start") { started == ["support-running"] }
+
+        scheduler.enqueue(id: .init("comparison"), lane: .editor, priority: .comparison) {
+            started.append("comparison")
+        }
+        scheduler.enqueue(id: .init("visible"), lane: .editor, priority: .activeEditor) {
+            started.append("visible")
+        }
+
+        XCTAssertEqual(scheduler.pendingEditorCount, 1)
+        XCTAssertGreaterThanOrEqual(scheduler.droppedEditorCount, 1)
+
+        await gate.releaseAll()
+        try await waitUntil("the scheduler to drain") { scheduler.isIdle }
+        XCTAssertEqual(started, ["support-running", "visible"])
+    }
+
     private func waitUntil(
         _ description: String,
         timeout: TimeInterval = 2,

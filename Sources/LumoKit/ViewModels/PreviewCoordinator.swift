@@ -34,6 +34,7 @@ final class PreviewCoordinator {
     }
 
     private let engine: any RenderEngining
+    private let scheduler: ImageWorkScheduler
     private let interactiveDelay: Duration
     private let settleDelay: Duration
     private var interactiveTask: Task<Void, Never>?
@@ -43,6 +44,8 @@ final class PreviewCoordinator {
     /// that boundary prevents every pointer tick from becoming another actor message.
     private var interactiveRenderInFlight = false
     private var pendingInteractive: (request: RenderRequest, token: Token)?
+    private var interactiveJobID: ImageWorkScheduler.JobID?
+    private var settledJobID: ImageWorkScheduler.JobID?
     private var latestRequest: RenderRequest?
     private var latestToken: Token?
     private var nextRevision: UInt64 = 0
@@ -54,10 +57,12 @@ final class PreviewCoordinator {
 
     init(
         engine: any RenderEngining,
+        scheduler: ImageWorkScheduler = ImageWorkScheduler(),
         interactiveDelay: Duration = .zero,
         settleDelay: Duration = .milliseconds(60)
     ) {
         self.engine = engine
+        self.scheduler = scheduler
         self.interactiveDelay = interactiveDelay
         self.settleDelay = settleDelay
     }
@@ -82,6 +87,8 @@ final class PreviewCoordinator {
     /// it on the main actor and the renderer can evaluate it elsewhere.
     func submit(_ request: RenderRequest, phase: Phase = .settled) {
         let hadPendingWork = interactiveTask != nil || settleTask != nil
+            || (interactiveJobID.map(scheduler.contains) ?? false)
+            || (settledJobID.map(scheduler.contains) ?? false)
         if hadPendingWork {
             LumoObservability.event(.cancellation, source: request.source, quality: request.quality,
                                     detail: "superseded")
@@ -102,8 +109,10 @@ final class PreviewCoordinator {
         latestRequest = request
         latestToken = token
 
+        cancelInteractiveJob(pump: false)
         interactiveTask?.cancel()
         interactiveTask = nil
+        cancelSettledJob(pump: false)
         settleTask?.cancel()
         settleTask = nil
         pendingInteractive = nil
@@ -143,6 +152,8 @@ final class PreviewCoordinator {
         latestToken = nil
         interactiveTask?.cancel()
         interactiveTask = nil
+        cancelInteractiveJob(pump: false)
+        cancelSettledJob(pump: false)
         settleTask?.cancel()
         settleTask = nil
         pendingInteractive = nil
@@ -157,6 +168,7 @@ final class PreviewCoordinator {
         latestToken = token
         interactiveTask?.cancel()
         interactiveTask = nil
+        cancelInteractiveJob(pump: false)
         settleTask = nil
         pendingInteractive = nil
         let settledRequest = Self.request(request, quality: .preview)
@@ -185,9 +197,16 @@ final class PreviewCoordinator {
                 try? await Task.sleep(for: self?.interactiveDelay ?? .zero)
             }
             guard !Task.isCancelled else { return }
-            self?.interactiveRenderInFlight = true
-            await self?.render(request, token: token, phase: .interactive, engine: engine)
-            self?.interactiveRenderFinished(token: token)
+            guard let self else { return }
+            let jobID = ImageWorkScheduler.JobID("visible-preview-interactive-\(token.revision)")
+            self.interactiveJobID = jobID
+            self.scheduler.enqueue(id: jobID, lane: .editor, priority: .activeEditor) {
+                [weak self, engine] in
+                guard !Task.isCancelled, let self else { return }
+                self.interactiveRenderInFlight = true
+                await self.render(request, token: token, phase: .interactive, engine: engine)
+                self.interactiveRenderFinished(token: token)
+            }
         }
     }
 
@@ -208,10 +227,26 @@ final class PreviewCoordinator {
     private func scheduleSettled(_ request: RenderRequest, token: Token) {
         interactiveTask?.cancel()
         interactiveTask = nil
-        interactiveTask = Task { [weak self, engine] in
-            guard !Task.isCancelled else { return }
-            await self?.render(request, token: token, phase: .settled, engine: engine)
+        cancelInteractiveJob(pump: false)
+        let jobID = ImageWorkScheduler.JobID("visible-preview-settled-\(token.revision)")
+        settledJobID = jobID
+        scheduler.enqueue(id: jobID, lane: .editor, priority: .activeEditor) {
+            [weak self, engine] in
+            guard !Task.isCancelled, let self else { return }
+            await self.render(request, token: token, phase: .settled, engine: engine)
         }
+    }
+
+    private func cancelInteractiveJob(pump: Bool = true) {
+        guard let interactiveJobID else { return }
+        scheduler.cancel(id: interactiveJobID, pump: pump)
+        self.interactiveJobID = nil
+    }
+
+    private func cancelSettledJob(pump: Bool = true) {
+        guard let settledJobID else { return }
+        scheduler.cancel(id: settledJobID, pump: pump)
+        self.settledJobID = nil
     }
 
     private func render(

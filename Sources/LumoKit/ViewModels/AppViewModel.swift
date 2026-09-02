@@ -226,16 +226,19 @@ public final class AppViewModel: ObservableObject {
     /// Display generation guards histogram work against a newer request, including comparison
     /// mode and render-scale changes that do not change the edit document.
     private var displayRevision: UInt64 = 0
-    /// Baseline generation changes only when the source or RAW develop state changes. Look-stage
-    /// edits must not invalidate an in-flight baseline that is still correct for comparison.
+    /// Baseline generation changes when the source or a comparison-frame stage (develop/crop)
+    /// changes. Look-stage edits must not invalidate an in-flight baseline that is still correct.
     private var comparisonRevision: UInt64 = 0
+    /// The last settled request confirmed by the presentation surface. Supporting work is never
+    /// admitted before this lifecycle boundary.
+    private var lastPresentedVisibleRequest: RenderRequest?
     private var isPreviewInteractionActive = false
 
-    /// Whether any call since the last fired render changed `rawDevelop`.
+    /// Whether any call since the last fired render changed a comparison-frame stage.
     ///
     /// A coalesced burst of edits accumulates this flag while the preview coordinator keeps only the
     /// newest visible request. A baseline is released after that settled visible request, so an
-    /// earlier develop edit in the burst is not lost when a later tick supersedes its value.
+    /// earlier develop/crop edit in the burst is not lost when a later tick supersedes its value.
     private var pendingDevelopChange = false
 
     /// LUTs a document can reference that no folder scan produces — a freshly derived LUT, and the
@@ -403,7 +406,6 @@ public final class AppViewModel: ObservableObject {
     /// Histogram of the currently displayed image (graded result, or original
     /// while comparing). `nil` until computed / when no image is loaded.
     @Published var histogram: HistogramData?
-    private var histogramTask: Task<Void, Never>?
     private var histogramTaskRevision: UInt64?
     private var histogramTaskRequest: RenderRequest?
 
@@ -426,8 +428,8 @@ public final class AppViewModel: ObservableObject {
     let workScheduler: ImageWorkScheduler
     let collection: ImageCollection
     let editStore: EditDocumentStore
-    /// Writing images to disk — the single export, the batch run, and naming.
-    /// Shares this view model's engine, so an export renders through the same funnel the preview does.
+    /// Writing images to disk — the single export, the batch run, and naming. Production exports
+    /// use an isolated RenderEngine lane while preserving the same render request funnel.
     let export: ExportCoordinator
     /// The "Derive Look from JPG" flow and its scratch-until-saved result.
     let derive = DeriveCoordinator()
@@ -456,8 +458,10 @@ public final class AppViewModel: ObservableObject {
     private var pendingSourceLoad: SourceLoadRequest?
     private var loadTask: Task<Void, Never>?
     private let adjacentPreviewPrefetchJobID = ImageWorkScheduler.JobID("adjacent-preview-prefetch")
+    private let comparisonPreviewJobID = ImageWorkScheduler.JobID("comparison-preview")
+    private let histogramJobID = ImageWorkScheduler.JobID("histogram")
     private var metadataTask: Task<Void, Never>?
-    private var originalPreviewTask: Task<Void, Never>?
+    private var prefetchDelayTask: Task<Void, Never>?
     private var previewDebounceTask: Task<Void, Never>?
     private var cancellables: [AnyCancellable] = []
 
@@ -481,7 +485,7 @@ public final class AppViewModel: ObservableObject {
         self.workScheduler = ImageWorkScheduler()
         self.collection = ImageCollection(scheduler: workScheduler)
         self.export = ExportCoordinator(engine: engine)
-        self.previewCoordinator = PreviewCoordinator(engine: engine)
+        self.previewCoordinator = PreviewCoordinator(engine: engine, scheduler: workScheduler)
 
         // A missing value is the first-launch state: single-photo editing is the primary surface.
         // Read this after all stored properties are initialized because the published property's
@@ -696,7 +700,7 @@ public final class AppViewModel: ObservableObject {
         sourceRevision &+= 1
         comparisonRevision &+= 1
         displayRevision &+= 1
-        cancelHistogram(clear: true)
+        cancelHistogram(clear: true, pump: false)
         let sourceRevision = self.sourceRevision
         previewCoordinator.cancel()
         previewSurface.clear()
@@ -709,6 +713,7 @@ public final class AppViewModel: ObservableObject {
         // The old source must not describe the empty/loading state or gate the new image's
         // inspector while its pixels are being decoded.
         imageSource = nil
+        lastPresentedVisibleRequest = nil
         sourceURL = nil
         sourceSize = .zero
         isPreviewInteractionActive = false
@@ -717,8 +722,10 @@ public final class AppViewModel: ObservableObject {
         isShowingOriginal = false
         metadataTask?.cancel()
         metadata = ImageMetadata()
-        originalPreviewTask?.cancel()
-        workScheduler.cancel(id: adjacentPreviewPrefetchJobID)
+        cancelComparisonPreview(pump: false)
+        workScheduler.cancel(id: adjacentPreviewPrefetchJobID, pump: false)
+        prefetchDelayTask?.cancel()
+        prefetchDelayTask = nil
         previewDebounceTask?.cancel()
         capabilitiesTask?.cancel()
         rawCapabilities = nil
@@ -816,7 +823,6 @@ public final class AppViewModel: ObservableObject {
         isLoading = false
         keepInspectorTabValid()
         schedulePreview()
-        scheduleOriginalPreview()
         switch request.source.backing {
         case .url(let url): refreshMetadata(url: url, data: nil)
         case .data(let data): refreshMetadata(url: nil, data: data)
@@ -840,7 +846,6 @@ public final class AppViewModel: ObservableObject {
             documentRevision &+= 1
             comparisonRevision &+= 1
             schedulePreview()
-            scheduleOriginalPreview()
             scheduleAdjacentPreviewPrefetch()
         }
         if stored.status.isActionable {
@@ -856,6 +861,8 @@ public final class AppViewModel: ObservableObject {
     /// work for a photo the user has already left.
     private func scheduleAdjacentPreviewPrefetch() {
         workScheduler.cancel(id: adjacentPreviewPrefetchJobID)
+        prefetchDelayTask?.cancel()
+        prefetchDelayTask = nil
         guard collection.isActive else { return }
 
         let selected = collection.selectedIndex
@@ -883,19 +890,22 @@ public final class AppViewModel: ObservableObject {
 
         let revision = sourceRevision
         let engine = self.engine
-        workScheduler.enqueue(
-            id: adjacentPreviewPrefetchJobID, lane: .editor, priority: .background
-        ) { [weak self] in
+        prefetchDelayTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(350))
             guard !Task.isCancelled, let self, self.sourceRevision == revision else { return }
-            for (source, document, lut) in candidates {
-                guard !Task.isCancelled else { return }
-                let request = RenderRequest(
-                    source: source, document: document, lut: lut,
-                    targetSize: self.previewBackingSize,
-                    quality: .preview, output: .raster, space: .current
-                )
-                _ = try? await engine.render(request)
+            self.workScheduler.enqueue(
+                id: self.adjacentPreviewPrefetchJobID, lane: .editor, priority: .background
+            ) { [weak self, engine] in
+                guard !Task.isCancelled, let self, self.sourceRevision == revision else { return }
+                for (source, document, lut) in candidates {
+                    guard !Task.isCancelled, self.sourceRevision == revision else { return }
+                    let request = RenderRequest(
+                        source: source, document: document, lut: lut,
+                        targetSize: self.previewBackingSize,
+                        quality: .preview, output: .raster, space: .current
+                    )
+                    _ = try? await engine.render(request)
+                }
             }
         }
     }
@@ -1275,8 +1285,9 @@ public final class AppViewModel: ObservableObject {
         guard updated != document else { return }
 
         let developChanged = updated.rawDevelop != document.rawDevelop
+        let comparisonChanged = developChanged || updated.crop != document.crop
         displayRevision &+= 1
-        cancelHistogram(clear: false)
+        cancelHistogram(clear: false, pump: false)
         activeHistory.recordChange(from: document, to: updated)
         document = updated
         if !document.hasVisibleLookEdits { isShowingOriginal = false }
@@ -1286,14 +1297,14 @@ public final class AppViewModel: ObservableObject {
         // Look edits leave the baseline unchanged, so an in-flight baseline remains useful. A RAW
         // develop edit changes the explicit before-image and must invalidate that work; it will be
         // queued again after the new visible result publishes.
-        if developChanged {
+        if comparisonChanged {
             comparisonRevision &+= 1
-            originalPreviewTask?.cancel()
+            cancelComparisonPreview(pump: false)
         }
-        // OR'd in rather than assigned: a call earlier in a coalesced burst may have changed
-        // `rawDevelop` even though *this* call didn't, and only the last call's task survives to
-        // fire (see `pendingDevelopChange`'s doc comment).
-        pendingDevelopChange = pendingDevelopChange || developChanged
+        // OR'd in rather than assigned: a call earlier in a coalesced burst may have changed a
+        // comparison-frame stage even though this call did not, and only the last call's task
+        // survives to fire (see `pendingDevelopChange`'s doc comment).
+        pendingDevelopChange = pendingDevelopChange || comparisonChanged
 
         guard debounced else {
             previewDebounceTask?.cancel()
@@ -1386,7 +1397,7 @@ public final class AppViewModel: ObservableObject {
         guard clamped != document.lut.intensity else { return }
         let oldDocument = document
         displayRevision &+= 1
-        cancelHistogram(clear: false)
+        cancelHistogram(clear: false, pump: false)
         document.lut.intensity = clamped
         activeHistory.recordChange(from: oldDocument, to: document)
         saveActiveDocument()
@@ -1459,7 +1470,7 @@ public final class AppViewModel: ObservableObject {
         }
 
         displayRevision &+= 1
-        cancelHistogram(clear: false)
+        cancelHistogram(clear: false, pump: false)
 
         let (requested, look) = displayRequest
         previewCoordinator.submit(RenderRequest(
@@ -1474,7 +1485,7 @@ public final class AppViewModel: ObservableObject {
     private func scheduleInteractivePreview() {
         guard let imageSource else { return }
         displayRevision &+= 1
-        cancelHistogram(clear: false)
+        cancelHistogram(clear: false, pump: false)
         let (requested, lut) = displayRequest
         previewCoordinator.submit(RenderRequest(
             source: imageSource, document: requested, lut: lut,
@@ -1614,7 +1625,7 @@ public final class AppViewModel: ObservableObject {
         canvasState.setZoom(value)
         guard canvasState.navigation.zoom != oldValue else { return }
         displayRevision &+= 1
-        cancelHistogram(clear: false)
+        cancelHistogram(clear: false, pump: false)
         if isPreviewInteractionActive {
             scheduleInteractivePreview()
         } else {
@@ -1715,17 +1726,18 @@ public final class AppViewModel: ObservableObject {
 
     private func applyHistoryDocument(_ restored: EditDocument) {
         let developChanged = restored.rawDevelop != document.rawDevelop
+        let comparisonChanged = developChanged || restored.crop != document.crop
         displayRevision &+= 1
-        cancelHistogram(clear: false)
+        cancelHistogram(clear: false, pump: false)
         document = restored
         refreshLUTResolutionStatus()
         saveActiveDocument(force: true)
         documentRevision &+= 1
-        if developChanged {
+        if comparisonChanged {
             comparisonRevision &+= 1
-            originalPreviewTask?.cancel()
+            cancelComparisonPreview(pump: false)
         }
-        pendingDevelopChange = developChanged
+        pendingDevelopChange = comparisonChanged
         schedulePreview()
     }
 
@@ -1738,6 +1750,9 @@ public final class AppViewModel: ObservableObject {
             space: request.space
         )
         let detailFactor = request.renderScale.factor(for: request.source.nativeExtent)
+        let presentationConfirmation: (() -> Void)? = publication.phase == .settled
+            ? { [weak self] in self?.didPresentVisibleFrame(request) }
+            : nil
         if let gpuImage = publication.gpuImage {
             previewSurface.present(gpuImage, space: request.space,
                                    revision: publication.revision,
@@ -1745,7 +1760,8 @@ public final class AppViewModel: ObservableObject {
                                    source: request.source,
                                    quality: request.quality,
                                    detailIdentity: detailIdentity,
-                                   detailFactor: detailFactor)
+                                   detailFactor: detailFactor,
+                                   onPresented: presentationConfirmation)
         } else if let cgImage = publication.image {
             // Non-GPU conformers retain a raster compatibility seam, but it terminates at the
             // same persistent surface. Production RenderEngine publishes `gpuImage`, so this does
@@ -1756,7 +1772,8 @@ public final class AppViewModel: ObservableObject {
                                    source: request.source,
                                    quality: request.quality,
                                    detailIdentity: detailIdentity,
-                                   detailFactor: detailFactor)
+                                   detailFactor: detailFactor,
+                                   onPresented: presentationConfirmation)
         }
         guard publication.gpuImage != nil || publication.image != nil else {
             if publication.phase == .settled {
@@ -1765,22 +1782,32 @@ public final class AppViewModel: ObservableObject {
             return
         }
 
-        // The comparison baseline is supporting work. Queue it only after the visible settled
-        // result has published so a navigation/edit burst cannot put it ahead of the main image.
-        if publication.phase == .settled {
-            if pendingDevelopChange {
-                pendingDevelopChange = false
-                scheduleOriginalPreview()
-            }
-            updateHistogram(for: publication.request)
+    }
+
+    /// Supporting work starts only after the persistent presentation surface confirms that the
+    /// visible frame made it through its drawable lifecycle. This keeps a completed renderer result
+    /// from being mistaken for pixels the user has actually received.
+    private func didPresentVisibleFrame(_ request: RenderRequest) {
+        guard request.source == imageSource else { return }
+        lastPresentedVisibleRequest = request
+        let needsComparisonRefresh = pendingDevelopChange
+        pendingDevelopChange = false
+        if isSideBySideVisible || needsComparisonRefresh {
+            scheduleOriginalPreview(allowHiddenPreparation: needsComparisonRefresh)
+        } else {
+            cancelComparisonPreview()
         }
+        updateHistogram(for: request)
     }
 
     /// Rasterize the comparison baseline for the side-by-side left panel. Only needs to re-run when
     /// the image or the develop settings change — not when the look does.
-    private func scheduleOriginalPreview() {
-        guard let imageSource else {
-            originalPreviewTask?.cancel()
+    private func scheduleOriginalPreview(allowHiddenPreparation: Bool = false) {
+        guard lastPresentedVisibleRequest != nil,
+              isComparisonAvailable,
+              (isSideBySideVisible || allowHiddenPreparation),
+              let imageSource else {
+            cancelComparisonPreview()
             originalPreviewSurface.clear()
             return
         }
@@ -1789,7 +1816,10 @@ public final class AppViewModel: ObservableObject {
         let sourceRevision = self.sourceRevision
         let comparisonRevision = self.comparisonRevision
 
-        originalPreviewTask = Task { [engine] in
+        workScheduler.enqueue(
+            id: comparisonPreviewJobID, lane: .editor, priority: .comparison
+        ) { [weak self, engine] in
+            guard !Task.isCancelled, let self else { return }
             let request = RenderRequest(
                 source: imageSource, document: baseline, lut: nil,
                 targetSize: box, quality: .preview, output: .raster, space: .current
@@ -1813,6 +1843,10 @@ public final class AppViewModel: ObservableObject {
         }
     }
 
+    private func cancelComparisonPreview(pump: Bool = true) {
+        workScheduler.cancel(id: comparisonPreviewJobID, pump: pump)
+    }
+
     /// Toggle between original and LUT preview (for Space-hold comparison).
     @discardableResult
     func showOriginal(_ show: Bool) -> Bool {
@@ -1826,7 +1860,7 @@ public final class AppViewModel: ObservableObject {
         guard show != isShowingOriginal else { return true }
         isShowingOriginal = show
         displayRevision &+= 1
-        cancelHistogram(clear: false)
+        cancelHistogram(clear: false, pump: false)
         schedulePreview()
         return true
     }
@@ -1835,6 +1869,12 @@ public final class AppViewModel: ObservableObject {
     func toggleSideBySide() -> Bool {
         guard isComparisonAvailable else { return false }
         isSideBySide.toggle()
+        if isSideBySide {
+            scheduleOriginalPreview()
+        } else {
+            cancelComparisonPreview()
+            originalPreviewSurface.clear()
+        }
         return true
     }
 
@@ -1867,6 +1907,7 @@ public final class AppViewModel: ObservableObject {
             cancelHistogram(clear: true)
             return
         }
+        guard lastPresentedVisibleRequest != nil else { return }
         let request: RenderRequest
         if let displayedRequest {
             request = displayedRequest
@@ -1888,7 +1929,7 @@ public final class AppViewModel: ObservableObject {
 
         // Opening the Info tab can race the settled publication that is already on its way. Do not
         // tally the same displayed request twice just because both paths noticed it.
-        if histogramTask != nil,
+        if workScheduler.contains(histogramJobID),
            histogramTaskRevision == displayRevision,
            histogramTaskRequest == request {
             return
@@ -1896,7 +1937,9 @@ public final class AppViewModel: ObservableObject {
         cancelHistogram(clear: false)
         histogramTaskRevision = displayRevision
         histogramTaskRequest = request
-        histogramTask = Task { [engine] in
+        workScheduler.enqueue(id: histogramJobID, lane: .editor, priority: .histogram) {
+            [weak self, engine] in
+            guard !Task.isCancelled, let self else { return }
             let result = await engine.histogram(
                 source: request.source, document: request.document, lut: request.lut,
                 scale: request.renderScale, space: request.space, maxDimension: 512
@@ -1913,9 +1956,8 @@ public final class AppViewModel: ObservableObject {
 
     /// Cancel pending or in-flight histogram work. The revision check in the task remains necessary:
     /// a renderer may be finishing a non-cancellable Core Image operation after its task is canceled.
-    private func cancelHistogram(clear: Bool) {
-        histogramTask?.cancel()
-        histogramTask = nil
+    private func cancelHistogram(clear: Bool, pump: Bool = true) {
+        workScheduler.cancel(id: histogramJobID, pump: pump)
         histogramTaskRevision = nil
         histogramTaskRequest = nil
         if clear { histogram = nil }

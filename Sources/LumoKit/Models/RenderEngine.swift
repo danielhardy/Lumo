@@ -363,6 +363,7 @@ actor RenderEngine: RenderEngining {
         guard let image else {
             throw ImageError.processingFailed
         }
+        try Task.checkCancellation()
         let rect = image.extent.integral
         guard rect.isRasterizable else { throw ImageError.processingFailed }
         let colorSpace = request.space.cgColorSpace
@@ -395,6 +396,8 @@ actor RenderEngine: RenderEngining {
                 data = encoded
             }
         }
+
+        try Task.checkCancellation()
 
         let result = RenderResult(
             data: data, extent: rect.size, colorSpace: request.space,
@@ -433,10 +436,12 @@ actor RenderEngine: RenderEngining {
         var interval = LumoObservability.begin(.histogram, source: source, quality: .preview)
         defer { interval.end() }
 
-        guard maxDimension > 0,
+        guard !Task.isCancelled,
+              maxDimension > 0,
               let image = buildImage(source, document, lut, scale, space, quality: .preview) else {
             return nil
         }
+        guard !Task.isCancelled else { return nil }
         let extent = image.extent
         guard extent.isRasterizable else { return nil }
 
@@ -451,15 +456,19 @@ actor RenderEngine: RenderEngining {
 
         let width = Int(rect.width)
         let height = Int(rect.height)
+        guard !Task.isCancelled, width > 0, height > 0 else { return nil }
         let bytesPerRow = width * 4
         var bytes = [UInt8](repeating: 0, count: height * bytesPerRow)
+        guard !Task.isCancelled else { return nil }
         bytes.withUnsafeMutableBytes { ptr in
             guard let base = ptr.baseAddress else { return }
+            guard !Task.isCancelled else { return }
             context.render(
                 scaled, toBitmap: base, rowBytes: bytesPerRow, bounds: rect,
                 format: .RGBA8, colorSpace: space.cgColorSpace
             )
         }
+        guard !Task.isCancelled else { return nil }
         return HistogramData(rgba8: bytes, width: width, height: height, bytesPerRow: bytesPerRow)
     }
 

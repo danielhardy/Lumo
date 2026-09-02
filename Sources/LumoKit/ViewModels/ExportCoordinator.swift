@@ -40,10 +40,15 @@ final class ExportCoordinator: ObservableObject {
     /// The renderer. `any RenderEngining` rather than the concrete actor for the same reason
     /// `AppViewModel` holds one: a test can then assert *what was asked to be encoded* — which
     /// document, at which scale, in which format — without a GPU or a file on disk.
-    private let engine: any RenderEngining
+    /// Production exports use a second RenderEngine actor/context/queue. A full-resolution encode
+    /// is non-preemptible once Core Image enters it, so a batch cannot monopolize the display actor.
+    /// The batch loop remains serial, retaining only one full-size result at a time.
+    private let exportEngine: any RenderEngining
 
-    init(engine: any RenderEngining = RenderEngine.shared) {
-        self.engine = engine
+    init(engine: any RenderEngining = RenderEngine.shared, exportEngine: (any RenderEngining)? = nil) {
+        // Test renderers are deliberately shared so request assertions remain simple. The real
+        // renderer gets isolated mutable Core Image state for export work.
+        self.exportEngine = exportEngine ?? (engine is RenderEngine ? RenderEngine() : engine)
         self.lastUsedFormat = Self.defaultFormat
     }
 
@@ -138,11 +143,12 @@ final class ExportCoordinator: ObservableObject {
         isExporting = true
         onStatus?("Exporting...")
 
-        Task { [engine, format] in
+        Task { [exportEngine, format] in
             var interval = LumoObservability.begin(.export, source: source, quality: .export)
             defer { interval.end() }
             do {
-                let data = try await engine.render(RenderRequest(
+                try Task.checkCancellation()
+                let data = try await exportEngine.render(RenderRequest(
                     source: source, document: document, lut: lut,
                     quality: .export,
                     output: .encoded(format: format, quality: Self.exportQuality),
@@ -214,13 +220,15 @@ final class ExportCoordinator: ObservableObject {
         var failed = 0
 
         for (index, item) in items.enumerated() {
+            guard !Task.isCancelled else { break }
             if let source = Self.source(for: item) {
                 let base = Self.exportBaseName(source: item.name, lut: lut)
                 let dest = uniqueExportURL(in: folder, base: base, ext: format.fileExtension)
                 do {
+                    try Task.checkCancellation()
                     var interval = LumoObservability.begin(.export, source: source, quality: .export)
                     defer { interval.end() }
-                    let data = try await engine.render(RenderRequest(
+                    let data = try await exportEngine.render(RenderRequest(
                         source: source, document: document, lut: lut,
                         quality: .export,
                         output: .encoded(format: format, quality: Self.exportQuality),

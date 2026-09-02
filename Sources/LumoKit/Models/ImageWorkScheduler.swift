@@ -11,9 +11,11 @@ final class ImageWorkScheduler {
 
     enum Priority: Int, CaseIterable, Sendable {
         case activeEditor = 0
-        case adjacentFilmstrip = 1
-        case visibleGrid = 2
-        case background = 3
+        case comparison = 1
+        case histogram = 2
+        case adjacentFilmstrip = 3
+        case visibleGrid = 4
+        case background = 5
     }
 
     enum Lane: Sendable {
@@ -32,6 +34,9 @@ final class ImageWorkScheduler {
     struct Configuration: Sendable, Equatable {
         var maxConcurrentThumbnails: Int = 4
         var maxQueuedThumbnails: Int = 24
+        /// RenderEngine is actor-serialized. Keep only a small support backlog behind the newest
+        /// visible request so inspector churn cannot accumulate actor messages.
+        var maxQueuedEditorJobs: Int = 4
 
         static let `default` = Configuration()
     }
@@ -65,7 +70,8 @@ final class ImageWorkScheduler {
     init(configuration: Configuration = .default) {
         self.configuration = Configuration(
             maxConcurrentThumbnails: max(0, configuration.maxConcurrentThumbnails),
-            maxQueuedThumbnails: max(0, configuration.maxQueuedThumbnails)
+            maxQueuedThumbnails: max(0, configuration.maxQueuedThumbnails),
+            maxQueuedEditorJobs: max(0, configuration.maxQueuedEditorJobs)
         )
     }
 
@@ -73,6 +79,10 @@ final class ImageWorkScheduler {
 
     var pendingThumbnailCount: Int {
         queued.values.filter { $0.lane == .thumbnail }.count
+    }
+
+    var pendingEditorCount: Int {
+        queued.values.filter { $0.lane == .editor }.count
     }
 
     var runningCount: Int { running.count }
@@ -113,7 +123,7 @@ final class ImageWorkScheduler {
             }
             admitThumbnail(job)
         } else {
-            queued[id] = job
+            admitEditor(job)
         }
         updatePeakQueue()
         pump()
@@ -135,6 +145,13 @@ final class ImageWorkScheduler {
     func cancel(id: JobID) {
         cancel(id: id, countAsCancellation: true)
         pump()
+    }
+
+    /// Remove a job without immediately starting another queued operation. This lets a caller
+    /// replace support work and enqueue a visible edit as one admission decision.
+    func cancel(id: JobID, pump: Bool) {
+        cancel(id: id, countAsCancellation: true)
+        if pump { self.pump() }
     }
 
     func cancel(ids: Set<JobID>) {
@@ -176,12 +193,52 @@ final class ImageWorkScheduler {
         queued[job.id] = job
     }
 
+    private(set) var droppedEditorCount = 0
+
+    private var runningEditorCount: Int {
+        running.values.filter { $0.lane == .editor }.count
+    }
+
+    private func admitEditor(_ job: Job) {
+        // Once a visible edit arrives, queued histogram/comparison/prefetch work is obsolete. It
+        // will be re-admitted after the frame is presented if it is still relevant.
+        if job.priority == .activeEditor {
+            let supportIDs = queued.values
+                .filter { $0.lane == .editor && $0.priority != .activeEditor }
+                .map(\.id)
+            for id in supportIDs {
+                queued.removeValue(forKey: id)
+                droppedEditorCount += 1
+            }
+        }
+
+        guard configuration.maxQueuedEditorJobs > 0 || runningEditorCount == 0 else {
+            droppedEditorCount += 1
+            return
+        }
+        let pending = queued.values.filter { $0.lane == .editor }
+        if pending.count >= configuration.maxQueuedEditorJobs,
+           let worst = pending.max(by: { precedes($0, $1) }) {
+            guard precedes(job, worst) else {
+                droppedEditorCount += 1
+                return
+            }
+            queued.removeValue(forKey: worst.id)
+            droppedEditorCount += 1
+        }
+        queued[job.id] = job
+    }
+
     private func pump() {
         while let next = nextAdmissibleJob() {
             queued.removeValue(forKey: next.id)
             nextToken &+= 1
             let token = nextToken
             let task = Task { @MainActor [weak self, operation = next.operation] in
+                guard !Task.isCancelled else {
+                    self?.finished(id: next.id, token: token)
+                    return
+                }
                 await operation()
                 self?.finished(id: next.id, token: token)
             }

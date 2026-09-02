@@ -31,14 +31,23 @@ final class PreviewSurface: ObservableObject {
     }
     private var telemetryByRevision: [UInt64: PendingTelemetry] = [:]
     private var submittedTelemetryRevisions: Set<UInt64> = []
+    private var presentationConfirmations: [UInt64: () -> Void] = [:]
+    private var hasManagedPresentationLifecycle = false
     var onPresentationFailure: (() -> Void)?
+
+    /// The Metal view calls this when a real presentation lifecycle exists. Headless/test callers
+    /// have no drawable to confirm, so `present` confirms immediately for that compatibility seam.
+    fileprivate func attachPresentationLifecycle() {
+        hasManagedPresentationLifecycle = true
+    }
 
     @discardableResult
     func present(_ image: CIImage?, space: WorkingSpace = .current, revision: UInt64? = nil,
                  telemetry: LiveEditTelemetry? = nil, source: ImageSource? = nil,
                  quality: RenderQuality = .interactive,
                  detailIdentity: PreviewFrameIdentity? = nil,
-                 detailFactor: CGFloat? = nil) -> Bool {
+                 detailFactor: CGFloat? = nil,
+                 onPresented: (() -> Void)? = nil) -> Bool {
         if let detailIdentity, let detailFactor, detailFactor.isFinite,
            let current = currentDetail,
            current.identity == detailIdentity,
@@ -67,9 +76,16 @@ final class PreviewSurface: ObservableObject {
             pendingGPURevision = revision
             telemetryByRevision[revision] = PendingTelemetry(telemetry: telemetry, source: source,
                                                              quality: quality)
+            if let onPresented {
+                presentationConfirmations[revision] = onPresented
+            }
             trimTelemetry()
         } else {
             pendingGPURevision = nil
+        }
+        if let revision, let onPresented, !hasManagedPresentationLifecycle {
+            presentationConfirmations.removeValue(forKey: revision)
+            onPresented()
         }
         return true
     }
@@ -137,6 +153,7 @@ final class PreviewSurface: ObservableObject {
     }
 
     fileprivate func markPresentationFailed(revision: UInt64) {
+        presentationConfirmations.removeValue(forKey: revision)
         telemetryByRevision.removeValue(forKey: revision)
         submittedTelemetryRevisions.remove(revision)
         if pendingGPURevision == revision { pendingGPURevision = nil }
@@ -158,6 +175,8 @@ final class PreviewSurface: ObservableObject {
         }
         telemetryByRevision.removeValue(forKey: revision)
         submittedTelemetryRevisions.remove(revision)
+        let confirmation = presentationConfirmations.removeValue(forKey: revision)
+        confirmation?()
     }
     func clear() {
         image = nil
@@ -173,6 +192,7 @@ final class PreviewSurface: ObservableObject {
         pendingGPURevision = nil
         telemetryByRevision.removeAll()
         submittedTelemetryRevisions.removeAll()
+        presentationConfirmations.removeAll()
     }
 }
 
@@ -187,6 +207,7 @@ struct PreviewSurfaceView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> MTKView {
         let view = PreviewMTKView(frame: .zero, device: context.coordinator.device)
+        surface.attachPresentationLifecycle()
         context.coordinator.surface = surface
         context.coordinator.navigation = navigation
         context.coordinator.onDrawableSizeChange = onDrawableSizeChange
