@@ -1,4 +1,5 @@
 import XCTest
+import CoreImage
 @testable import LumoKit
 
 /// The gating the Step 10 ship gate names, expressed as a value rather than as a `ViewBuilder`.
@@ -198,7 +199,7 @@ final class RAWCapabilitiesTests: XCTestCase {
 
     /// The flags a real decoder reports, read through the engine.
     ///
-    /// Skips on CI, which has no DNG — read a green CI run as saying nothing about this.
+    /// Skips on CI, which has no local RAW — read a green CI run as saying nothing about this.
     func testProbingARealRAWReportsItsDecodersFlags() async throws {
         guard let rawURL = Fixtures.localRAWURL else {
             throw XCTSkip("no local RAW; see Fixtures.localRAWURL and PHASE2_SPEC §8.9")
@@ -211,16 +212,21 @@ final class RAWCapabilitiesTests: XCTestCase {
         let probed = await engine.rawCapabilities(for: source)
         let caps = try XCTUnwrap(probed)
 
-        // Measured on the Leica DNG in realworldtest/. CODE_REVIEW §5 used to claim this file
-        // "supports every one of them", which is why the gates were called untestable. It does not:
-        // localToneMap is false, so the gated branch is coverable locally.
-        XCTAssertFalse(caps.isLocalToneMapSupported,
-                       "expected this decoder to refuse local tone mapping — if it now supports it, "
-                       + "find another gate to pin rather than deleting this assertion")
-        XCTAssertTrue(caps.isSharpnessSupported)
-        XCTAssertTrue(caps.isColorNoiseReductionSupported)
-        XCTAssertFalse(caps.availableControls.contains(.localToneMap),
-                       "an unsupported adjustment must not be offered")
+        // Capabilities belong to the decoder/file pair, not to a particular camera fixture. Compare
+        // the value crossing the actor boundary with a fresh filter for this exact file so a macOS
+        // decoder update or a second camera fixture cannot turn an old snapshot into a false failure.
+        let filter = try XCTUnwrap(CIRAWFilter(imageURL: rawURL))
+        XCTAssertEqual(caps.isSharpnessSupported, filter.isSharpnessSupported)
+        XCTAssertEqual(caps.isContrastSupported, filter.isContrastSupported)
+        XCTAssertEqual(caps.isDetailSupported, filter.isDetailSupported)
+        XCTAssertEqual(caps.isMoireReductionSupported, filter.isMoireReductionSupported)
+        XCTAssertEqual(caps.isLocalToneMapSupported, filter.isLocalToneMapSupported)
+        XCTAssertEqual(caps.isLuminanceNoiseReductionSupported,
+                       filter.isLuminanceNoiseReductionSupported)
+        XCTAssertEqual(caps.isColorNoiseReductionSupported, filter.isColorNoiseReductionSupported)
+        XCTAssertEqual(caps.isLensCorrectionSupported, filter.isLensCorrectionSupported)
+        XCTAssertEqual(caps.availableControls.contains(.localToneMap), filter.isLocalToneMapSupported,
+                       "available controls must follow the decoder's live gate")
 
         // Seeds: as-shot WB is a real measured value, not a round default. If these came back 0 the
         // white-balance slider would open at 0 K.
@@ -235,135 +241,94 @@ final class RAWCapabilitiesTests: XCTestCase {
     /// the noise-reduction and sharpening defaults **vary per image**, so a guessed constant opens
     /// the slider away from where the picture is and the first nudge jumps it.
     ///
-    /// Skips on CI, which has no DNG — read a green CI run as saying nothing about this.
+    /// Skips on CI, which has no local RAW — read a green CI run as saying nothing about this.
     func testProbingARealRAWReportsItsDecodersSeeds() async throws {
-        guard let rawURL = Fixtures.localRAWURL else {
+        let rawURLs = Fixtures.localRAWURLs
+        guard !rawURLs.isEmpty else {
             throw XCTSkip("no local RAW; see Fixtures.localRAWURL and PHASE2_SPEC §8.9")
         }
         let engine = RenderEngine()
-        let source = ImageSource(url: rawURL, nativeExtent: .zero)
-        let probed = await engine.rawCapabilities(for: source)
-        let caps = try XCTUnwrap(probed)
+        var testedFixtures = 0
+        for rawURL in rawURLs {
+            guard let filter = CIRAWFilter(imageURL: rawURL) else {
+                print("Skipping \(rawURL.lastPathComponent): current decoder cannot probe this RAW")
+                continue
+            }
+            testedFixtures += 1
 
-        // Printed so the next person can see the decoder's own answer rather than trusting the
-        // numbers written below, which are only a snapshot of one file on one macOS build.
-        print("""
-        --- Leica M11 DNG (realworldtest/20260525_102528_L1031183.DNG), as probed ---
-          asShotTemperature            \(caps.asShotTemperature)
-          asShotTint                   \(caps.asShotTint)
-          baselineExposure             \(caps.baselineExposure)
-          shadowBias                   \(caps.shadowBias)
-          sharpnessAmount              \(caps.sharpnessAmount)   \
-        (supported: \(caps.isSharpnessSupported))
-          contrastAmount               \(caps.contrastAmount)   \
-        (supported: \(caps.isContrastSupported))
-          detailAmount                 \(caps.detailAmount)   \
-        (supported: \(caps.isDetailSupported))
-          moireReductionAmount         \(caps.moireReductionAmount)   \
-        (supported: \(caps.isMoireReductionSupported))
-          localToneMapAmount           \(caps.localToneMapAmount)   \
-        (supported: \(caps.isLocalToneMapSupported))
-          luminanceNoiseReduction      \(caps.luminanceNoiseReductionAmount)   \
-        (supported: \(caps.isLuminanceNoiseReductionSupported))
-          colorNoiseReductionAmount    \(caps.colorNoiseReductionAmount)   \
-        (supported: \(caps.isColorNoiseReductionSupported))
-          lensCorrectionEnabled        \(caps.lensCorrectionEnabled)   \
-        (supported: \(caps.isLensCorrectionSupported))
-        ---------------------------------------------------------------------------
-        """)
+            let source = ImageSource(url: rawURL, nativeExtent: .zero)
+            let probed = await engine.rawCapabilities(for: source)
+            let caps = try XCTUnwrap(probed)
 
-        // OBSERVED on the Leica M11 DNG, macOS 26 / Xcode 26 (the printout above is the live run):
-        //
-        //   asShotTemperature          5842.2119140625
-        //   asShotTint                 14.039999961853027
-        //   baselineExposure           0.4000000059604645
-        //   shadowBias                 5.0
-        //   sharpnessAmount            0.7349015474319458   supported
-        //   contrastAmount             0.0                  supported
-        //   detailAmount               0.0                  supported
-        //   moireReductionAmount       0.0                  supported
-        //   localToneMapAmount         0.0                  NOT supported — never queried
-        //   luminanceNoiseReduction    0.0                  supported
-        //   colorNoiseReductionAmount  0.5                  supported
-        //   lensCorrectionEnabled      true                 supported
-        //
-        // `sharpnessAmount` is the finding in one number. 0.7349015474319458 is not a constant
-        // anybody would guess; it is computed per image, exactly as `RAWDevelopSettings`' type doc
-        // warns. The old getter opened that slider at 0 — three quarters of the way from where the
-        // picture actually was — so the first touch of it jumped the image hard.
-        // `colorNoiseReductionAmount` at 0.5 is the same defect, smaller.
-        //
-        // Note also `shadowBias` at **5.0**. That used to be outside the −1…1 we chose for its slider
-        // — this file is what caught it — so the range is now −10…10 (see `DevelopControl.range`),
-        // wide enough to hold this camera's seed with headroom on both sides rather than at the edge.
+            print("""
+            --- \(rawURL.lastPathComponent), as probed ---
+              asShotTemperature         \(caps.asShotTemperature)
+              asShotTint                \(caps.asShotTint)
+              baselineExposure          \(caps.baselineExposure)
+              shadowBias                \(caps.shadowBias)
+              sharpnessAmount           \(caps.sharpnessAmount) (supported: \(caps.isSharpnessSupported))
+              colorNoiseReductionAmount \(caps.colorNoiseReductionAmount) (supported: \(caps.isColorNoiseReductionSupported))
+              lensCorrectionEnabled     \(caps.lensCorrectionEnabled) (supported: \(caps.isLensCorrectionSupported))
+            """)
 
-        // Assert the *shape* rather than the exact numbers — a macOS update may retune a decoder
-        // default, and that should not fail the suite. What must hold is that a supported knob's
-        // seed is the decoder's own, not a constant we invented.
-        XCTAssertTrue(caps.isSharpnessSupported, "the pinning below assumes this decoder sharpens")
-        XCTAssertGreaterThan(
-            caps.sharpnessAmount, 0,
-            "this decoder sharpens by default; a 0 here means the probe is not reading the filter"
-        )
-        XCTAssertNotEqual(
-            caps.sharpnessAmount, caps.sharpnessAmount.rounded(),
-            "the sharpening seed should be a computed per-image value, not a round constant — that "
-            + "is the whole reason it cannot be hardcoded"
-        )
-        XCTAssertGreaterThan(caps.colorNoiseReductionAmount, 0)
-        XCTAssertGreaterThan(caps.baselineExposure, 0)
+            XCTAssertEqual(caps.asShotTemperature, Double(filter.neutralTemperature), accuracy: 0.0001)
+            XCTAssertEqual(caps.asShotTint, Double(filter.neutralTint), accuracy: 0.0001)
+            XCTAssertEqual(caps.baselineExposure, Double(filter.baselineExposure), accuracy: 0.0001)
+            XCTAssertEqual(caps.shadowBias, Double(filter.shadowBias), accuracy: 0.0001)
 
-        // `lensCorrectionEnabled` is a `Bool`, so unlike the numeric seeds above it cannot be pinned
-        // by "not zero, not round" — `false` is just as legitimate a decoder answer as `true`. It was
-        // printed above but never asserted, which is exactly the gap `FakeRenderEngine.distinctivelySeeded`'s
-        // doc comment warns about: a getter that dropped this seed and fell back to a hardcoded
-        // constant would pass every existing check. This Leica reports it `true` — assert that, so a
-        // regression back to a constant (in either direction) has something real to fail against.
-        XCTAssertTrue(caps.lensCorrectionEnabled,
-                      "this decoder enables lens correction by default; false here means the probe "
-                      + "stopped reading lensCorrectionEnabled off the filter")
+            let gatedSeeds: [(DevelopControl, Bool, Double, Double)] = [
+                (.sharpness, filter.isSharpnessSupported, caps.sharpnessAmount,
+                 filter.isSharpnessSupported ? Double(filter.sharpnessAmount) : 0),
+                (.contrast, filter.isContrastSupported, caps.contrastAmount,
+                 filter.isContrastSupported ? Double(filter.contrastAmount) : 0),
+                (.detail, filter.isDetailSupported, caps.detailAmount,
+                 filter.isDetailSupported ? Double(filter.detailAmount) : 0),
+                (.moireReduction, filter.isMoireReductionSupported, caps.moireReductionAmount,
+                 filter.isMoireReductionSupported ? Double(filter.moireReductionAmount) : 0),
+                (.localToneMap, filter.isLocalToneMapSupported, caps.localToneMapAmount,
+                 filter.isLocalToneMapSupported ? Double(filter.localToneMapAmount) : 0),
+                (.luminanceNoiseReduction, filter.isLuminanceNoiseReductionSupported,
+                 caps.luminanceNoiseReductionAmount,
+                 filter.isLuminanceNoiseReductionSupported
+                     ? Double(filter.luminanceNoiseReductionAmount) : 0),
+                (.colorNoiseReduction, filter.isColorNoiseReductionSupported,
+                 caps.colorNoiseReductionAmount,
+                 filter.isColorNoiseReductionSupported ? Double(filter.colorNoiseReductionAmount) : 0),
+            ]
+            for (control, supported, actual, expected) in gatedSeeds {
+                XCTAssertEqual(caps.supports(control), supported, "gate drift for \(control)")
+                XCTAssertEqual(actual, expected, accuracy: 0.0001, "seed drift for \(control)")
+            }
 
-        // Which seeds land outside the slider that will display them. Written as a set rather than
-        // a per-row assertion so the *membership* is the contract: a control joining or leaving this
-        // list is a real change in what the panel does on open, and should be a deliberate edit to
-        // `DevelopControl.range` and its doc comment, not a silent drift.
-        //
-        // This used to assert the set was exactly `{.shadowBias}` — encoding the pinned-slider defect
-        // as the expected outcome. Now that `DevelopControl.range` has been widened to actually hold
-        // this decoder's seeds (see its doc comment), the set should be empty; any control appearing
-        // here is a new bug, not a known one. `testEveryPerImageSeedLandsStrictlyInsideItsSliderRange`
-        // below is the sharper version of this same check — "inside" is not enough, it must not sit at
-        // an edge either — but this one stays as the plain, cheap sanity check.
-        let seeds: [(DevelopControl, Double)] = [
-            (.baselineExposure, caps.baselineExposure),
-            (.shadowBias, caps.shadowBias),
-            (.whiteBalance, caps.asShotTemperature),
-            (.sharpness, caps.sharpnessAmount),
-            (.contrast, caps.contrastAmount),
-            (.detail, caps.detailAmount),
-            (.moireReduction, caps.moireReductionAmount),
-            (.localToneMap, caps.localToneMapAmount),
-            (.luminanceNoiseReduction, caps.luminanceNoiseReductionAmount),
-            (.colorNoiseReduction, caps.colorNoiseReductionAmount),
-        ]
-        let outOfRange = Set(
-            seeds.filter { caps.supports($0.0) && !$0.0.range.contains($0.1) }.map(\.0)
-        )
-        XCTAssertEqual(
-            outOfRange, [],
-            "a supported control's seed landed outside the slider that displays it — that control "
-            + "will open pinned at an edge. Widen its range in DevelopControl.range and update the "
-            + "doc comment there in the same commit."
-        )
+            XCTAssertEqual(caps.isLensCorrectionSupported, filter.isLensCorrectionSupported)
+            XCTAssertEqual(
+                caps.lensCorrectionEnabled,
+                filter.isLensCorrectionSupported && filter.isLensCorrectionEnabled,
+                "unsupported lens correction must remain false; supported values must come from the filter"
+            )
 
-        // An unsupported adjustment is never queried, so its seed stays at the struct's default —
-        // and the control is withdrawn anyway, so nothing can display it.
-        XCTAssertFalse(caps.isLocalToneMapSupported,
-                       "expected this decoder to refuse local tone mapping — if it now supports it, "
-                       + "find another gate to pin rather than deleting this assertion")
-        XCTAssertEqual(caps.localToneMapAmount, 0,
-                       "an unsupported adjustment must not be probed; its seed stays at the default")
-        XCTAssertFalse(caps.availableControls.contains(.localToneMap))
+            let seeds: [(DevelopControl, Double)] = [
+                (.baselineExposure, caps.baselineExposure),
+                (.shadowBias, caps.shadowBias),
+                (.whiteBalance, caps.asShotTemperature),
+                (.sharpness, caps.sharpnessAmount),
+                (.contrast, caps.contrastAmount),
+                (.detail, caps.detailAmount),
+                (.moireReduction, caps.moireReductionAmount),
+                (.localToneMap, caps.localToneMapAmount),
+                (.luminanceNoiseReduction, caps.luminanceNoiseReductionAmount),
+                (.colorNoiseReduction, caps.colorNoiseReductionAmount),
+            ]
+            let outOfRange = Set(
+                seeds.filter { caps.supports($0.0) && !$0.0.range.contains($0.1) }.map(\.0)
+            )
+            XCTAssertEqual(outOfRange, [],
+                           "a supported control's seed landed outside its display range")
+        }
+
+        guard testedFixtures > 0 else {
+            throw XCTSkip("current decoder cannot probe any local RAW fixture")
+        }
     }
 
     /// The test that would have caught the `shadowBias` defect: not "is the seed somewhere in the

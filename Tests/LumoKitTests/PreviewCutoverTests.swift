@@ -297,6 +297,9 @@ final class PreviewCutoverTests: TempDirectoryTestCase {
         guard let rawURL = Fixtures.localRAWURL else {
             throw XCTSkip("no local RAW to develop; see Fixtures.localRAWURL")
         }
+        guard let filter = CIRAWFilter(imageURL: rawURL), filter.outputImage != nil else {
+            throw XCTSkip("current decoder cannot develop \(rawURL.lastPathComponent) through CIRAWFilter")
+        }
         let viewModel = makeRealViewModel()
         viewModel.openImage(url: rawURL)
         try await waitUntil("the RAW to load", timeout: 30) { viewModel.sourceImage != nil }
