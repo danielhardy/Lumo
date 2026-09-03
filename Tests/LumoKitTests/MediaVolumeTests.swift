@@ -83,6 +83,27 @@ final class MediaVolumeImportTests: TempDirectoryTestCase {
         XCTAssertTrue(failingViewModel.removableMediaWarnings.contains("Camera Card is no longer available."))
     }
 
+    func testInjectedProviderLabelsVolumesNeedingAccessWithoutHidingThem() async throws {
+        let pending = MediaVolume(
+            name: "Blank Card", url: tempDirectory, requiresAccessGrant: true
+        )
+        let readable = MediaVolume(name: "Camera Card", url: tempDirectory)
+        let provider = FixtureMediaVolumeProvider(
+            volumes: [pending, readable],
+            result: .success(MediaVolumeScanResult(files: [], warnings: []))
+        )
+        let viewModel = AppViewModel(engine: FakeRenderEngine(), mediaVolumeProvider: provider)
+
+        viewModel.refreshRemovableMedia()
+        try await waitUntil { viewModel.removableMediaVolumes == [pending, readable] }
+
+        XCTAssertEqual(viewModel.removableMediaVolumes.map(\.menuLabel), [
+            "Blank Card — Access needed", "Camera Card"
+        ])
+        XCTAssertEqual(viewModel.removableMediaVolumes.first?.accessHint,
+                       "Access needed — open to check for photos.")
+    }
+
     func testEmptyScanKeepsARecoverableEmptyStateAndCancelClosesIt() async throws {
         let volume = MediaVolume(name: "Empty Card", url: tempDirectory)
         let provider = FixtureMediaVolumeProvider(

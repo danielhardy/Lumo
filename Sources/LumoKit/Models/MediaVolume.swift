@@ -2,7 +2,8 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-/// A mounted, removable volume that contains at least one file Lumo can open.
+/// A mounted, removable volume that contains at least one file Lumo can open, or whose contents
+/// need a user grant before Lumo can inspect them.
 ///
 /// This is deliberately a value rather than a `URL` list owned by the view.  It is the seam used
 /// by tests to describe fixture volumes and keeps hardware discovery out of the selector UI.
@@ -11,13 +12,31 @@ struct MediaVolume: Identifiable, Codable, Hashable, Sendable {
     let name: String
     let url: URL
     let bookmarkData: Data?
+    /// True when discovery found the volume but the sandbox could not inspect its contents yet.
+    /// Such a volume remains available for the Open-panel recovery flow and is labeled accordingly.
+    let requiresAccessGrant: Bool
 
-    init(id: String? = nil, name: String, url: URL, bookmarkData: Data? = nil) {
+    init(
+        id: String? = nil,
+        name: String,
+        url: URL,
+        bookmarkData: Data? = nil,
+        requiresAccessGrant: Bool = false
+    ) {
         let canonical = url.standardizedFileURL.resolvingSymlinksInPath()
         self.id = id ?? canonical.path
         self.name = name
         self.url = canonical
         self.bookmarkData = bookmarkData
+        self.requiresAccessGrant = requiresAccessGrant
+    }
+
+    var menuLabel: String {
+        requiresAccessGrant ? "\(name) — Access needed" : name
+    }
+
+    var accessHint: String? {
+        requiresAccessGrant ? "Access needed — open to check for photos." : nil
     }
 
     /// Resolve a bookmark granted by an Open panel before touching the volume. Discovery can
@@ -169,7 +188,10 @@ struct MountedMediaVolumeProvider: MediaVolumeProviding {
             let name = values.volumeName?.trimmingCharacters(in: .whitespacesAndNewlines)
                 .nilIfEmpty ?? url.lastPathComponent
             return MediaVolume(
-                name: name, url: url, bookmarkData: PhotoAssetSource.bookmarkData(for: url)
+                name: name,
+                url: url,
+                bookmarkData: PhotoAssetSource.bookmarkData(for: url),
+                requiresAccessGrant: !isReadable
             )
         }
         .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }

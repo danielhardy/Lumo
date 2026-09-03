@@ -294,7 +294,7 @@ public struct ContentView: View {
                     Text("No supported media mounted")
                 } else {
                     ForEach(viewModel.removableMediaVolumes) { volume in
-                        Button(volume.name) {
+                        Button(volume.menuLabel) {
                             viewModel.openRemovableMedia(volume)
                         }
                     }

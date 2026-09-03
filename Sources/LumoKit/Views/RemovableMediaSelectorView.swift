@@ -36,8 +36,15 @@ struct RemovableMediaSelectorView: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
-            Label(viewModel.removableMediaVolume?.name ?? "Removable Media", systemImage: "externaldrive.connected.to.line.below")
-                .font(.headline)
+            VStack(alignment: .leading, spacing: 3) {
+                Label(viewModel.removableMediaVolume?.name ?? "Removable Media", systemImage: "externaldrive.connected.to.line.below")
+                    .font(.headline)
+                if let accessHint = viewModel.removableMediaVolume?.accessHint {
+                    Text(accessHint)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
             Spacer()
             if !viewModel.removableMediaFiles.isEmpty {
                 Text("\(viewModel.removableMediaSelection.count) of \(viewModel.removableMediaFiles.count) selected")
