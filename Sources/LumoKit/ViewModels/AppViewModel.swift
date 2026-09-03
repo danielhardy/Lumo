@@ -2200,6 +2200,11 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
         schedulePreview()
     }
 
+    func toggleCanvasZoom() {
+        canvasState.toggleFitAndRememberedZoom()
+        schedulePreview()
+    }
+
     func setCanvasZoom(_ value: CGFloat) {
         let oldValue = canvasState.navigation.zoom
         canvasState.setZoom(value)

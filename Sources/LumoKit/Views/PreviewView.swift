@@ -180,6 +180,7 @@ struct PreviewView: View {
                 surface: surface,
                 navigation: canvasState.navigation,
                 onScrollZoom: { factor in viewModel.zoomCanvas(by: factor) },
+                onDoubleClick: { viewModel.toggleCanvasZoom() },
                 onDrawableSizeChange: { size in viewModel.updatePreviewBackingSize(size) }
             )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -16,7 +16,7 @@ final class CanvasInteractionState: ObservableObject {
     @Published private(set) var cropAspectRatio: CropAspectRatio = .freeform
 
     func resetForSource() {
-        navigation.reset()
+        navigation.resetForSource()
         isCropToolActive = false
         cropDraft = nil
         cropAspectRatio = .freeform
@@ -25,6 +25,7 @@ final class CanvasInteractionState: ObservableObject {
     func fit() { navigation.fit() }
     func fill() { navigation.fill() }
     func reset() { navigation.reset() }
+    func toggleFitAndRememberedZoom() { navigation.toggleFitAndRememberedZoom() }
 
     func setZoom(_ value: CGFloat) {
         navigation.setZoom(value)
@@ -91,6 +92,17 @@ struct CanvasNavigation: Equatable, Sendable {
     /// relative to fit, which makes the zoom control stable as the window changes size.
     private(set) var zoom: CGFloat = 1
     private(set) var focalPoint = CGPoint(x: 0.5, y: 0.5)
+    /// The last finite zoom selected by an explicit control or a zoom gesture. Fit and Fill do not
+    /// clear this value so the canvas can return to the user's previous detail level.
+    private(set) var rememberedZoom: CGFloat?
+
+    /// A predictable detail level for the first double-click, before the user has chosen a custom
+    /// zoom. This is presentation state only and is intentionally independent of edit history.
+    static let doubleClickFallbackZoom: CGFloat = 2
+
+    init(rememberedZoom: CGFloat? = nil) {
+        self.rememberedZoom = rememberedZoom.map(Self.clampZoom)
+    }
 
     var zoomPercent: Int { Int((zoom * 100).rounded()) }
 
@@ -108,9 +120,29 @@ struct CanvasNavigation: Equatable, Sendable {
 
     mutating func reset() { fit() }
 
+    mutating func resetForSource() {
+        self = CanvasNavigation()
+    }
+
+    mutating func toggleFitAndRememberedZoom() {
+        guard mode == .fit else {
+            fit()
+            return
+        }
+
+        let target = Self.clampZoom(rememberedZoom ?? Self.doubleClickFallbackZoom)
+        rememberedZoom = target
+        mode = .custom
+        zoom = target
+        focalPoint = Self.center
+    }
+
     mutating func setZoom(_ value: CGFloat) {
         mode = .custom
         zoom = Self.clampZoom(value)
+        if value.isFinite {
+            rememberedZoom = zoom
+        }
     }
 
     mutating func multiplyZoom(by factor: CGFloat) {

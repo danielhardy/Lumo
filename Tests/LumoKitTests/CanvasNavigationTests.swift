@@ -52,6 +52,64 @@ final class CanvasNavigationTests: XCTestCase {
         XCTAssertEqual(navigation.zoom, CanvasNavigation.maximumZoom)
     }
 
+    func testDoubleClickUsesDeterministicFallbackAndTogglesBackToFit() {
+        var navigation = CanvasNavigation()
+
+        navigation.toggleFitAndRememberedZoom()
+        XCTAssertEqual(navigation.mode, .custom)
+        XCTAssertEqual(navigation.zoom, CanvasNavigation.doubleClickFallbackZoom)
+        XCTAssertEqual(navigation.rememberedZoom, CanvasNavigation.doubleClickFallbackZoom)
+
+        navigation.toggleFitAndRememberedZoom()
+        XCTAssertEqual(navigation.mode, .fit)
+        XCTAssertEqual(navigation.zoom, 1)
+        XCTAssertEqual(navigation.focalPoint, CanvasNavigation.center)
+        XCTAssertEqual(navigation.rememberedZoom, CanvasNavigation.doubleClickFallbackZoom)
+
+        navigation.toggleFitAndRememberedZoom()
+        XCTAssertEqual(navigation.mode, .custom)
+        XCTAssertEqual(navigation.zoom, CanvasNavigation.doubleClickFallbackZoom)
+    }
+
+    func testFitAndFillRetainTheLastChosenZoom() {
+        var navigation = CanvasNavigation()
+        navigation.setZoom(4)
+
+        navigation.fit()
+        XCTAssertEqual(navigation.rememberedZoom, 4)
+        navigation.toggleFitAndRememberedZoom()
+        XCTAssertEqual(navigation.zoom, 4)
+
+        navigation.fill()
+        navigation.toggleFitAndRememberedZoom()
+        XCTAssertEqual(navigation.mode, .fit)
+        XCTAssertEqual(navigation.rememberedZoom, 4)
+        navigation.toggleFitAndRememberedZoom()
+        XCTAssertEqual(navigation.mode, .custom)
+        XCTAssertEqual(navigation.zoom, 4)
+    }
+
+    func testRememberedZoomIsUpdatedByGestureAndClampedSafely() {
+        var navigation = CanvasNavigation()
+        navigation.multiplyZoom(by: 3)
+        XCTAssertEqual(navigation.rememberedZoom, 3)
+
+        navigation.fit()
+        navigation.toggleFitAndRememberedZoom()
+        XCTAssertEqual(navigation.zoom, 3)
+
+        navigation.setZoom(100)
+        XCTAssertEqual(navigation.rememberedZoom, CanvasNavigation.maximumZoom)
+        navigation.fit()
+        navigation.toggleFitAndRememberedZoom()
+        XCTAssertEqual(navigation.zoom, CanvasNavigation.maximumZoom)
+
+        let clamped = CanvasNavigation(rememberedZoom: .infinity)
+        XCTAssertEqual(clamped.rememberedZoom, 1)
+        XCTAssertEqual(CanvasNavigation(rememberedZoom: -10).rememberedZoom,
+                       CanvasNavigation.minimumZoom)
+    }
+
     func testFocalPointSurvivesViewportResize() {
         var navigation = CanvasNavigation()
         navigation.setZoom(3)
@@ -145,5 +203,19 @@ final class CanvasObservationTests: XCTestCase {
         XCTAssertEqual(viewModel.canvasState.navigation, CanvasNavigation())
         XCTAssertFalse(viewModel.canvasState.isCropToolActive)
         XCTAssertNil(viewModel.canvasState.cropDraft)
+    }
+
+    func testCanvasDoubleClickToggleIsPresentationOnly() {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        let document = viewModel.document
+
+        viewModel.toggleCanvasZoom()
+        XCTAssertEqual(viewModel.canvasNavigation.mode, .custom)
+        XCTAssertEqual(viewModel.canvasNavigation.zoom, CanvasNavigation.doubleClickFallbackZoom)
+        XCTAssertEqual(viewModel.document, document)
+
+        viewModel.toggleCanvasZoom()
+        XCTAssertEqual(viewModel.canvasNavigation.mode, .fit)
+        XCTAssertEqual(viewModel.document, document)
     }
 }

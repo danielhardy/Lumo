@@ -224,6 +224,7 @@ struct PreviewSurfaceView: NSViewRepresentable {
     @ObservedObject var surface: PreviewSurface
     var navigation: CanvasNavigation = CanvasNavigation()
     var onScrollZoom: ((CGFloat) -> Void)?
+    var onDoubleClick: (() -> Void)?
     /// The drawable reports backing pixels, which is the only reliable size across mixed-DPI
     /// windows and side-by-side panels. SwiftUI point geometry is not sufficient here.
     var onDrawableSizeChange: ((CGSize) -> Void)?
@@ -235,6 +236,7 @@ struct PreviewSurfaceView: NSViewRepresentable {
         context.coordinator.navigation = navigation
         context.coordinator.onDrawableSizeChange = onDrawableSizeChange
         view.onScrollZoom = onScrollZoom
+        view.onDoubleClick = onDoubleClick
         view.delegate = context.coordinator
         view.enableSetNeedsDisplay = true
         view.isPaused = true
@@ -248,7 +250,10 @@ struct PreviewSurfaceView: NSViewRepresentable {
         context.coordinator.surface = surface
         context.coordinator.navigation = navigation
         context.coordinator.onDrawableSizeChange = onDrawableSizeChange
-        if let view = view as? PreviewMTKView { view.onScrollZoom = onScrollZoom }
+        if let view = view as? PreviewMTKView {
+            view.onScrollZoom = onScrollZoom
+            view.onDoubleClick = onDoubleClick
+        }
         // SwiftUI may call updateNSView before the MTKView has a drawable (notably while a
         // NavigationSplitView is replacing the selected image). The delegate will retry when the
         // view is laid out and when it receives its next drawable instead of losing this revision.
@@ -448,6 +453,15 @@ struct PreviewSurfaceView: NSViewRepresentable {
 /// covers the case where SwiftUI's update arrived before the view had a drawable.
 private final class PreviewMTKView: MTKView {
     var onScrollZoom: ((CGFloat) -> Void)?
+    var onDoubleClick: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            onDoubleClick?()
+            return
+        }
+        super.mouseDown(with: event)
+    }
 
     override func scrollWheel(with event: NSEvent) {
         let delta = event.scrollingDeltaY
