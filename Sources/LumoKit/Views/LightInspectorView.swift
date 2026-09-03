@@ -40,13 +40,19 @@ struct LightInspectorView: View {
     }
 
     private var header: some View {
-        HStack {
-            Text("Light").font(.headline)
-            Spacer()
-            Button("Reset Light") { viewModel.resetAllLight() }
-                .buttonStyle(.link)
-                .disabled(!viewModel.hasLightAdjustments)
-                .accessibilityHint("Reset all Light controls, including the tone curve")
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Light").font(.headline)
+                Spacer()
+                Button("Reset Light") { viewModel.resetAllLight() }
+                    .buttonStyle(.link)
+                    .disabled(!viewModel.hasLightAdjustments)
+                    .accessibilityHint("Reset all Light controls, including the tone curve")
+            }
+            Text("Auto replaces global Light and Color values; other edits stay unchanged.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

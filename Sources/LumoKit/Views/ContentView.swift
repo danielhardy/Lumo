@@ -206,6 +206,20 @@ public struct ContentView: View {
             hasImage: viewModel.sourceImage != nil
         )
 
+        Button {
+            viewModel.runAutoAdjustment()
+        } label: {
+            if viewModel.isAutoAdjustmentInProgress {
+                Label("Auto…", systemImage: "hourglass")
+            } else {
+                Label("Auto", systemImage: "wand.and.stars")
+            }
+        }
+        .accessibilityLabel("Auto photo adjustment")
+        .accessibilityHint("Analyze the source and replace global Light and Color controls; other edits remain unchanged")
+        .help(viewModel.autoAdjustmentHelp)
+        .disabled(!viewModel.canRunAutoAdjustment)
+
         // An active retained side-by-side preference remains actionable on an identity document so
         // the user can return to single view after switching photos or using Reset Photo. Starting
         // side-by-side from single view still follows the meaningful-comparison gate.

@@ -45,6 +45,22 @@ struct MediaVolumeImportProgress: Equatable, Sendable {
     }
 }
 
+/// Lifecycle state for the source-statistics-driven Auto action.
+enum AutoAdjustmentState: Equatable, Sendable {
+    case unavailable(String)
+    case ready
+    case analyzing
+    case failed(String)
+
+    var message: String {
+        switch self {
+        case .unavailable(let message), .failed(let message): return message
+        case .ready: return "Analyze the source and replace global Light and Color with a conservative baseline."
+        case .analyzing: return "Analyzing the source for Auto adjustments…"
+        }
+    }
+}
+
 /// Central state for the Lumo app.
 @MainActor
 public final class AppViewModel: ObservableObject {
@@ -433,6 +449,13 @@ public final class AppViewModel: ObservableObject {
     private var histogramTaskRevision: UInt64?
     private var histogramTaskRequest: RenderRequest?
 
+    /// Auto has its own analysis lifecycle rather than borrowing the Info histogram's loading flag:
+    /// an Auto request must not make the histogram spinner appear to be waiting on unrelated work.
+    @Published private(set) var autoAdjustmentState: AutoAdjustmentState = .unavailable(
+        "Open a supported photo to enable Auto."
+    )
+    private var autoAdjustmentTask: Task<Void, Never>?
+
     @Published var isLoading: Bool = false
     enum PreviewState: Equatable, Sendable {
         case empty
@@ -564,6 +587,7 @@ public final class AppViewModel: ObservableObject {
         previewSurface.onPresentationFailure = { [weak self] in
             guard let self, self.sourceImage != nil else { return }
             self.previewState = .failed
+            self.autoAdjustmentState = .unavailable("Auto is unavailable because the photo preview failed.")
             self.statusMessage = "Could not display \(self.sourceName). Try Fit or reload the photo."
         }
         originalPreviewSurface.onPresentationFailure = { [weak self] in
@@ -606,6 +630,7 @@ public final class AppViewModel: ObservableObject {
             guard request.quality == .preview else { return }
             guard let self, request.source == self.imageSource else { return }
             self.previewState = .failed
+            self.autoAdjustmentState = .unavailable("Auto is unavailable because the photo preview failed.")
             self.statusMessage = "Could not render \(self.sourceName)"
         }
 
@@ -735,6 +760,95 @@ public final class AppViewModel: ObservableObject {
         errorMessage = message
     }
 
+    // MARK: - Auto adjustment
+
+    /// Whether the one-click action has a settled source render to analyze. The transparent source
+    /// marker installed during preparation is deliberately not enough: Auto becomes available only
+    /// after a real frame has made it through the presentation lifecycle.
+    var canRunAutoAdjustment: Bool {
+        sourceImage != nil && imageSource != nil && lastPresentedVisibleRequest != nil
+            && previewState == .ready && autoAdjustmentState != .analyzing
+    }
+
+    var isAutoAdjustmentInProgress: Bool {
+        if case .analyzing = autoAdjustmentState { return true }
+        return false
+    }
+
+    var autoAdjustmentHelp: String {
+        if canRunAutoAdjustment || isAutoAdjustmentInProgress {
+            return autoAdjustmentState.message
+        }
+        if previewState == .failed {
+            return "Auto is unavailable because the photo preview failed. Reload the photo to try again."
+        }
+        if sourceImage == nil || imageSource == nil {
+            return "Open a supported photo to enable Auto."
+        }
+        return "Auto is available when the photo preview is ready."
+    }
+
+    /// Analyze the current source, then replace only global Light and global Color values. The
+    /// result enters `updateDocument`, so it receives normal per-photo persistence and one undo
+    /// operation. RAW/develop, legacy nodes, Looks, Effects, crop, mixer, and grading are retained.
+    func runAutoAdjustment() {
+        guard canRunAutoAdjustment, let imageSource else { return }
+        endUndoGrouping()
+
+        let sourceRevision = self.sourceRevision
+        let documentRevision = self.documentRevision
+        var analysisDocument = document
+        analysisDocument.light = .neutral
+        analysisDocument.color.vibrance = 0
+        analysisDocument.color.saturation = 0
+        // Do not compensate for an existing Look. Auto is a source baseline; applying it also
+        // preserves the active Look on the document below.
+        analysisDocument.lut = .none
+        let engine = self.engine
+        autoAdjustmentState = .analyzing
+        statusMessage = "Analyzing \(sourceName) for Auto adjustments…"
+        autoAdjustmentTask?.cancel()
+        autoAdjustmentTask = Task { @MainActor [weak self, engine] in
+            let histogram = await engine.histogram(
+                source: imageSource,
+                document: analysisDocument,
+                lut: nil,
+                scale: .preview(maxSize: CGSize(width: 1600, height: 1200)),
+                space: .current,
+                maxDimension: AutoAdjustmentSettings.default.histogramMaxDimension
+            )
+
+            guard !Task.isCancelled, let self else { return }
+            guard self.sourceRevision == sourceRevision,
+                  self.documentRevision == documentRevision,
+                  self.imageSource == imageSource else {
+                self.autoAdjustmentState = .ready
+                return
+            }
+            guard let histogram,
+                  let result = AutoAdjustmentAnalyzer.analyze(histogram: histogram) else {
+                let message = "Auto could not analyze \(self.sourceName). Try reloading the photo."
+                self.autoAdjustmentState = .failed(message)
+                self.statusMessage = message
+                return
+            }
+
+            self.updateDocument { document in
+                document.light = result.light
+                document.color.vibrance = result.color.vibrance
+                document.color.saturation = result.color.saturation
+            }
+            self.autoAdjustmentState = .ready
+            self.statusMessage = "Auto applied — Light and Color baseline (undo to restore previous edits)"
+        }
+    }
+
+    private func cancelAutoAdjustment() {
+        autoAdjustmentTask?.cancel()
+        autoAdjustmentTask = nil
+        autoAdjustmentState = .unavailable("Auto is available when the photo preview is ready.")
+    }
+
     // MARK: - Image loading
 
     func openImage(url: URL) {
@@ -756,6 +870,7 @@ public final class AppViewModel: ObservableObject {
     ) {
         let assetID = assetID ?? (url.map(PhotoAssetID.file) ?? data.map(PhotoAssetID.data) ?? .data(Data()))
         endUndoGrouping()
+        cancelAutoAdjustment()
         // Discrete edits are queued normally; switching sources is a durability boundary for them.
         // Do not rewrite an unchanged document merely because navigation occurred.
         requestPersistenceFlush()
@@ -2188,6 +2303,7 @@ public final class AppViewModel: ObservableObject {
         guard publication.gpuImage != nil || publication.image != nil else {
             if publication.phase == .settled {
                 previewState = .failed
+                autoAdjustmentState = .unavailable("Auto is unavailable because the photo preview failed.")
                 statusMessage = "Could not render \(sourceName)"
             }
             return
@@ -2205,6 +2321,7 @@ public final class AppViewModel: ObservableObject {
               displayRevision == self.displayRevision,
               request.source == imageSource else { return }
         previewState = .ready
+        if !isAutoAdjustmentInProgress { autoAdjustmentState = .ready }
         lastPresentedVisibleRequest = request
         let needsComparisonRefresh = pendingDevelopChange
         pendingDevelopChange = false
