@@ -673,8 +673,9 @@ final class ImageCollection: ObservableObject {
         scanTask = nil
         stopMetadataLoading()
         stopScopedURL()
-        _ = volume.url.startAccessingSecurityScopedResource()
-        scopedURL = volume.url
+        let accessURL = volume.resolvedAccessURL()
+        _ = accessURL.startAccessingSecurityScopedResource()
+        scopedURL = accessURL
 
         items = []
         pendingImportSlots.removeAll()

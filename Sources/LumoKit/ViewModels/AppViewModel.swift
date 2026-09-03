@@ -455,8 +455,9 @@ public final class AppViewModel: ObservableObject {
     /// operation and is cleared once the provider has finished or cancellation was requested.
     @Published private(set) var photosImportProgress: PhotosImportProgress?
 
-    /// Supported removable volumes are discovered independently of the selector so the Import menu
-    /// can name only mounted volumes that actually contain supported images.
+    /// Removable volumes are discovered independently of the selector so the Import menu can name
+    /// mounted volumes that contain supported images, or offer a permission-recovery path when
+    /// the sandbox cannot inspect a volume until the user selects it.
     @Published private(set) var removableMediaVolumes: [MediaVolume] = []
     @Published var isRemovableMediaSelectorPresented = false
     @Published private(set) var removableMediaVolume: MediaVolume?
@@ -1135,9 +1136,61 @@ public final class AppViewModel: ObservableObject {
                 // Closing the sheet is a normal, recoverable cancellation.
             } catch {
                 guard let self else { return }
+                if case .permissionDenied = error as? MediaVolumeError,
+                   provider.supportsInteractiveAccessGrant,
+                   let grantedVolume = self.requestRemovableMediaAccess(for: volume) {
+                    self.removableMediaVolume = grantedVolume
+                    self.removableMediaVolumes = self.removableMediaVolumes.map { candidate in
+                        candidate.id == volume.id ? grantedVolume : candidate
+                    }
+                    do {
+                        let result = try await provider.scan(grantedVolume)
+                        guard !Task.isCancelled else { return }
+                        self.publishRemovableMediaScan(result)
+                        return
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        self.isRemovableMediaScanning = false
+                        self.removableMediaWarnings = [error.localizedDescription]
+                        return
+                    }
+                }
                 self.isRemovableMediaScanning = false
                 self.removableMediaWarnings = [error.localizedDescription]
             }
+        }
+    }
+
+    /// Raw mounted-volume URLs are not security-scoped URLs. If the removable-media entitlement
+    /// is not enough for a particular volume class, an Open panel supplies the user grant and a
+    /// bookmark that the provider resolves for the scan and the later URL-backed import.
+    private func requestRemovableMediaAccess(for volume: MediaVolume) -> MediaVolume? {
+        let panel = NSOpenPanel()
+        panel.title = "Grant Access to \(volume.name)"
+        panel.message = "Select the root of \(volume.name) to let Lumo read its images."
+        panel.prompt = "Grant Access"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.directoryURL = volume.url
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return MediaVolume(
+            id: volume.id,
+            name: volume.name,
+            url: url,
+            bookmarkData: PhotoAssetSource.bookmarkData(for: url)
+        )
+    }
+
+    private func publishRemovableMediaScan(_ result: MediaVolumeScanResult) {
+        removableMediaFiles = result.files
+        removableMediaWarnings = result.warnings
+        removableMediaSelection.selectAll(in: result.files)
+        isRemovableMediaScanning = false
+        if result.files.isEmpty {
+            removableMediaWarnings.append("No supported images were found on this volume.")
         }
     }
 
@@ -1180,6 +1233,9 @@ public final class AppViewModel: ObservableObject {
         let sourceFiles = selected
         mediaVolumeImportTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            let accessURL = volume.resolvedAccessURL()
+            let hasScope = accessURL.startAccessingSecurityScopedResource()
+            defer { if hasScope { accessURL.stopAccessingSecurityScopedResource() } }
             var usable: [MediaVolumeFile] = []
             for file in sourceFiles {
                 guard !Task.isCancelled else {

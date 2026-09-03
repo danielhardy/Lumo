@@ -37,6 +37,23 @@ final class MediaVolumeImportTests: TempDirectoryTestCase {
         XCTAssertEqual(try Data(contentsOf: good), try Data(contentsOf: good), "source is untouched")
     }
 
+    func testMountedScannerResolvesAUserGrantedBookmarkBeforeScanning() async throws {
+        let imageURL = try Fixtures.writeJPEG(
+            width: 24, height: 12, orientation: 1, named: "granted.jpg", in: tempDirectory
+        )
+        let bookmark = try tempDirectory.bookmarkData(
+            options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil
+        )
+        let inaccessibleRawURL = tempDirectory.appendingPathComponent("raw-mount-no-longer-valid")
+        let volume = MediaVolume(
+            name: "Granted Card", url: inaccessibleRawURL, bookmarkData: bookmark
+        )
+
+        let result = try await MountedMediaVolumeProvider().scan(volume)
+
+        XCTAssertEqual(result.files.map(\.url), [imageURL.standardizedFileURL])
+    }
+
     func testInjectedProviderCoversDiscoveryScanAndFailureState() async throws {
         let imageURL = try Fixtures.writeJPEG(
             width: 32, height: 16, orientation: 1, named: "shot.jpg", in: tempDirectory

@@ -19,6 +19,19 @@ struct MediaVolume: Identifiable, Codable, Hashable, Sendable {
         self.url = canonical
         self.bookmarkData = bookmarkData
     }
+
+    /// Resolve a bookmark granted by an Open panel before touching the volume. Discovery can
+    /// produce a raw mount URL, while a sandbox fallback produces a security-scoped URL.
+    func resolvedAccessURL() -> URL {
+        guard let bookmarkData else { return url }
+        var isStale = false
+        return (try? URL(
+            resolvingBookmarkData: bookmarkData,
+            options: [.withSecurityScope],
+            relativeTo: nil,
+            bookmarkDataIsStale: &isStale
+        )) ?? url
+    }
 }
 
 /// One image admitted by a removable-volume scan.  The selector gets display-ready metadata here,
@@ -109,11 +122,20 @@ enum MediaVolumeError: LocalizedError, Sendable, Equatable {
 /// Discovery and scanning are injected so removable-media behavior can be exercised with fixture
 /// volumes and failure-injecting fakes. The production implementation never writes to a volume.
 protocol MediaVolumeProviding: Sendable {
+    /// Whether a permission failure can be recovered by asking the user to select the volume in
+    /// an Open panel. Fixture providers leave this false so tests never present AppKit UI.
+    var supportsInteractiveAccessGrant: Bool { get }
     func discover() async -> [MediaVolume]
     func scan(_ volume: MediaVolume) async throws -> MediaVolumeScanResult
 }
 
+extension MediaVolumeProviding {
+    var supportsInteractiveAccessGrant: Bool { false }
+}
+
 struct MountedMediaVolumeProvider: MediaVolumeProviding {
+    let supportsInteractiveAccessGrant = true
+
     func discover() async -> [MediaVolume] {
         await Task.detached(priority: .utility) {
             Self.discoverMountedVolumes()
@@ -136,9 +158,14 @@ struct MountedMediaVolumeProvider: MediaVolumeProviding {
 
         return urls.compactMap { url in
             guard let values = try? url.resourceValues(forKeys: keys),
-                  values.volumeIsRemovable == true || values.volumeIsEjectable == true,
-                  FileManager.default.isReadableFile(atPath: url.path),
-                  containsSupportedFile(in: url) else { return nil }
+                  values.volumeIsRemovable == true || values.volumeIsEjectable == true else {
+                return nil
+            }
+            // With the removable-media entitlement, most mounts are readable here. If the
+            // entitlement is unavailable or macOS requires a user grant, keep the volume visible
+            // so scan() can recover through the Open panel instead of hiding the device.
+            let isReadable = FileManager.default.isReadableFile(atPath: url.path)
+            guard !isReadable || containsSupportedFile(in: url) else { return nil }
             let name = values.volumeName?.trimmingCharacters(in: .whitespacesAndNewlines)
                 .nilIfEmpty ?? url.lastPathComponent
             return MediaVolume(
@@ -163,16 +190,17 @@ struct MountedMediaVolumeProvider: MediaVolumeProviding {
     }
 
     private static func scanMountedVolume(_ volume: MediaVolume) throws -> MediaVolumeScanResult {
-        guard FileManager.default.fileExists(atPath: volume.url.path) else {
+        let accessURL = volume.resolvedAccessURL()
+        guard FileManager.default.fileExists(atPath: accessURL.path) else {
             throw MediaVolumeError.volumeRemoved(volume.name)
         }
-        guard volume.url.startAccessingSecurityScopedResource() ||
-            FileManager.default.isReadableFile(atPath: volume.url.path) else {
+        let hasScope = accessURL.startAccessingSecurityScopedResource()
+        guard hasScope || FileManager.default.isReadableFile(atPath: accessURL.path) else {
             throw MediaVolumeError.permissionDenied(volume.name)
         }
-        defer { volume.url.stopAccessingSecurityScopedResource() }
+        defer { if hasScope { accessURL.stopAccessingSecurityScopedResource() } }
         guard let enumerator = FileManager.default.enumerator(
-            at: volume.url, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]
+            at: accessURL, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]
         ) else {
             throw MediaVolumeError.unreadable(volume.name)
         }

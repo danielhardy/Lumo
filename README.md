@@ -210,7 +210,17 @@ swift test
 catalog or App Sandbox entitlements, so the app icon and security-scoped bookmark persistence are
 not active in that mode. For bundled app behavior, open `Package.swift` in Xcode, select the
 **Lumo** scheme, and run. The included [`Lumo.entitlements`](Sources/Lumo/Lumo.entitlements) is
-configured for user-selected read/write access and app-scope bookmarks.
+configured for user-selected read/write access, read-only access to mounted removable media, and
+app-scope bookmarks.
+
+The removable-media import flow is intentionally read-only. `MountedMediaVolumeProvider` discovers
+supported files on mounted removable/ejectable volumes under the removable-media entitlement; it
+does not write to the source volume. The provider still attempts
+`startAccessingSecurityScopedResource()` because a caller may supply a scoped URL, but raw mount
+URLs are normally entitlement-authorized rather than security-scoped. If macOS does not authorize
+a particular volume class from the entitlement alone, Lumo keeps the volume visible, asks the user
+to select its root in an Open panel, and scans the resulting security-scoped bookmark. Run the full
+Xcode-built app to verify this path; `swift run` does not apply the entitlement.
 
 The suite currently contains **574 XCTest methods**. Fixtures are generated in temporary
 directories; RAW-dependent tests may use files under `realworldtest/` and skip cleanly when a
