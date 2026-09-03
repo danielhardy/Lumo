@@ -454,6 +454,10 @@ public final class AppViewModel: ObservableObject {
     /// successful originals visible as soon as they arrive; this state only describes the picker
     /// operation and is cleared once the provider has finished or cancellation was requested.
     @Published private(set) var photosImportProgress: PhotosImportProgress?
+    /// Presentation is a property of the import operation, not of each item. This prevents a
+    /// later streamed arrival (or a second load triggered by metadata work) from reopening or
+    /// retargeting the inspector after the first accepted item has established the active photo.
+    private var didPresentInspectorForPhotosImport = false
 
     /// Removable volumes are discovered independently of the selector so the Import menu can name
     /// mounted volumes that contain supported images, or offer a permission-recovery path when
@@ -803,7 +807,9 @@ public final class AppViewModel: ObservableObject {
         // opens next, or an unrelated first edit on the new image would render a comparison baseline
         // for develop settings that were never actually touched on it.
         pendingDevelopChange = false
-        keepInspectorTabValid()
+        // Keep the tab during the transient no-source interval. The new source publication below
+        // validates it once its actual capabilities are known; resetting here would make an import
+        // change an unrelated inspector preference merely because source preparation is async.
 
         isLoading = true
         statusMessage = "Loading \(name)..."
@@ -1005,6 +1011,7 @@ public final class AppViewModel: ObservableObject {
     }
 
     func beginPhotosImport(totalCount: Int) {
+        didPresentInspectorForPhotosImport = false
         collection.beginDataImport(reservedCount: max(0, totalCount))
         photosImportProgress = PhotosImportProgress(
             total: max(0, totalCount), processed: 0, imported: 0, failed: 0,
@@ -1039,7 +1046,19 @@ public final class AppViewModel: ObservableObject {
         if collection.importedDataCount == 1 {
             load(name: item.name, url: nil, data: item.data, assetID: assetID,
                  traceQuality: "photosImport")
+            presentInspectorForFirstPhotosImportItem()
         }
+    }
+
+    /// Present the existing inspector exactly once for the first accepted Photos payload. The
+    /// selected tab belongs to the user's inspector preferences, so opening the panel must not
+    /// force Info or disturb it; `load()` has already cleared metadata and histogram state for the
+    /// new active source before this presentation change is published.
+    private func presentInspectorForFirstPhotosImportItem() {
+        guard !didPresentInspectorForPhotosImport else { return }
+        didPresentInspectorForPhotosImport = true
+        guard !inspectorState.isPresented else { return }
+        inspectorState.isPresented = true
     }
 
     func recordPhotosImportFailure(name: String, ordinal: Int? = nil) {

@@ -265,4 +265,84 @@ final class PhotosImportTests: TempDirectoryTestCase {
         XCTAssertEqual(viewModel.collection.items[0].imageData, data)
         XCTAssertTrue(viewModel.statusMessage.contains("cancelled"))
     }
+
+    func testFirstSuccessfulImportPresentsInspectorOnceAndPreservesInspectorState() throws {
+        let url = try Fixtures.writeJPEG(
+            width: 32, height: 24, orientation: 1, named: "inspector-import.jpg", in: tempDirectory
+        )
+        let data = try Data(contentsOf: url)
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        viewModel.inspectorTab = .effects
+        viewModel.metadata.make = "stale camera"
+        viewModel.histogram = HistogramData(
+            red: [1], green: [1], blue: [1], luma: [1]
+        )
+
+        viewModel.beginPhotosImport(totalCount: 2)
+        XCTAssertFalse(viewModel.isInspectorPresented)
+
+        viewModel.appendPhotosImport(
+            ImageCollection.PhotoImportItem(name: "First", data: data, localIdentifier: "first"),
+            ordinal: 0
+        )
+
+        XCTAssertTrue(viewModel.isInspectorPresented)
+        XCTAssertEqual(viewModel.inspectorTab, .effects)
+        XCTAssertTrue(viewModel.metadata.isEmpty)
+        XCTAssertNil(viewModel.histogram)
+
+        viewModel.appendPhotosImport(
+            ImageCollection.PhotoImportItem(name: "Second", data: data, localIdentifier: "second"),
+            ordinal: 1
+        )
+
+        XCTAssertTrue(viewModel.isInspectorPresented)
+        XCTAssertEqual(viewModel.inspectorTab, .effects)
+        XCTAssertEqual(viewModel.collection.selection.activeID, viewModel.collection.items[0].id)
+    }
+
+    func testPhotosImportWithoutAnAcceptedItemLeavesInspectorPresentationUnchanged() throws {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+
+        viewModel.beginPhotosImport(totalCount: 2)
+        viewModel.recordPhotosImportFailure(name: "Unavailable", ordinal: 0)
+        viewModel.recordPhotosImportFailure(name: "Unavailable", ordinal: 1)
+        viewModel.finishPhotosImport(cancelled: false)
+        XCTAssertFalse(viewModel.isInspectorPresented)
+
+        viewModel.beginPhotosImport(totalCount: 1)
+        viewModel.finishPhotosImport(cancelled: true)
+        XCTAssertFalse(viewModel.isInspectorPresented)
+
+        viewModel.beginPhotosImport(totalCount: 0)
+        viewModel.finishPhotosImport(cancelled: false)
+        XCTAssertFalse(viewModel.isInspectorPresented)
+    }
+
+    func testRepeatedPhotosImportsDoNotReopenOrChangeInspectorTab() throws {
+        let url = try Fixtures.writeJPEG(
+            width: 32, height: 24, orientation: 1, named: "repeated-import.jpg", in: tempDirectory
+        )
+        let data = try Data(contentsOf: url)
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        viewModel.inspectorTab = .look
+
+        viewModel.beginPhotosImport(totalCount: 1)
+        viewModel.appendPhotosImport(
+            ImageCollection.PhotoImportItem(name: "First", data: data, localIdentifier: "first"),
+            ordinal: 0
+        )
+        viewModel.finishPhotosImport(cancelled: false)
+        XCTAssertTrue(viewModel.isInspectorPresented)
+        XCTAssertEqual(viewModel.inspectorTab, .look)
+
+        viewModel.beginPhotosImport(totalCount: 1)
+        viewModel.appendPhotosImport(
+            ImageCollection.PhotoImportItem(name: "Second", data: data, localIdentifier: "second"),
+            ordinal: 0
+        )
+
+        XCTAssertTrue(viewModel.isInspectorPresented)
+        XCTAssertEqual(viewModel.inspectorTab, .look)
+    }
 }
