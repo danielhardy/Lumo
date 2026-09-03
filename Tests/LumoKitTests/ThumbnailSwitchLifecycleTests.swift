@@ -61,6 +61,42 @@ final class ThumbnailSwitchLifecycleTests: TempDirectoryTestCase {
         XCTAssertTrue(requests.last?.source?.backing == .url(second))
     }
 
+    func testSequentialOpenPresentsReplacementWithoutAnotherUserAction() async throws {
+        let first = try Fixtures.writeGradientPNG(
+            width: 16, height: 12, named: "sequential-first.png", in: tempDirectory
+        )
+        let second = try Fixtures.writeGradientPNG(
+            width: 16, height: 12, named: "sequential-second.png", in: tempDirectory
+        )
+        let engine = FakeRenderEngine()
+        let viewModel = AppViewModel(engine: engine)
+
+        viewModel.openImage(url: first)
+        try await waitUntil("the first preview") {
+            viewModel.sourceURL == first && viewModel.previewState == .ready
+                && viewModel.previewSurface.image != nil
+        }
+
+        // Keep the replacement renderer in flight. The test releases only B and never performs a
+        // second model/view action after that release, matching the reported spinner failure.
+        await engine.gatePreviews()
+        viewModel.openImage(url: second)
+        try await waitUntil("the second preview request") {
+            let requests = await engine.previewRequests
+            return viewModel.sourceURL == second
+                && requests.contains { $0.source?.backing == .url(second) }
+        }
+        XCTAssertEqual(viewModel.previewState, .loading)
+        XCTAssertFalse(viewModel.isLoading, "source preparation is complete while B renders")
+
+        await engine.releaseNextPreview()
+        try await waitUntil("the second preview") {
+            viewModel.sourceURL == second && viewModel.previewState == .ready
+                && viewModel.previewSurface.image != nil
+        }
+        XCTAssertFalse(viewModel.isLoading)
+    }
+
     func testRapidThumbnailChangesCannotPublishAnObsoleteSourceOrHistogram() async throws {
         let first = try Fixtures.writeGradientPNG(
             width: 16, height: 12, named: "first.png", in: tempDirectory

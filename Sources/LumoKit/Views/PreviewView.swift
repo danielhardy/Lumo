@@ -5,6 +5,11 @@ import SwiftUI
 struct PreviewView: View {
     @ObservedObject var viewModel: AppViewModel
     @ObservedObject var canvasState: CanvasInteractionState
+    // The preview image is owned by a separate observation boundary. Keep observing it even while
+    // the spinner is on screen; otherwise a completed replacement render can sit in the surface
+    // until an unrelated AppViewModel change causes this view to rebuild.
+    @ObservedObject private var previewSurface: PreviewSurface
+    @ObservedObject private var originalPreviewSurface: PreviewSurface
     @State private var dragTranslation: CGSize = .zero
     @State private var magnification: CGFloat = 1
     @State private var isDraggingCanvas = false
@@ -13,6 +18,8 @@ struct PreviewView: View {
     init(viewModel: AppViewModel) {
         _viewModel = ObservedObject(wrappedValue: viewModel)
         _canvasState = ObservedObject(wrappedValue: viewModel.canvasState)
+        _previewSurface = ObservedObject(wrappedValue: viewModel.previewSurface)
+        _originalPreviewSurface = ObservedObject(wrappedValue: viewModel.originalPreviewSurface)
     }
 
     /// The shell around the Metal image surface follows the window appearance. The Metal
@@ -24,7 +31,7 @@ struct PreviewView: View {
         ZStack {
             bgColor
 
-            if viewModel.previewSurface.image != nil {
+            if previewSurface.image != nil {
                 if canvasState.isCropToolActive {
                     singleView
                 } else if viewModel.isSideBySideVisible {
@@ -67,7 +74,7 @@ struct PreviewView: View {
             HStack(spacing: 2) {
                 // Original
                 panelView(
-                    surface: viewModel.originalPreviewSurface,
+                    surface: originalPreviewSurface,
                     label: "Original",
                     labelSide: .leading,
                     width: geo.size.width / 2
@@ -80,7 +87,7 @@ struct PreviewView: View {
 
                 // Look applied
                 panelView(
-                    surface: viewModel.previewSurface,
+                    surface: previewSurface,
                     label: viewModel.selectedLook?.name ?? "Adjusted",
                     labelSide: .trailing,
                     width: geo.size.width / 2
@@ -115,8 +122,8 @@ struct PreviewView: View {
     private var singleView: some View {
         GeometryReader { geometry in
             ZStack {
-                if viewModel.previewSurface.image != nil {
-                    canvasSurface(viewModel.previewSurface)
+                if previewSurface.image != nil {
+                    canvasSurface(previewSurface)
                         .padding(8)
                 }
 
@@ -134,7 +141,7 @@ struct PreviewView: View {
                     .padding(8)
                 }
 
-                if viewModel.previewSurface.image != nil {
+                if previewSurface.image != nil {
                     // Comparison badge
                     if viewModel.isShowingOriginal && viewModel.isComparisonAvailable {
                         VStack {
