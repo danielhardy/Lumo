@@ -68,6 +68,8 @@ actor FakeRenderEngine: RenderEngining {
     private var histogramIsGated = false
     private var parkedHistograms: [CheckedContinuation<Void, Never>] = []
     private var shouldFailHistogram = false
+    private var previewIsGated = false
+    private var parkedPreviews: [CheckedContinuation<Void, Never>] = []
 
     struct Request: Equatable {
         let document: EditDocument
@@ -131,6 +133,9 @@ actor FakeRenderEngine: RenderEngining {
         switch request.output {
         case .raster:
             previewRequests.append(record)
+            if previewIsGated {
+                await withCheckedContinuation { parkedPreviews.append($0) }
+            }
             guard let image = previewResult ?? Self.solidImage(),
                   let data = Self.pngData(for: image)
             else { throw ImageError.processingFailed }
@@ -205,6 +210,22 @@ actor FakeRenderEngine: RenderEngining {
         histogramIsGated = false
         let parked = parkedHistograms
         parkedHistograms.removeAll()
+        parked.forEach { $0.resume() }
+    }
+
+    /// Hold raster preview requests so comparison tests can release an obsolete baseline after a
+    /// source switch and prove its generation guard rejects the late result.
+    func gatePreviews() { previewIsGated = true }
+
+    func releaseNextPreview() {
+        guard !parkedPreviews.isEmpty else { return }
+        parkedPreviews.removeFirst().resume()
+    }
+
+    func releasePreviews() {
+        previewIsGated = false
+        let parked = parkedPreviews
+        parkedPreviews.removeAll()
         parked.forEach { $0.resume() }
     }
 

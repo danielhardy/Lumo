@@ -94,7 +94,14 @@ struct PreviewView: View {
         ZStack(alignment: labelSide == .leading ? .topLeading : .topTrailing) {
             bgColor
 
-            if surface.image != nil { canvasSurface(surface) }
+            if surface.image != nil {
+                canvasSurface(surface)
+            } else {
+                ProgressView()
+                    .scaleEffect(1.2)
+                    .progressViewStyle(.circular)
+                    .accessibilityLabel("Loading Original preview")
+            }
 
             ComparisonBadge(text: label)
                 .padding(12)

@@ -262,6 +262,9 @@ public final class AppViewModel: ObservableObject {
     /// The last settled request confirmed by the presentation surface. Supporting work is never
     /// admitted before this lifecycle boundary.
     private var lastPresentedVisibleRequest: RenderRequest?
+    /// The newest settled request accepted by the preview surface. Mode entry may use this current
+    /// candidate before drawable confirmation, but it must never fall back to an older document.
+    private var lastPublishedVisibleRequest: RenderRequest?
     private var isPreviewInteractionActive = false
 
     /// Whether any call since the last fired render changed a comparison-frame stage.
@@ -942,6 +945,7 @@ public final class AppViewModel: ObservableObject {
         // inspector while its pixels are being decoded.
         imageSource = nil
         lastPresentedVisibleRequest = nil
+        lastPublishedVisibleRequest = nil
         sourceURL = nil
         sourceSize = .zero
         isPreviewInteractionActive = false
@@ -1799,6 +1803,7 @@ public final class AppViewModel: ObservableObject {
         if comparisonChanged {
             comparisonRevision &+= 1
             cancelComparisonPreview(pump: false)
+            originalPreviewSurface.clear()
         }
         // OR'd in rather than assigned: a call earlier in a coalesced burst may have changed a
         // comparison-frame stage even though this call did not, and only the last call's task
@@ -2296,6 +2301,7 @@ public final class AppViewModel: ObservableObject {
         if comparisonChanged {
             comparisonRevision &+= 1
             cancelComparisonPreview(pump: false)
+            originalPreviewSurface.clear()
         }
         pendingDevelopChange = comparisonChanged
         schedulePreview()
@@ -2350,6 +2356,9 @@ public final class AppViewModel: ObservableObject {
             }
             return
         }
+        if publication.phase == .settled {
+            lastPublishedVisibleRequest = request
+        }
 
     }
 
@@ -2376,9 +2385,18 @@ public final class AppViewModel: ObservableObject {
     }
 
     /// Rasterize the comparison baseline for the side-by-side left panel. Only needs to re-run when
-    /// the image or the develop settings change — not when the look does.
-    private func scheduleOriginalPreview(allowHiddenPreparation: Bool = false) {
-        guard lastPresentedVisibleRequest != nil,
+    /// the image or the develop settings change — not when the look does. A mode-entry request may
+    /// start from the current preview candidate before its drawable confirmation arrives; normal
+    /// supporting work remains gated on that confirmation below.
+    private func scheduleOriginalPreview(
+        allowHiddenPreparation: Bool = false,
+        allowBeforePresentationConfirmation: Bool = false
+    ) {
+        let hasCurrentPreviewCandidate = allowBeforePresentationConfirmation
+            && previewSurface.image != nil
+            && lastPublishedVisibleRequest?.source == imageSource
+            && lastPublishedVisibleRequest?.document == document
+        guard (lastPresentedVisibleRequest != nil || hasCurrentPreviewCandidate),
               (isSideBySideVisible || allowHiddenPreparation),
               let imageSource else {
             cancelComparisonPreview()
@@ -2448,7 +2466,7 @@ public final class AppViewModel: ObservableObject {
         guard isComparisonAvailable || isSideBySideVisible else { return false }
         isSideBySide.toggle()
         if isSideBySide {
-            scheduleOriginalPreview()
+            scheduleOriginalPreview(allowBeforePresentationConfirmation: true)
         } else {
             cancelComparisonPreview()
             originalPreviewSurface.clear()

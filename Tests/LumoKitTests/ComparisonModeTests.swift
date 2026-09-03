@@ -165,6 +165,148 @@ final class ComparisonModeTests: TempDirectoryTestCase {
         XCTAssertFalse(viewModel.isSideBySide)
     }
 
+    func testEnteringSideBySideAfterSettledPreviewRequestsAndPublishesBaseline() async throws {
+        let defaults = makeDefaults()
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(
+            engine: fake,
+            editStore: EditDocumentStore(
+                fileURL: tempDirectory.appendingPathComponent("settled-entry-edits.json")
+            ),
+            preferences: defaults
+        )
+        let image = try Fixtures.writeGradientPNG(
+            width: 16, height: 12, named: "settled-entry.png", in: tempDirectory
+        )
+
+        viewModel.openImage(url: image)
+        try await waitUntil("the settled adjusted preview") {
+            viewModel.sourceName == image.lastPathComponent
+                && viewModel.previewSurface.image != nil
+        }
+        viewModel.updateDocument { $0.adjustments = [.exposure(ev: 0.5)] }
+        let expectedDocument = viewModel.document
+        try await waitUntil("the settled edited preview") {
+            guard viewModel.document == expectedDocument else { return false }
+            let requests = await fake.previewRequests
+            return requests.contains { $0.document == expectedDocument }
+        }
+
+        let requestCountBeforeToggle = await fake.previewRequests.count
+        XCTAssertTrue(viewModel.toggleSideBySide())
+
+        try await waitUntil("the baseline preview") {
+            viewModel.isSideBySideVisible
+                && viewModel.originalPreviewSurface.image != nil
+        }
+        let requests = await fake.previewRequests
+        XCTAssertGreaterThan(requests.count, requestCountBeforeToggle)
+        XCTAssertTrue(requests.contains {
+            $0.document == viewModel.document.comparisonBaseline
+                && $0.lutID == nil
+                && $0.source?.backing == .url(image)
+        })
+        XCTAssertNotNil(viewModel.previewSurface.image)
+        XCTAssertNotNil(viewModel.originalPreviewSurface.image)
+    }
+
+    func testEntryDoesNotWaitForDrawableConfirmationBeforeRequestingBaseline() async throws {
+        let defaults = makeDefaults()
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(
+            engine: fake,
+            editStore: EditDocumentStore(
+                fileURL: tempDirectory.appendingPathComponent("drawable-entry-edits.json")
+            ),
+            preferences: defaults
+        )
+        // The real MTKView owns this lifecycle. Modeling it here keeps the regression test focused
+        // on the gap between a settled publication and its later drawable confirmation.
+        viewModel.previewSurface.attachPresentationLifecycle()
+        let image = try Fixtures.writeGradientPNG(
+            width: 16, height: 12, named: "drawable-entry.png", in: tempDirectory
+        )
+
+        viewModel.openImage(url: image)
+        try await waitUntil("the initial preview publication") {
+            viewModel.sourceName == image.lastPathComponent
+                && viewModel.previewSurface.image != nil
+        }
+        viewModel.updateDocument { $0.adjustments = [.exposure(ev: 0.5)] }
+        let expectedDocument = viewModel.document
+        try await waitUntil("the settled edited publication") {
+            guard viewModel.document == expectedDocument else { return false }
+            let requests = await fake.previewRequests
+            return requests.contains { $0.document == expectedDocument }
+        }
+
+        XCTAssertTrue(viewModel.toggleSideBySide())
+        try await waitUntil("the baseline without drawable confirmation") {
+            viewModel.isSideBySideVisible
+                && viewModel.originalPreviewSurface.image != nil
+        }
+        let requests = await fake.previewRequests
+        XCTAssertTrue(requests.contains {
+            $0.document == viewModel.document.comparisonBaseline && $0.lutID == nil
+        })
+    }
+
+    func testLateBaselineFromPreviousPhotoCannotPublish() async throws {
+        let defaults = makeDefaults()
+        let fake = FakeRenderEngine()
+        let viewModel = AppViewModel(
+            engine: fake,
+            editStore: EditDocumentStore(
+                fileURL: tempDirectory.appendingPathComponent("late-baseline-edits.json")
+            ),
+            preferences: defaults
+        )
+        let first = try Fixtures.writeGradientPNG(
+            width: 16, height: 12, named: "late-first.png", in: tempDirectory
+        )
+        let second = try Fixtures.writeGradientPNG(
+            width: 16, height: 12, named: "late-second.png", in: tempDirectory
+        )
+
+        viewModel.openImage(url: first)
+        try await waitUntil("the first main preview request") { await fake.previewRequests.count >= 1 }
+        try await waitUntil("the first main preview") { viewModel.previewSurface.image != nil }
+
+        await fake.gatePreviews()
+        viewModel.updateDocument { $0.adjustments = [.exposure(ev: 0.5)] }
+        try await waitUntil("the edited first preview request") {
+            let requests = await fake.previewRequests
+            return requests.contains {
+                $0.source?.backing == .url(first) && $0.document == viewModel.document
+            }
+        }
+        XCTAssertTrue(viewModel.toggleSideBySide())
+        await fake.releaseNextPreview()
+        try await waitUntil("the first baseline request") { await fake.previewRequests.count == 3 }
+
+        viewModel.openImage(url: second)
+        XCTAssertNil(viewModel.originalPreviewSurface.image,
+                     "the source switch must clear the previous baseline immediately")
+        try await waitUntil("the second source") { viewModel.sourceName == second.lastPathComponent }
+        await fake.releaseNextPreview()
+        try await waitUntil("the second main preview request") { await fake.previewRequests.count >= 4 }
+        XCTAssertNil(viewModel.originalPreviewSurface.image,
+                     "a late baseline from the previous source must not repopulate the pane")
+        await fake.releasePreviews()
+
+        try await waitUntil("the second comparison") {
+            viewModel.isSideBySideVisible
+                && viewModel.previewSurface.image != nil
+                && viewModel.originalPreviewSurface.image != nil
+        }
+        let requests = await fake.previewRequests
+        XCTAssertTrue(requests.contains { $0.source?.backing == .url(first) && $0.document == EditDocument() })
+        XCTAssertTrue(requests.contains { $0.source?.backing == .url(second) && $0.document == EditDocument() })
+        XCTAssertTrue(requests.filter { $0.source?.backing == .url(second) }.allSatisfy {
+            $0.document == EditDocument()
+        })
+    }
+
     private func enableSideBySide(on viewModel: AppViewModel) {
         viewModel.updateDocument { $0.adjustments = [.exposure(ev: 0.25)] }
         XCTAssertTrue(viewModel.toggleSideBySide())

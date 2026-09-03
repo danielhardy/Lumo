@@ -44,7 +44,8 @@ final class PreviewSurface: ObservableObject {
 
     /// The Metal view calls this when a real presentation lifecycle exists. Headless/test callers
     /// have no drawable to confirm, so `present` confirms immediately for that compatibility seam.
-    fileprivate func attachPresentationLifecycle() {
+    /// Called by the Metal view, and by lifecycle tests that model a drawable-managed surface.
+    func attachPresentationLifecycle() {
         hasManagedPresentationLifecycle = true
     }
 
