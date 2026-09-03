@@ -301,6 +301,25 @@ final class PhotosImportTests: TempDirectoryTestCase {
         XCTAssertEqual(viewModel.collection.selection.activeID, viewModel.collection.items[0].id)
     }
 
+    func testFirstImportFailureThenSuccessStillPresentsInspectorForTheSuccessfulItem() throws {
+        let url = try Fixtures.writeJPEG(
+            width: 32, height: 24, orientation: 1, named: "second-succeeds.jpg", in: tempDirectory
+        )
+        let data = try Data(contentsOf: url)
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+
+        viewModel.beginPhotosImport(totalCount: 2)
+        viewModel.recordPhotosImportFailure(name: "Unavailable", ordinal: 0)
+        XCTAssertFalse(viewModel.isInspectorPresented)
+
+        viewModel.appendPhotosImport(
+            ImageCollection.PhotoImportItem(name: "Second", data: data, localIdentifier: "second"),
+            ordinal: 1
+        )
+
+        XCTAssertTrue(viewModel.isInspectorPresented)
+    }
+
     func testPhotosImportWithoutAnAcceptedItemLeavesInspectorPresentationUnchanged() throws {
         let viewModel = AppViewModel(engine: FakeRenderEngine())
 
