@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// The photographer-facing global Light inspector.
 ///
@@ -95,7 +96,17 @@ struct LightInspectorView: View {
 /// handles can be dragged and adjusted through the keyboard/VoiceOver adjustable action.
 private struct ToneCurveEditor: View {
     @ObservedObject var viewModel: AppViewModel
-    @State private var draggingInput: Double?
+    @State private var curveDrag: CurveDragState?
+
+    private enum CurveDragState: Equatable {
+        case ignored
+        case point(input: Double, moved: Bool)
+
+        var isPoint: Bool {
+            if case .point = self { return true }
+            return false
+        }
+    }
 
     private let graphHeight: CGFloat = 190
 
@@ -120,10 +131,6 @@ private struct ToneCurveEditor: View {
                 ZStack {
                     curveGraph(size: size)
                         .contentShape(Rectangle())
-                        .simultaneousGesture(
-                            SpatialTapGesture(count: 1)
-                                .onEnded { value in addPoint(at: value.location, in: size) }
-                        )
                     // Keep the handle view's identity tied to its slot, not its changing input.
                     // Re-keying by input while a drag is in flight can tear down the gesture as
                     // soon as the handle follows the pointer.
@@ -133,10 +140,20 @@ private struct ToneCurveEditor: View {
                 }
                 .frame(maxWidth: .infinity)
                 .contentShape(Rectangle())
+                // A zero-distance graph gesture turns a press on the curve into both the add and
+                // drag operation. Handle views only provide their double-click removal gesture;
+                // selecting and moving every point therefore uses one graph coordinate space.
+                .gesture(curveDragGesture(size: size))
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("Master RGB tone curve")
             }
             .frame(height: graphHeight)
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
+                finishCurveDrag()
+            }
+            .onDisappear {
+                finishCurveDrag()
+            }
 
             HStack {
                 Text("Shadows")
@@ -150,10 +167,7 @@ private struct ToneCurveEditor: View {
 
     private var editablePoints: [LightCurvePoint] {
         let points = viewModel.document.light.toneCurve.points
-        let interior = Array(points.dropFirst().dropLast())
-        return interior.isEmpty
-            ? [LightCurvePoint(input: 0.5, output: viewModel.document.light.toneCurve.value(at: 0.5))]
-            : interior
+        return Array(points.dropFirst().dropLast())
     }
 
     private func curveGraph(size: CGSize) -> some View {
@@ -203,25 +217,7 @@ private struct ToneCurveEditor: View {
             .frame(width: 12, height: 12)
             .shadow(radius: 1)
             .contentShape(Circle())
-        .position(position(for: point, in: size))
-        .highPriorityGesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    if draggingInput == nil {
-                        viewModel.beginPreviewInteraction()
-                    }
-                    let input = min(max(value.location.x / max(size.width, 1), 0.001), 0.999)
-                    let output = min(max(1 - value.location.y / max(size.height, 1), 0), 1)
-                    let sourceInput = draggingInput ?? point.input
-                    draggingInput = viewModel.moveToneCurvePoint(
-                        fromInput: sourceInput, input: input, output: output
-                    ) ?? input
-                }
-                .onEnded { _ in
-                    draggingInput = nil
-                    viewModel.endPreviewInteraction()
-                }
-        )
+            .position(position(for: point, in: size))
         .simultaneousGesture(
             SpatialTapGesture(count: 2)
                 .onEnded { _ in removePoint(point) }
@@ -243,24 +239,72 @@ private struct ToneCurveEditor: View {
         }
     }
 
-    private func position(for point: LightCurvePoint, in size: CGSize) -> CGPoint {
-        CGPoint(x: point.input * size.width, y: (1 - point.output) * size.height)
+    private func curveDragGesture(size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                updateCurveDrag(at: value.location, translation: value.translation, in: size)
+            }
+            .onEnded { _ in
+                finishCurveDrag()
+            }
     }
 
-    private func addPoint(at location: CGPoint, in size: CGSize) {
+    private func updateCurveDrag(at location: CGPoint, translation: CGSize, in size: CGSize) {
+        guard curveDrag == nil || curveDrag?.isPoint == true else { return }
+        let coordinate = coordinate(for: location, in: size)
+        let hasMoved = translation.width != 0 || translation.height != 0
+
+        if curveDrag == nil {
+            let curve = viewModel.document.light.toneCurve
+            if let existing = curve.interiorPoint(nearInput: coordinate.input) {
+                viewModel.beginPreviewInteraction()
+                curveDrag = .point(input: existing.input, moved: false)
+            } else {
+                // Match click-to-add: the press must be on the drawn transfer function, and the
+                // new point initially samples that function. The first move below then applies
+                // the pointer's exact output, so a click and a drag share one gesture.
+                guard coordinate.input > 0.001, coordinate.input < 0.999,
+                      abs(coordinate.output - curve.value(at: coordinate.input)) <= 0.06 else {
+                    curveDrag = .ignored
+                    return
+                }
+                viewModel.beginPreviewInteraction()
+                viewModel.addToneCurvePoint(input: coordinate.input)
+                curveDrag = .point(input: coordinate.input, moved: false)
+            }
+        }
+
+        guard case .point(let sourceInput, _) = curveDrag else { return }
+        // The first zero-distance update represents the press itself. Leave a click at the
+        // sampled curve value; only a subsequent pointer movement should reposition the point.
+        guard hasMoved else { return }
+        let movedInput = viewModel.moveToneCurvePoint(
+            fromInput: sourceInput,
+            input: coordinate.input,
+            output: coordinate.output
+        )
+        if let movedInput {
+            curveDrag = .point(input: movedInput, moved: true)
+        }
+    }
+
+    private func finishCurveDrag() {
+        guard curveDrag != nil else { return }
+        curveDrag = nil
+        viewModel.endPreviewInteraction()
+    }
+
+    private func coordinate(for location: CGPoint, in size: CGSize) -> (input: Double, output: Double) {
         let width = max(size.width, 1)
         let height = max(size.height, 1)
-        let input = min(max(location.x / width, 0), 1)
-        let output = min(max(1 - location.y / height, 0), 1)
-        let curve = viewModel.document.light.toneCurve
+        return (
+            input: min(max(location.x / width, 0.001), 0.999),
+            output: min(max(1 - location.y / height, 0), 1)
+        )
+    }
 
-        // A click slightly beside a two-pixel stroke should still feel like a click on the line,
-        // while an empty graph remains inert. The tolerance is expressed in normalized graph units
-        // so it behaves consistently when the inspector is resized.
-        guard abs(output - curve.value(at: input)) <= 0.06 else { return }
-        viewModel.beginPreviewInteraction()
-        viewModel.addToneCurvePoint(input: input)
-        viewModel.endPreviewInteraction()
+    private func position(for point: LightCurvePoint, in size: CGSize) -> CGPoint {
+        CGPoint(x: point.input * size.width, y: (1 - point.output) * size.height)
     }
 
     private func removePoint(_ point: LightCurvePoint) {

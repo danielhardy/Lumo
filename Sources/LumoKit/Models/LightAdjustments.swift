@@ -165,16 +165,27 @@ struct LightToneCurve: Codable, Equatable, Sendable {
         )
     }
 
+    /// Return the nearest interior point when its input is within the editor's hit tolerance.
+    ///
+    /// Keeping this lookup beside `removingPoint(at:)` gives pointer selection and removal the
+    /// same normalized tolerance. The graph uses input space for the hit because a point's
+    /// horizontal position is stable even when the curve between controls changes.
+    func interiorPoint(nearInput input: Double, tolerance: Double = 0.03) -> LightCurvePoint? {
+        guard input.isFinite, tolerance >= 0 else { return nil }
+        guard let index = points.indices.dropFirst().dropLast().min(by: {
+            abs(points[$0].input - input) < abs(points[$1].input - input)
+        }) else { return nil }
+        guard abs(points[index].input - input) <= tolerance else { return nil }
+        return points[index]
+    }
+
     /// Return a curve with the interior point nearest to `input` removed.
     ///
     /// Endpoints are deliberately never candidates. A small hit tolerance makes this useful for
     /// pointer gestures while preserving the invariant even if a caller supplies 0 or 1.
     func removingPoint(at input: Double, tolerance: Double = 0.03) -> LightToneCurve {
-        guard input.isFinite, tolerance >= 0 else { return self }
-        guard let index = points.indices.dropFirst().dropLast().min(by: {
-            abs(points[$0].input - input) < abs(points[$1].input - input)
-        }) else { return self }
-        guard abs(points[index].input - input) <= tolerance else { return self }
+        guard let point = interiorPoint(nearInput: input, tolerance: tolerance),
+              let index = points.firstIndex(of: point) else { return self }
         var remaining = points
         remaining.remove(at: index)
         return LightToneCurve(version: version, points: remaining)

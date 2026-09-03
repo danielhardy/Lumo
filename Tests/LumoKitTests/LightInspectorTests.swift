@@ -175,6 +175,67 @@ final class LightInspectorTests: TempDirectoryTestCase {
                        "a drag must not invert the tone curve past its upper neighbor")
     }
 
+    func testCurveHitTestingUsesTheSameNormalizedToleranceForSelectionAndRemoval() {
+        let curve = LightToneCurve(points: [
+            LightCurvePoint(input: 0.4, output: 0.4),
+            LightCurvePoint(input: 0.7, output: 0.7),
+        ])
+
+        XCTAssertEqual(curve.interiorPoint(nearInput: 0.425)?.input, 0.4)
+        XCTAssertNil(curve.interiorPoint(nearInput: 0.431))
+        XCTAssertEqual(curve.removingPoint(at: 0.425).points.dropFirst().dropLast().count, 1)
+        XCTAssertEqual(curve.removingPoint(at: 0.431), curve)
+    }
+
+    func testEmptyCurveDragCreatesOnePointAndUndoRedoKeepTheWholeGestureTogether() {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        let curve = viewModel.document.light.toneCurve
+        let input = 0.35
+
+        viewModel.beginPreviewInteraction()
+        // This mirrors the graph gesture's first update: add the sampled point, then apply the
+        // pointer's exact output. Subsequent updates use the returned input as the stable target.
+        viewModel.addToneCurvePoint(input: input)
+        var sourceInput = input
+        for output in [0.42, 0.5, 0.63, 0.78] {
+            sourceInput = viewModel.moveToneCurvePoint(
+                fromInput: sourceInput, input: input, output: output
+            ) ?? sourceInput
+        }
+        viewModel.endPreviewInteraction()
+
+        let interior = viewModel.document.light.toneCurve.points.dropFirst().dropLast()
+        XCTAssertEqual(interior.count, 1)
+        XCTAssertEqual(interior.first?.input ?? -1, input, accuracy: 0.000_001)
+        XCTAssertEqual(interior.first?.output ?? -1, 0.78, accuracy: 0.000_001)
+
+        viewModel.undo()
+        XCTAssertEqual(viewModel.document.light.toneCurve, curve)
+        XCTAssertFalse(viewModel.canUndo)
+        viewModel.redo()
+        XCTAssertEqual(viewModel.document.light.toneCurve.points.dropFirst().dropLast().count, 1)
+        XCTAssertEqual(viewModel.document.light.toneCurve.value(at: input), 0.78, accuracy: 0.000_001)
+    }
+
+    func testNearExistingPointMovesThatPointWithoutAddingADuplicate() {
+        let viewModel = AppViewModel(engine: FakeRenderEngine())
+        viewModel.updateDocument {
+            $0.light.toneCurve = LightToneCurve(points: [
+                LightCurvePoint(input: 0.3, output: 0.3),
+                LightCurvePoint(input: 0.7, output: 0.7),
+            ])
+        }
+
+        viewModel.beginPreviewInteraction()
+        let movedInput = viewModel.moveToneCurvePoint(fromInput: 0.325, input: 0.5, output: 0.55)
+        viewModel.endPreviewInteraction()
+
+        XCTAssertEqual(movedInput ?? -1, 0.5, accuracy: 0.000_001)
+        XCTAssertEqual(viewModel.document.light.toneCurve.points.dropFirst().dropLast().count, 2)
+        XCTAssertEqual(viewModel.document.light.toneCurve.points[1].input, 0.5, accuracy: 0.000_001)
+        XCTAssertEqual(viewModel.document.light.toneCurve.points[1].output, 0.55, accuracy: 0.000_001)
+    }
+
     func testCurveDragPublishesAnIntermediatePreviewBeforeRelease() async throws {
         let image = try Fixtures.writeGradientPNG(
             width: 16, height: 12, named: "curve-drag.png", in: tempDirectory
