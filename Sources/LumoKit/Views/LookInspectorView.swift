@@ -1,5 +1,11 @@
 import SwiftUI
 
+@MainActor
+protocol LookPreviewProviding: AnyObject {
+    var lookPreviewRevision: UInt64 { get }
+    func lookPreview(for look: CubeLUT) async -> CGImage?
+}
+
 /// The empty browser has a small, explicit presentation matrix so its copy and icon stay aligned
 /// across the initial, loading, unavailable-folder, and missing-reference states. Keeping this
 /// decision outside the `ViewBuilder` also makes the view-level state matrix easy to exercise.
@@ -397,7 +403,8 @@ struct LookInspectorView: View {
                             } label: {
                                 LookRow(
                                     look: lut,
-                                    isSelected: viewModel.selectedLookID == lut.lutID
+                                    isSelected: viewModel.selectedLookID == lut.lutID,
+                                    previewProvider: viewModel
                                 )
                             }
                             .buttonStyle(.plain)
@@ -592,6 +599,21 @@ private struct LookNoneRow: View {
 struct LookRow: View {
     let look: CubeLUT
     let isSelected: Bool
+    let previewProvider: (any LookPreviewProviding)?
+
+    init(
+        look: CubeLUT,
+        isSelected: Bool,
+        previewProvider: (any LookPreviewProviding)? = nil
+    ) {
+        self.look = look
+        self.isSelected = isSelected
+        self.previewProvider = previewProvider
+    }
+
+    private var previewTaskID: String {
+        "\(look.cacheFingerprint)-\(previewProvider?.lookPreviewRevision ?? 0)"
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -599,7 +621,11 @@ struct LookRow: View {
                 .fill(isSelected ? Color.accentColor : Color.secondary.opacity(0.3))
                 .frame(width: 4, height: 20)
 
-            LookPreviewSwatch(look: look)
+            LookPreviewThumbnail(
+                look: look,
+                previewProvider: previewProvider,
+                taskID: previewTaskID
+            )
 
             Text(look.name)
                 .font(.system(.body, design: .default))
@@ -619,26 +645,60 @@ struct LookRow: View {
                     .font(.caption.weight(.semibold))
             }
         }
+        .frame(minHeight: LookPreviewLayout.rowMinHeight)
         .contentShape(Rectangle())
         .accessibilityLabel("\(look.name), \(look.source.accessibilityDescription)")
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
     }
 }
 
-private struct LookPreviewSwatch: View {
+private struct LookPreviewThumbnail: View {
     let look: CubeLUT
+    let previewProvider: (any LookPreviewProviding)?
+    let taskID: String
+    @State private var image: CGImage?
 
     private var colors: [Color] {
-        look.previewSamples(count: 4).map { sample in
+        look.previewSamples(count: 3).map { sample in
             Color(red: Double(sample.x), green: Double(sample.y), blue: Double(sample.z))
         }
     }
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 3)
-            .fill(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
-            .frame(width: 42, height: 20)
-            .overlay(RoundedRectangle(cornerRadius: 3).stroke(.white.opacity(0.18), lineWidth: 0.5))
-            .accessibilityHidden(true)
+        Group {
+            if let image {
+                Image(decorative: image, scale: 1, orientation: .up)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                LookPreviewFallback(colors: colors)
+            }
+        }
+        .frame(width: LookPreviewLayout.displaySize.width, height: LookPreviewLayout.displaySize.height)
+        .clipped()
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .overlay {
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(.white.opacity(0.18), lineWidth: 0.5)
+        }
+        .accessibilityHidden(true)
+        .task(id: taskID) {
+            image = await previewProvider?.lookPreview(for: look)
+        }
+    }
+}
+
+private struct LookPreviewFallback: View {
+    let colors: [Color]
+
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+            Image(systemName: "photo")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(.white.opacity(0.85))
+                .shadow(radius: 2)
+        }
+        .overlay(Color.black.opacity(0.16))
     }
 }

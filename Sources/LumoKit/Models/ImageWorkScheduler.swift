@@ -99,12 +99,13 @@ final class ImageWorkScheduler {
     var isIdle: Bool { queued.isEmpty && running.isEmpty }
 
     /// Add or replace a job. Replacing a running job cancels it before the new value is admitted.
+    @discardableResult
     func enqueue(
         id: JobID,
         lane: Lane,
         priority: Priority,
         operation: @escaping Operation
-    ) {
+    ) -> Bool {
         cancel(id: id, countAsCancellation: false)
 
         nextSequence &+= 1
@@ -115,18 +116,20 @@ final class ImageWorkScheduler {
         if lane == .thumbnail {
             guard configuration.maxConcurrentThumbnails > 0 else {
                 droppedThumbnailCount += 1
-                return
+                return false
             }
             guard configuration.maxQueuedThumbnails > 0 || runningThumbnailCount < configuration.maxConcurrentThumbnails else {
                 droppedThumbnailCount += 1
-                return
+                return false
             }
             admitThumbnail(job)
         } else {
             admitEditor(job)
         }
+        let admitted = queued[job.id] != nil
         updatePeakQueue()
         pump()
+        return admitted || running[job.id] != nil
     }
 
     /// Change a queued job's priority without restarting it. Running work is left alone when it is

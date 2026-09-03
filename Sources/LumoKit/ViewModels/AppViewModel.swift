@@ -63,7 +63,7 @@ enum AutoAdjustmentState: Equatable, Sendable {
 
 /// Central state for the Lumo app.
 @MainActor
-public final class AppViewModel: ObservableObject {
+public final class AppViewModel: ObservableObject, LookPreviewProviding {
 
     /// Inspector presentation state has its own observation boundary. The editor model still
     /// owns histogram scheduling and tab validity, but changing the inspector chrome does not
@@ -502,6 +502,7 @@ public final class AppViewModel: ObservableObject {
     public let settings: LumoSettings
     let library: LUTLibrary
     let workScheduler: ImageWorkScheduler
+    let lookPreviewCoordinator: LookPreviewCoordinator
     let collection: ImageCollection
     let editStore: EditDocumentStore
     /// Writing images to disk — the single export, the batch run, and naming. Production exports
@@ -557,6 +558,15 @@ public final class AppViewModel: ObservableObject {
     private var mediaVolumeScanTask: Task<Void, Never>?
     private var mediaVolumeImportTask: Task<Void, Never>?
 
+    /// Changes whenever a Look thumbnail's source or edit recipe can change. Look rows use this as
+    /// their task identity so a source switch or restored per-photo document refreshes thumbnails
+    /// even when the library itself did not change.
+    var lookPreviewRevision: UInt64 { sourceRevision &* 31 &+ documentRevision }
+
+    func lookPreview(for look: CubeLUT) async -> CGImage? {
+        await lookPreviewCoordinator.image(source: imageSource, document: document, look: look)
+    }
+
     // MARK: - Init
 
     public convenience init() {
@@ -584,6 +594,11 @@ public final class AppViewModel: ObservableObject {
         self.editStore = editStore
         self.settings = LumoSettings(preferences: preferences)
         self.workScheduler = ImageWorkScheduler()
+        // Look thumbnails have a bounded, independent thumbnail lane. Sharing the editor's lane
+        // would let a burst of filmstrip/grid work evict a row's continuation before it can return.
+        self.lookPreviewCoordinator = LookPreviewCoordinator(
+            engine: engine, scheduler: ImageWorkScheduler()
+        )
         self.collection = ImageCollection(scheduler: workScheduler, defaults: preferences)
         self.library = LUTLibrary(
             preferences: preferences,
