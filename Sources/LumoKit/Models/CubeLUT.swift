@@ -436,6 +436,12 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
         let text = cubeFileContents(cube: cube, size: size, title: title)
         try text.write(to: url, atomically: true, encoding: .utf8)
     }
+
+    /// Write already-serialized cube text. Look export uses this overload to retain its support
+    /// matrix and conversion-limit comments while the ordinary writer remains unchanged.
+    static func write(text: String, to url: URL) throws {
+        try text.write(to: url, atomically: true, encoding: .utf8)
+    }
 }
 
 // MARK: - Errors

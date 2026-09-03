@@ -183,7 +183,7 @@ final class LUTLibrary: ObservableObject {
     /// Look browser. The original path is retained, rather than copying the table into an app-owned
     /// file, so a persisted `LUTID` continues to identify the same resource and an explicit refresh
     /// can observe a file replacement.
-    func importLUT(from url: URL) {
+    func importLUT(from url: URL, audition: Bool = true) {
         guard CubeLUT.supportedFileExtensions.contains(url.pathExtension.lowercased()) else {
             reportImportError("Unsupported LUT file type “\(url.pathExtension)”")
             return
@@ -214,7 +214,7 @@ final class LUTLibrary: ObservableObject {
             // The callback is intentionally before cache invalidation: AppViewModel selects the new
             // value, then the normal library-change path flushes any filter for the same stable path.
             if let added = imported.first(where: { Self.canonicalPath($0.url) == Self.canonicalPath(url) }) {
-                self.onImported?(added)
+                if audition { self.onImported?(added) }
             } else {
                 let detail: String
                 do {
