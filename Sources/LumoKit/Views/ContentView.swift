@@ -48,6 +48,12 @@ public struct ContentView: View {
             )) {
                 RecipeExtractorSheet(coordinator: viewModel.derive)
             }
+            .sheet(isPresented: $viewModel.isRemovableMediaSelectorPresented) {
+                RemovableMediaSelectorView(viewModel: viewModel)
+            }
+            .onAppear {
+                viewModel.refreshRemovableMedia()
+            }
             .modifier(KeyboardShortcuts(viewModel: viewModel))
             .modifier(MenuCommandReceivers(viewModel: viewModel))
             .alert(
@@ -268,6 +274,21 @@ public struct ContentView: View {
             }
             Button("Open Source Folder...") {
                 viewModel.chooseSourceFolder()
+            }
+            Menu("Removable Media") {
+                if viewModel.removableMediaVolumes.isEmpty {
+                    Text("No supported media mounted")
+                } else {
+                    ForEach(viewModel.removableMediaVolumes) { volume in
+                        Button(volume.name) {
+                            viewModel.openRemovableMedia(volume)
+                        }
+                    }
+                }
+                Divider()
+                Button("Refresh Removable Media") {
+                    viewModel.refreshRemovableMedia()
+                }
             }
             if !viewModel.collection.items.isEmpty {
                 Button("Refresh Source Folder") {

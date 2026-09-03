@@ -31,6 +31,20 @@ struct PhotosImportProgress: Equatable, Sendable {
     }
 }
 
+struct MediaVolumeImportProgress: Equatable, Sendable {
+    let total: Int
+    var processed: Int
+    var imported: Int
+    var skipped: Int
+    var currentName: String?
+    var cancelled: Bool
+
+    var fraction: Double {
+        guard total > 0 else { return 1 }
+        return min(1, Double(processed) / Double(total))
+    }
+}
+
 /// Central state for the Lumo app.
 @MainActor
 public final class AppViewModel: ObservableObject {
@@ -441,6 +455,17 @@ public final class AppViewModel: ObservableObject {
     /// operation and is cleared once the provider has finished or cancellation was requested.
     @Published private(set) var photosImportProgress: PhotosImportProgress?
 
+    /// Supported removable volumes are discovered independently of the selector so the Import menu
+    /// can name only mounted volumes that actually contain supported images.
+    @Published private(set) var removableMediaVolumes: [MediaVolume] = []
+    @Published var isRemovableMediaSelectorPresented = false
+    @Published private(set) var removableMediaVolume: MediaVolume?
+    @Published private(set) var removableMediaFiles: [MediaVolumeFile] = []
+    @Published private(set) var removableMediaWarnings: [String] = []
+    @Published private(set) var isRemovableMediaScanning = false
+    @Published private(set) var removableMediaSelection = MediaVolumeSelectionModel()
+    @Published private(set) var removableMediaImportProgress: MediaVolumeImportProgress?
+
     // MARK: - Owned state
 
     let library = LUTLibrary()
@@ -492,6 +517,10 @@ public final class AppViewModel: ObservableObject {
     private var prefetchDelayTask: Task<Void, Never>?
     private var previewDebounceTask: Task<Void, Never>?
     private var cancellables: [AnyCancellable] = []
+    private let mediaVolumeProvider: any MediaVolumeProviding
+    private var mediaVolumeDiscoveryTask: Task<Void, Never>?
+    private var mediaVolumeScanTask: Task<Void, Never>?
+    private var mediaVolumeImportTask: Task<Void, Never>?
 
     // MARK: - Init
 
@@ -502,7 +531,8 @@ public final class AppViewModel: ObservableObject {
     init(
         engine: any RenderEngining = RenderEngine.shared,
         editStore: EditDocumentStore = EditDocumentStore(),
-        preferences: UserDefaults = .standard
+        preferences: UserDefaults = .standard,
+        mediaVolumeProvider: any MediaVolumeProviding = MountedMediaVolumeProvider()
     ) {
         var interval = LumoSignpostInterval(.launch, context: .unknown)
         defer { interval.end() }
@@ -514,6 +544,7 @@ public final class AppViewModel: ObservableObject {
         self.collection = ImageCollection(scheduler: workScheduler)
         self.export = ExportCoordinator(engine: engine, editStore: editStore)
         self.previewCoordinator = PreviewCoordinator(engine: engine, scheduler: workScheduler)
+        self.mediaVolumeProvider = mediaVolumeProvider
 
         // A missing value is the first-launch state: single-photo editing is the primary surface.
         // Read this after all stored properties are initialized because the published property's
@@ -1040,6 +1071,170 @@ public final class AppViewModel: ObservableObject {
         if let first = items.first, let assetID = collection.items.first?.id {
             load(name: first.name, url: nil, data: first.data, assetID: assetID)
         }
+    }
+
+    // MARK: - Removable media import
+
+    var selectedRemovableMediaFiles: [MediaVolumeFile] {
+        removableMediaFiles.filter { removableMediaSelection.contains($0) }
+    }
+
+    /// Refresh the menu's volume names. Discovery is intentionally asynchronous: probing a slow
+    /// card must never block the editor window or make an empty menu look like a hardware failure.
+    func refreshRemovableMedia() {
+        mediaVolumeDiscoveryTask?.cancel()
+        let provider = mediaVolumeProvider
+        mediaVolumeDiscoveryTask = Task { [weak self] in
+            let volumes = await provider.discover()
+            guard !Task.isCancelled, let self else { return }
+            self.removableMediaVolumes = volumes
+        }
+    }
+
+    /// The File-menu action opens the first discovered volume. The toolbar Import menu exposes
+    /// every volume by name when more than one is mounted.
+    func importFromRemovableMedia() {
+        mediaVolumeDiscoveryTask?.cancel()
+        let provider = mediaVolumeProvider
+        mediaVolumeDiscoveryTask = Task { [weak self] in
+            let volumes = await provider.discover()
+            guard !Task.isCancelled, let self else { return }
+            self.removableMediaVolumes = volumes
+            guard let volume = volumes.first else {
+                self.statusMessage = "No supported removable media is mounted"
+                return
+            }
+            self.openRemovableMedia(volume)
+        }
+    }
+
+    func openRemovableMedia(_ volume: MediaVolume) {
+        mediaVolumeScanTask?.cancel()
+        mediaVolumeImportTask?.cancel()
+        removableMediaVolume = volume
+        removableMediaFiles = []
+        removableMediaWarnings = []
+        removableMediaSelection.clear()
+        removableMediaImportProgress = nil
+        isRemovableMediaScanning = true
+        isRemovableMediaSelectorPresented = true
+
+        let provider = mediaVolumeProvider
+        mediaVolumeScanTask = Task { [weak self] in
+            do {
+                let result = try await provider.scan(volume)
+                guard !Task.isCancelled, let self else { return }
+                self.removableMediaFiles = result.files
+                self.removableMediaWarnings = result.warnings
+                self.removableMediaSelection.selectAll(in: result.files)
+                self.isRemovableMediaScanning = false
+                if result.files.isEmpty {
+                    self.removableMediaWarnings.append("No supported images were found on this volume.")
+                }
+            } catch is CancellationError {
+                // Closing the sheet is a normal, recoverable cancellation.
+            } catch {
+                guard let self else { return }
+                self.isRemovableMediaScanning = false
+                self.removableMediaWarnings = [error.localizedDescription]
+            }
+        }
+    }
+
+    func toggleRemovableMediaSelection(_ file: MediaVolumeFile) {
+        removableMediaSelection.toggle(file)
+    }
+
+    func selectAllRemovableMedia() {
+        removableMediaSelection.selectAll(in: removableMediaFiles)
+    }
+
+    func selectNoRemovableMedia() {
+        removableMediaSelection.clear()
+    }
+
+    func cancelRemovableMediaImport() {
+        mediaVolumeScanTask?.cancel()
+        mediaVolumeImportTask?.cancel()
+        isRemovableMediaScanning = false
+        isRemovableMediaSelectorPresented = false
+        removableMediaImportProgress = nil
+    }
+
+    /// Explicitly add the checked files to Lumo's library. This operation is URL-backed and does
+    /// not copy, delete, or modify the source card; the selector makes that destination behavior
+    /// visible in its button label and the collection retains security-scoped bookmarks.
+    func importSelectedRemovableMedia() {
+        guard let volume = removableMediaVolume else { return }
+        let selected = selectedRemovableMediaFiles
+        guard !selected.isEmpty else {
+            statusMessage = "Select at least one image to import"
+            return
+        }
+
+        mediaVolumeImportTask?.cancel()
+        removableMediaImportProgress = MediaVolumeImportProgress(
+            total: selected.count, processed: 0, imported: 0, skipped: 0,
+            currentName: nil, cancelled: false
+        )
+        let sourceFiles = selected
+        mediaVolumeImportTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var usable: [MediaVolumeFile] = []
+            for file in sourceFiles {
+                guard !Task.isCancelled else {
+                    self.finishRemovableMediaImport(
+                        imported: 0, skipped: sourceFiles.count,
+                        cancelled: true, total: sourceFiles.count
+                    )
+                    return
+                }
+                var progress = self.removableMediaImportProgress ?? MediaVolumeImportProgress(
+                    total: sourceFiles.count, processed: 0, imported: 0, skipped: 0,
+                    currentName: nil, cancelled: false
+                )
+                progress.currentName = file.filename
+                if FileManager.default.isReadableFile(atPath: file.url.path) {
+                    usable.append(file)
+                    progress.imported += 1
+                } else {
+                    progress.skipped += 1
+                    self.removableMediaWarnings.append("Skipped \(file.filename): the volume was removed or became unreadable.")
+                }
+                progress.processed += 1
+                self.removableMediaImportProgress = progress
+                await Task.yield()
+            }
+
+            guard !usable.isEmpty else {
+                self.statusMessage = "No selected images could be read from \(volume.name)"
+                self.isRemovableMediaSelectorPresented = false
+                return
+            }
+
+            let ids = self.collection.addFromMediaVolume(volume, files: usable)
+            if let first = usable.first, let firstID = ids.first {
+                self.isSourceBrowserPresented = false
+                self.navigation.move(to: .grid)
+                self.load(name: first.filename, url: first.url, data: nil, assetID: firstID,
+                          traceQuality: "removableMediaImport")
+            }
+            let progress = self.removableMediaImportProgress
+            self.statusMessage = "Imported \(progress?.imported ?? 0) image\(progress?.imported == 1 ? "" : "s") from \(volume.name)"
+            self.isRemovableMediaSelectorPresented = false
+        }
+    }
+
+    private func finishRemovableMediaImport(
+        imported: Int, skipped: Int, cancelled: Bool, total: Int
+    ) {
+        removableMediaImportProgress = MediaVolumeImportProgress(
+            total: total, processed: imported + skipped, imported: imported,
+            skipped: skipped, currentName: nil, cancelled: cancelled
+        )
+        statusMessage = cancelled
+            ? "Removable media import cancelled — \(imported) imported, \(skipped) skipped"
+            : "Removable media import complete — \(imported) imported, \(skipped) skipped"
     }
 
     /// Choose a folder to use as the persistent image source, scan it (incl.

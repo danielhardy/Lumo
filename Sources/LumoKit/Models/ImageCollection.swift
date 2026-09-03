@@ -304,6 +304,7 @@ final class ImageCollection: ObservableObject {
     /// bookmark, records the URL, and scans it. Mirrors `LUTLibrary`'s folder
     /// persistence so the source survives relaunches and the App Sandbox.
     func setSourceFolder(_ url: URL) {
+        stopScopedURL()
         saveBookmark(for: url)
         sourceFolderURL = url
         loadFromFolder(url)
@@ -661,6 +662,59 @@ final class ImageCollection: ObservableObject {
         finishDataImport()
     }
 
+    /// Adopt selected files from a removable volume without writing to that volume.  The files
+    /// remain URL-backed so the normal stable identity, metadata, orientation, edit-session, and
+    /// bookmark behavior applies exactly as it does for a source-folder asset.
+    @discardableResult
+    func addFromMediaVolume(_ volume: MediaVolume, files: [MediaVolumeFile]) -> [PhotoAssetID] {
+        scanGeneration &+= 1
+        cancelThumbnailWork()
+        scanTask?.cancel()
+        scanTask = nil
+        stopMetadataLoading()
+        stopScopedURL()
+        _ = volume.url.startAccessingSecurityScopedResource()
+        scopedURL = volume.url
+
+        items = []
+        pendingImportSlots.removeAll()
+        dataImportOrdinals.removeAll()
+        dataImportOverflowItemIDs.removeAll()
+        dataImportItemIndices.removeAll()
+        selectedIndex = 0
+        selection.clear()
+        thumbnailDemandIDs.removeAll()
+        thumbnailDemandPriorities.removeAll()
+        preparedThumbnailIDs.removeAll()
+        sourceFolderURL = nil
+        isScanning = false
+        scanWarnings = []
+
+        var seen = Set<PhotoAssetID>()
+        for file in files.sorted(by: { $0.url.path.localizedStandardCompare($1.url.path) == .orderedAscending }) {
+            guard FileManager.default.isReadableFile(atPath: file.url.path) else {
+                addScanWarning("Skipped \(file.filename): the volume was removed or is no longer readable.")
+                continue
+            }
+            let metadata = file.metadata.isEmpty ? ImageMetadata.read(from: file.url) : file.metadata
+            let asset = restoredCullingState(for: PhotoAsset(
+                url: file.url,
+                filename: file.filename,
+                metadata: PhotoAssetMetadata(imageMetadata: metadata),
+                bookmarkData: PhotoAssetSource.bookmarkData(for: file.url)
+            ))
+            guard seen.insert(asset.id).inserted else {
+                addScanWarning("Skipped duplicate \(file.filename).")
+                continue
+            }
+            items.append(Item(asset: asset, metadata: metadata))
+        }
+        reconcileSelection()
+        isActive = !items.isEmpty
+        enqueueThumbnails()
+        return items.map(\.id)
+    }
+
     /// Start a streamed Photos import. Items are published as they arrive instead of waiting for
     /// the picker to transfer the entire selection, so the first asset can be opened immediately
     /// and one failed/cancelled transfer does not discard earlier successes.
@@ -670,6 +724,7 @@ final class ImageCollection: ObservableObject {
         scanTask?.cancel()
         scanTask = nil
         stopMetadataLoading()
+        stopScopedURL()
         items = []
         pendingImportSlots = (0..<max(0, reservedCount)).map { PendingImportSlot(ordinal: $0) }
         dataImportOrdinals.removeAll()
@@ -929,6 +984,7 @@ final class ImageCollection: ObservableObject {
         scanTask?.cancel()
         scanTask = nil
         stopMetadataLoading()
+        stopScopedURL()
         items = []
         pendingImportSlots.removeAll()
         dataImportOrdinals.removeAll()
@@ -944,6 +1000,11 @@ final class ImageCollection: ObservableObject {
         isScanning = false
         scanWarnings = []
         sourceFolderURL = nil
+    }
+
+    private func stopScopedURL() {
+        scopedURL?.stopAccessingSecurityScopedResource()
+        scopedURL = nil
     }
 
     // MARK: - Thumbnail generation

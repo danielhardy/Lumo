@@ -43,6 +43,8 @@ public struct LumoCommands: Commands {
             Button("Open Source Folder...") { post(.openSourceFolder) }
                 .keyboardShortcut("i", modifiers: [.command, .option])
 
+            Button("Import from Removable Media...") { post(.importFromRemovableMedia) }
+
             Button("Refresh Source Folder") { post(.refreshSourceFolder) }
                 .keyboardShortcut("r", modifiers: [.command])
 
@@ -117,6 +119,9 @@ struct MenuCommandReceivers: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: .openSourceFolder)) { _ in
                 viewModel.chooseSourceFolder()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .importFromRemovableMedia)) { _ in
+                viewModel.importFromRemovableMedia()
+            }
             .onReceive(NotificationCenter.default.publisher(for: .refreshSourceFolder)) { _ in
                 viewModel.refreshSource()
             }
@@ -153,6 +158,7 @@ extension Notification.Name {
     static let importLook = Notification.Name("Lumo.importLook")
     static let importFromPhotos = Notification.Name("Lumo.importFromPhotos")
     static let openSourceFolder = Notification.Name("Lumo.openSourceFolder")
+    static let importFromRemovableMedia = Notification.Name("Lumo.importFromRemovableMedia")
     static let refreshSourceFolder = Notification.Name("Lumo.refreshSourceFolder")
     static let undoEdit = Notification.Name("Lumo.undoEdit")
     static let redoEdit = Notification.Name("Lumo.redoEdit")
