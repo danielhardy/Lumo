@@ -2,7 +2,7 @@
 id: LUMO-142
 title: Fix black comparison surface when a new unedited photo loads
 type: bug
-status: ready
+status: done
 priority: high
 creation_provenance:
   runner: codex
@@ -14,13 +14,24 @@ labels:
   - rendering
   - regression
 created: 2026-09-03T01:12:22.879Z
-updated: 2026-09-03T01:26:36.000Z
+updated: 2026-09-03T01:49:56.240Z
 depends_on:
   - LUMO-099
   - LUMO-109
 estimate: 3
-order: zzy
+order: a0
 board: product
+verification_report:
+  verdict: pass
+  acceptance_criteria: []
+  checks_run: []
+  findings: []
+  fixes: []
+  verification_commits: []
+  actor: claude
+  resolved_model: sonnet
+  completed_at: 2026-09-03T01:49:56.237Z
+  session: 01MTKV68KH0J6PRG58
 ---
 
 ## Objective
@@ -51,3 +62,50 @@ Add a deterministic regression fixture for an unedited standard image and exerci
 
 - Reworking comparison-mode UI or changing the user's persisted single/side-by-side preference.
 - Fixing rapid thumbnail-selection races or histogram scheduling; those belong to LUMO-143.
+
+
+### Comment — codex @ 2026-09-03T01:46:15.307Z
+
+Implemented in 9f82307. Side-by-side now remains visible for any installed source when the retained preference is enabled, including identity/default and empty persisted EditDocuments; the comparison baseline uses the same settled source/render path. The active mode remains dismissible after Reset Photo, while the meaningful-edit gate for Space comparison is unchanged. Added deterministic generated-gradient coverage for no-record, empty-record, source-switch, both-surface settled presentation, identity render requests, and reset behavior. Verification: swift test (649 executed, 14 skipped, 0 failures), focused comparison/preview/adjustment/keyboard suites, dg validate OK, git diff --check OK.
+
+
+### Comment — claude @ 2026-09-03T01:49:53.207Z
+
+## Counterpoint verification — LUMO-142
+
+**Verdict:** PASS
+
+**Scope reviewed:** commit 9f82307 (AppViewModel.swift, ContentView.swift, ComparisonModeTests.swift).
+
+**Correctness:** `isSideBySideVisible` now gates on `sourceImage != nil` instead of `isComparisonAvailable`, so a retained side-by-side preference populates both panes for identity/empty/no-record documents. Traced `install(preparation:)` vs. the decode-failure branch in `prepareAndInstall`: `sourceImage` is only set on the success path, so a settled decode failure still routes to `presentError` and never satisfies `isSideBySideVisible` — no risk of masquerading as a black pane. `toggleSideBySide()` correctly keeps the meaningful-edit gate (`isComparisonAvailable`) for *enabling* comparison from single view, while allowing an already-active retained comparison to remain dismissible (e.g. after Reset Photo). Space-hold comparison (`showOriginal`) and other `isComparisonAvailable` call sites (KeyboardShortcuts, StatusBar, InfoInspectorView "Edited/Original" label) are correctly left untouched — they encode the separate meaningful-edit semantic, not surface availability.
+
+**Maintainability:** Small, localized diff with clear rationale comments explaining why the two gates (`isComparisonAvailable` vs. source availability) are intentionally different now. No new abstractions introduced.
+
+**Security/Performance:** No concerns — no new I/O, no new concurrency surface, no data exposure change.
+
+**Test coverage:** New regression tests cover no-edit-record, empty-persisted-`EditDocument`, and Reset Photo cases in side-by-side mode, asserting both surfaces populate, render requests target the identity document, and the mode remains dismissible. Verified independently:
+- `swift build`: clean
+- `swift test --filter ComparisonModeTests`: 7/7 passed
+- `swift test` (full suite): 649 executed, 14 skipped, 0 failures
+- `dg validate`: OK
+- `git diff --check` on the commit: clean
+
+No localized fixes were needed; no broader findings warranting a child ticket.
+
+## Agent log
+
+- 2026-09-03T01:49:56.238Z: Verification report
+Verdict: PASS
+Acceptance criteria:
+- None supplied
+Checks run:
+- None
+Findings:
+- None
+Fixes:
+- None
+Verification commits:
+- None
+Actor: claude
+Resolved model: sonnet
+Pickup session: 01MTKV68KH0J6PRG58

@@ -2,7 +2,7 @@
 id: LUMO-147
 title: Save the LUT-compatible part of a photo's edits as a Look
 type: feature
-status: ready
+status: done
 priority: high
 creation_provenance:
   runner: codex
@@ -15,13 +15,26 @@ labels:
   - color
   - editing
 created: 2026-09-03T01:12:25.648Z
-updated: 2026-09-03T01:26:36.000Z
+updated: 2026-09-03T02:49:17.908Z
 depends_on:
   - LUMO-042
   - LUMO-085
 estimate: 8
 order: zzy
 board: product
+commits:
+  - d10303f
+verification_report:
+  verdict: pass
+  acceptance_criteria: []
+  checks_run: []
+  findings: []
+  fixes: []
+  verification_commits: []
+  actor: codex
+  resolved_model: gpt-5.6-luna
+  completed_at: 2026-09-03T02:49:17.901Z
+  session: 01MTKWSKJET92G8QIQ
 ---
 
 ## Objective
@@ -55,3 +68,22 @@ Run support-matrix and `.cube` round-trip tests at the documented resolution and
 
 - Replacing the existing recipe-extractor workflow or inventing a proprietary LUT format.
 - Claiming that a saved LUT preserves RAW decoder settings, crop geometry, or per-image spatial effects.
+
+## Agent log
+
+- 2026-09-03T02:49:17.906Z: Verification report
+Verdict: PASS
+Acceptance criteria:
+- None supplied
+Checks run:
+- None
+Findings:
+- None
+Fixes:
+- None
+Verification commits:
+- None
+Actor: codex
+Resolved model: gpt-5.6-luna
+Pickup session: 01MTKWSKJET92G8QIQ
+Summary: Implemented Save as Look/LUT for the active photo: versioned support matrix, verified 33^3 sRGB .cube conversion with documented limits, review sheet and menu/inspector actions, collision-safe persistence, LUTLibrary registration without auditioning or mutating the active document, and Look-browser previews. Added export/support/round-trip coverage and updated the LUT format documentation and render-context guard.

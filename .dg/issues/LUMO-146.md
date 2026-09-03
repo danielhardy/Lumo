@@ -2,8 +2,36 @@
 id: LUMO-146
 title: Add persistent Lumo settings for appearance and workflow folders
 type: feature
-status: ready
+status: done
 priority: medium
+verification_report:
+  verdict: pass
+  acceptance_criteria:
+    - criterion: Settings surface is available through the macOS Settings menu and uses accessible labels/actions.
+      result: pass
+    - criterion: Always dark mode persists and maps enabled to dark and disabled to system-following via preferredColorScheme.
+      result: pass
+    - criterion: Source/import and export defaults use secure bookmarks, can be tested/reset, and only seed future panels.
+      result: pass
+    - criterion: Unavailable or inaccessible folders retain their bookmark and expose recovery copy with safe nil fallback.
+      result: pass
+    - criterion: Canonical user Look/LUT storage is exposed, created/revealed on demand, and used as the clean-profile save fallback.
+      result: pass
+    - criterion: Schema versioning and migration preserve unrelated workflow preferences.
+      result: pass
+  checks_run:
+    - swift test --filter LumoSettingsTests|AppViewModelTests.testDeriveSavePanelDefaultsToTheLUTFolder — 6 passed
+    - swift build -c release — passed
+    - git diff --check — clean
+    - dg validate — OK
+  findings:
+    - Interactive relaunch, system appearance transition, and VoiceOver window QA require a logged-in GUI session; automated coverage and native SwiftUI accessibility modifiers cover the code paths here.
+  fixes: []
+  verification_commits: []
+  actor: codex
+  resolved_model: gpt-5.6-luna
+  completed_at: 2026-09-03T04:11:37.432Z
+  session: 01MTKZVRZT91O6PSOQ
 creation_provenance:
   runner: codex
   model: gpt-5.6-luna
@@ -17,12 +45,12 @@ labels:
   - lut
   - settings
 created: 2026-09-03T01:12:25.086Z
-updated: 2026-09-03T01:26:36.000Z
+updated: 2026-09-03T04:14:01.296Z
 depends_on:
   - LUMO-083
   - LUMO-042
 estimate: 8
-order: zzy
+order: zzz1
 board: product
 ---
 
@@ -56,3 +84,34 @@ Run preference, bookmark, migration, and workflow integration tests with isolate
 
 - Cloud sync, per-catalog settings, device-specific profiles, or changing existing files when a default changes.
 - Bundling starter LUTs; that is LUMO-150.
+
+### Comment — codex @ 2026-09-03T04:14:01.293Z
+
+Post-completion verification: swift test passed — 680 tests executed, 14 expected skips, 0 failures. This confirms the earlier derive-folder compatibility fix alongside the new settings coverage.
+
+## Agent log
+
+- 2026-09-03T04:11:37.438Z: Verification report
+Verdict: PASS
+Acceptance criteria:
+- [x] Settings surface is available through the macOS Settings menu and uses accessible labels/actions. (pass)
+- [x] Always dark mode persists and maps enabled to dark and disabled to system-following via preferredColorScheme. (pass)
+- [x] Source/import and export defaults use secure bookmarks, can be tested/reset, and only seed future panels. (pass)
+- [x] Unavailable or inaccessible folders retain their bookmark and expose recovery copy with safe nil fallback. (pass)
+- [x] Canonical user Look/LUT storage is exposed, created/revealed on demand, and used as the clean-profile save fallback. (pass)
+- [x] Schema versioning and migration preserve unrelated workflow preferences. (pass)
+Checks run:
+- swift test --filter LumoSettingsTests|AppViewModelTests.testDeriveSavePanelDefaultsToTheLUTFolder — 6 passed
+- swift build -c release — passed
+- git diff --check — clean
+- dg validate — OK
+Findings:
+- Interactive relaunch, system appearance transition, and VoiceOver window QA require a logged-in GUI session; automated coverage and native SwiftUI accessibility modifiers cover the code paths here.
+Fixes:
+- None
+Verification commits:
+- None
+Actor: codex
+Resolved model: gpt-5.6-luna
+Pickup session: 01MTKZVRZT91O6PSOQ
+Summary: Implemented persistent Settings for appearance, source/import and export folder defaults, secure bookmark recovery, and canonical user Look/LUT storage. Added SettingsLink/menu wiring, live dark-mode precedence, dialog defaults, migration-safe UserDefaults persistence, and accessibility-focused UI/test seams.

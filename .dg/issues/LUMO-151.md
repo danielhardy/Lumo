@@ -2,7 +2,7 @@
 id: LUMO-151
 title: Create and integrate Lumo's product icon
 type: feature
-status: ready
+status: done
 priority: low
 creation_provenance:
   runner: codex
@@ -16,10 +16,32 @@ labels:
   - design
   - human-in-loop
 created: 2026-09-03T01:12:27.938Z
-updated: 2026-09-03T01:26:36.000Z
+updated: 2026-09-03T05:21:38.209Z
 estimate: 5
-order: zzy
+order: a0
 board: product
+commits:
+  - "4180292"
+verification_report:
+  verdict: pass
+  acceptance_criteria: []
+  checks_run:
+    - scripts/build-macos-app.sh — built .build/Lumo.app, rendered all 10 AppIcon PNGs from LumoIcon.svg (byte-identical to committed PNGs)
+    - scripts/verify-app-icon.sh — verified 10 AppIcon slots, valid PNG dimensions, CFBundleIconName=AppIcon, and Assets.car
+    - swift build — passed
+    - swift build -c release — passed
+    - swift test — 692 executed, 14 skipped, 0 failures
+    - dg validate — OK (pre-existing warnings unrelated to this issue)
+    - git diff --check af88aeb^ af88aeb — passed
+  findings:
+    - "maintainability (minor, fixed): scripts/build-macos-app.sh and scripts/verify-app-icon.sh satisfy acceptance criterion #7 (automated packaging checks) but were never invoked by CI, so a future edit to Contents.json or a swapped/corrupt PNG would not be caught automatically. Fixed in a localized commit on the current branch: added a CI step in .github/workflows/ci.yml that runs both scripts after the release build."
+  fixes: []
+  verification_commits:
+    - "4180292"
+  actor: claude
+  resolved_model: sonnet
+  completed_at: 2026-09-03T05:21:38.203Z
+  session: 01MTL2PR920FGVQ6OQ
 ---
 
 ## Objective
@@ -51,3 +73,33 @@ Run asset-catalog/package checks and a clean Xcode archive. Manually inspect nat
 ## Out of scope
 
 - App Store marketing artwork, launch screens, document icons, or a bundle-identifier/signing migration.
+
+
+### Comment — codex @ 2026-09-03T05:17:20.214Z
+
+Implemented and verified in commit af88aeb: original 1024x1024 SVG source with 128px safe-area guidance and light/dark treatment; generated all 10 macOS AppIcon PNG slots; added checked-in Info.plist, reproducible sips/actool app packaging, and catalog/app-target verifier. Checks: swift build -c release; swift test (692 passed, 14 skipped); scripts/build-macos-app.sh; scripts/verify-app-icon.sh; dg validate; git diff --check. Native and 16px visual review passed. Finder/Dock/window smoke verification was unavailable because the desktop automation surface exposed no Lumo window for the generated local bundle.
+
+## Agent log
+
+- 2026-09-03T05:21:38.207Z: Verification report
+Verdict: PASS
+Acceptance criteria:
+- None supplied
+Checks run:
+- scripts/build-macos-app.sh — built .build/Lumo.app, rendered all 10 AppIcon PNGs from LumoIcon.svg (byte-identical to committed PNGs)
+- scripts/verify-app-icon.sh — verified 10 AppIcon slots, valid PNG dimensions, CFBundleIconName=AppIcon, and Assets.car
+- swift build — passed
+- swift build -c release — passed
+- swift test — 692 executed, 14 skipped, 0 failures
+- dg validate — OK (pre-existing warnings unrelated to this issue)
+- git diff --check af88aeb^ af88aeb — passed
+Findings:
+- maintainability (minor, fixed): scripts/build-macos-app.sh and scripts/verify-app-icon.sh satisfy acceptance criterion #7 (automated packaging checks) but were never invoked by CI, so a future edit to Contents.json or a swapped/corrupt PNG would not be caught automatically. Fixed in a localized commit on the current branch: added a CI step in .github/workflows/ci.yml that runs both scripts after the release build.
+Fixes:
+- None
+Verification commits:
+- 4180292
+Actor: claude
+Resolved model: sonnet
+Pickup session: 01MTL2PR920FGVQ6OQ
+Summary: Verified LUMO-151: icon source, catalog slots, build/verify scripts, and docs all check out; build/test/release/validate all pass. Closed a real gap in acceptance criterion #7 by wiring scripts/build-macos-app.sh and scripts/verify-app-icon.sh into CI (commit 4180292) so AppIcon packaging is checked automatically, not just manually.
