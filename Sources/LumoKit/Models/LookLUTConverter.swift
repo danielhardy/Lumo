@@ -179,6 +179,8 @@ enum LookLUTConversionError: LocalizedError, Sendable {
 enum LookLUTConverter {
     static let defaultSize = 33
     static let verificationResolution = 5
+    /// Keep sampled LUT/probe images below the maximum 1D texture width supported by Metal.
+    private static let samplesPerRow = 8192
 
     static func convert(
         document: EditDocument,
@@ -244,22 +246,30 @@ enum LookLUTConverter {
 
     private static func makeGridInput(size: Int, space: WorkingSpace) -> CIImage {
         let count = size * size * size
-        var bytes = [UInt8](repeating: 255, count: count * 4)
+        let width = min(samplesPerRow, count)
+        let height = (count + width - 1) / width
+        var values = [Float](repeating: 1, count: width * height * 4)
         let denominator = Float(size - 1)
         var index = 0
         for b in 0..<size {
             for g in 0..<size {
                 for r in 0..<size {
-                    bytes[index * 4] = UInt8((Float(r) / denominator * 255).rounded())
-                    bytes[index * 4 + 1] = UInt8((Float(g) / denominator * 255).rounded())
-                    bytes[index * 4 + 2] = UInt8((Float(b) / denominator * 255).rounded())
+                    // Keep the source coordinates on the exact normalized cube lattice. Using
+                    // RGBA8 here shifts most nodes from r/(size - 1) to a nearby 8-bit value
+                    // (for example, 1/32 becomes 8/255), which makes the generated cube subtly
+                    // misregistered and can push an otherwise valid conversion over the verifier's
+                    // tolerance.
+                    values[index * 4] = Float(r) / denominator
+                    values[index * 4 + 1] = Float(g) / denominator
+                    values[index * 4 + 2] = Float(b) / denominator
                     index += 1
                 }
             }
         }
         return CIImage(
-            bitmapData: Data(bytes), bytesPerRow: count * 4,
-            size: CGSize(width: count, height: 1), format: .RGBA8,
+            bitmapData: Data(bytes: values, count: values.count * MemoryLayout<Float>.size),
+            bytesPerRow: width * MemoryLayout<Float>.size * 4,
+            size: CGSize(width: width, height: height), format: .RGBAf,
             colorSpace: space.cgColorSpace
         )
     }
@@ -267,7 +277,9 @@ enum LookLUTConverter {
     private static func makeProbeInput(space: WorkingSpace) -> CIImage {
         let resolution = verificationResolution
         let count = resolution * resolution * resolution
-        var bytes = [UInt8](repeating: 255, count: count * 4)
+        let width = min(samplesPerRow, count)
+        let height = (count + width - 1) / width
+        var values = [Float](repeating: 1, count: width * height * 4)
         var index = 0
         for b in 0..<resolution {
             for g in 0..<resolution {
@@ -275,16 +287,17 @@ enum LookLUTConverter {
                     // Offset the probes from the cube lattice so interpolation, rather than just
                     // table-node equality, is verified.
                     let denominator = Float(resolution)
-                    bytes[index * 4] = UInt8((Float(r) / denominator * 255).rounded())
-                    bytes[index * 4 + 1] = UInt8((Float(g) / denominator * 255).rounded())
-                    bytes[index * 4 + 2] = UInt8((Float(b) / denominator * 255).rounded())
+                    values[index * 4] = Float(r) / denominator
+                    values[index * 4 + 1] = Float(g) / denominator
+                    values[index * 4 + 2] = Float(b) / denominator
                     index += 1
                 }
             }
         }
         return CIImage(
-            bitmapData: Data(bytes), bytesPerRow: count * 4,
-            size: CGSize(width: count, height: 1), format: .RGBA8,
+            bitmapData: Data(bytes: values, count: values.count * MemoryLayout<Float>.size),
+            bytesPerRow: width * MemoryLayout<Float>.size * 4,
+            size: CGSize(width: width, height: height), format: .RGBAf,
             colorSpace: space.cgColorSpace
         )
     }
@@ -322,18 +335,29 @@ enum LookLUTConverter {
     private static func renderRGB(
         _ image: CIImage, count: Int, context: CIContext, space: WorkingSpace
     ) throws -> [SIMD3<Float>] {
-        var values = [Float](repeating: 0, count: count * 4)
-        let bounds = CGRect(x: 0, y: 0, width: count, height: 1)
+        let width = Int(image.extent.width.rounded())
+        let height = Int(image.extent.height.rounded())
+        guard width > 0, height > 0, width * height >= count else {
+            throw LookLUTConversionError.renderFailed
+        }
+        var values = [Float](repeating: 0, count: width * height * 4)
+        let bounds = CGRect(
+            x: image.extent.minX, y: image.extent.minY,
+            width: CGFloat(width), height: CGFloat(height)
+        )
         values.withUnsafeMutableBytes { raw in
             context.render(
-                image, toBitmap: raw.baseAddress!, rowBytes: count * MemoryLayout<Float>.size * 4,
+                image, toBitmap: raw.baseAddress!, rowBytes: width * MemoryLayout<Float>.size * 4,
                 bounds: bounds, format: .RGBAf, colorSpace: space.cgColorSpace
             )
         }
         var result: [SIMD3<Float>] = []
         result.reserveCapacity(count)
         for index in 0..<count {
-            let value = SIMD3(values[index * 4], values[index * 4 + 1], values[index * 4 + 2])
+            let x = index % width
+            let y = index / width
+            let offset = (y * width + x) * 4
+            let value = SIMD3(values[offset], values[offset + 1], values[offset + 2])
             guard value.x.isFinite, value.y.isFinite, value.z.isFinite else {
                 throw LookLUTConversionError.renderFailed
             }

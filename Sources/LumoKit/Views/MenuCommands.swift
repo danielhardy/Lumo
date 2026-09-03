@@ -79,6 +79,8 @@ public struct LumoCommands: Commands {
             Button("Derive Look from JPG…") { post(.deriveRecipe) }
                 .keyboardShortcut("d")
 
+            Button("Save as Look/LUT…") { post(.saveLook) }
+
             Divider()
 
             Button("Export...") { post(.exportImage) }
@@ -147,6 +149,9 @@ struct MenuCommandReceivers: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: .deriveRecipe)) { _ in
                 viewModel.presentRecipeExtractor()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .saveLook)) { _ in
+                viewModel.presentSaveLook()
+            }
     }
 }
 
@@ -170,4 +175,5 @@ extension Notification.Name {
     static let copyAllEdits = Notification.Name("Lumo.copyAllEdits")
     static let pasteEdits = Notification.Name("Lumo.pasteEdits")
     static let deriveRecipe = Notification.Name("Lumo.deriveRecipe")
+    static let saveLook = Notification.Name("Lumo.saveLook")
 }

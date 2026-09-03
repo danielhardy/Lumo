@@ -108,7 +108,7 @@ final class LUTLibrary: ObservableObject {
     }
 
     func restoreFolder() {
-        guard let data = UserDefaults.standard.data(forKey: Self.settingsKey) else { return }
+        guard let data = preferences.data(forKey: Self.settingsKey) else { return }
         var isStale = false
         guard let url = try? URL(
             resolvingBookmarkData: data,
@@ -136,7 +136,7 @@ final class LUTLibrary: ObservableObject {
                 includingResourceValuesForKeys: nil,
                 relativeTo: nil
             )
-            UserDefaults.standard.set(bookmark, forKey: Self.settingsKey)
+            preferences.set(bookmark, forKey: Self.settingsKey)
         } catch {
             print("Failed to save bookmark: \(error)")
         }
@@ -299,7 +299,7 @@ final class LUTLibrary: ObservableObject {
     }
 
     private func restoreImportedLUTs() {
-        guard let records = UserDefaults.standard.array(forKey: Self.importedBookmarksKey) as? [Data] else {
+        guard let records = preferences.array(forKey: Self.importedBookmarksKey) as? [Data] else {
             return
         }
         for data in records {
@@ -327,7 +327,7 @@ final class LUTLibrary: ObservableObject {
                 relativeTo: nil
             )
         }
-        UserDefaults.standard.set(bookmarks, forKey: Self.importedBookmarksKey)
+        preferences.set(bookmarks, forKey: Self.importedBookmarksKey)
     }
 
     private enum ScanOutcome {

@@ -48,6 +48,12 @@ public struct ContentView: View {
             )) {
                 RecipeExtractorSheet(coordinator: viewModel.derive)
             }
+            .sheet(isPresented: Binding(
+                get: { viewModel.lookSave.isSheetPresented },
+                set: { if !$0 { viewModel.dismissSaveLook() } }
+            )) {
+                LookSaveSheet(coordinator: viewModel.lookSave)
+            }
             .sheet(isPresented: $viewModel.isRemovableMediaSelectorPresented) {
                 RemovableMediaSelectorView(viewModel: viewModel)
             }

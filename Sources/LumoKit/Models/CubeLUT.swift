@@ -133,7 +133,9 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
         for suffix in ["_33_Rec709", "_65_Rec709", "_Rec709"] {
             cleaned = cleaned.replacingOccurrences(of: suffix, with: "")
         }
-        self.name = cleaned
+        self.name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? displayName!
+            : cleaned
 
         let content: String
         do {

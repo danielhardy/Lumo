@@ -10,8 +10,8 @@ import CoreImage
 /// `WorkingSpace.current` — because a derived cube has to be *fit* in the space it will later be
 /// *applied* in (§4.4). Folding it into the engine would quietly couple those two spaces together.
 ///
-/// So the invariant is not "one context in the module". It is "one context in the render path, and
-/// exactly one other, and we can name it".
+/// So the invariant is not "one context in the module". It is "one context in the live render path,
+/// plus the explicitly named recipe and one-shot Look-export samplers".
 ///
 /// **This reads source text, and that is deliberate.** A `CIContext` leaves no observable trace —
 /// two of them render identically, cost twice the memory, and no runtime assertion can tell them
@@ -58,7 +58,7 @@ final class RenderStackTests: XCTestCase {
         return found
     }
 
-    func testOnlyTwoTypesInTheModuleOwnACIContext() throws {
+    func testOnlyNamedTypesInTheModuleOwnACIContext() throws {
         let files = try swiftFiles()
         XCTAssertGreaterThan(files.count, 20,
                              "expected to scan the whole module; found \(files.count) files under \(Self.sourcesDirectory.path)")
@@ -66,12 +66,10 @@ final class RenderStackTests: XCTestCase {
         let owners = try filesConstructingAContext()
         XCTAssertEqual(
             owners,
-            ["RenderEngine.swift", "RecipeExtractor.swift"],
+            ["LookLUTConverter.swift", "RenderEngine.swift", "RecipeExtractor.swift"],
             """
-            The render stack owns exactly one CIContext (RenderEngine), and RecipeExtractor keeps a \
-            second by design — see PHASE2_SPEC §3 and §4.4. A third is a regression: it means some \
-            code path is rendering outside the actor that owns the pipeline. If a new context is \
-            genuinely warranted, say why here and update this list deliberately.
+            RenderEngine owns the live render context. RecipeExtractor and LookLUTConverter are \
+            explicit one-shot samplers outside the live render path; any fourth owner is a regression.
             """
         )
     }

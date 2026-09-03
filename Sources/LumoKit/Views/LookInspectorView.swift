@@ -193,6 +193,15 @@ struct LookInspectorView: View {
             .help("Derive a look from a RAW and JPG")
 
             Button {
+                viewModel.presentSaveLook()
+            } label: {
+                Image(systemName: "square.and.arrow.down")
+            }
+            .buttonStyle(.borderless)
+            .disabled(viewModel.sourceImage == nil)
+            .help("Save the active global edits as a Look/LUT")
+
+            Button {
                 viewModel.chooseLookFolder()
             } label: {
                 Image(systemName: "folder")
