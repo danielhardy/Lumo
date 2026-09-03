@@ -278,7 +278,9 @@ public final class AppViewModel: ObservableObject {
     /// the transient image status so the stored `LUTID` remains visible to callers and recoverable.
     @Published private(set) var lutResolutionStatus: String?
 
-    /// Whether the A/B comparison — the split view and the Space-hold — has anything to show.
+    /// Whether the transient A/B comparison — especially the Space-hold — has a meaningful
+    /// before/after to show. Side-by-side presentation has a separate source-availability gate
+    /// because an identity document still renders valid source pixels into both panes.
     /// The document owns the exact visible-stage rule and the matching `comparisonBaseline`, so
     /// Light, Color, Effects, adjustment nodes, and LUT intensity cannot drift apart at this gate.
     ///
@@ -294,7 +296,10 @@ public final class AppViewModel: ObservableObject {
             preferences.set(isSideBySide, forKey: Self.comparisonModeKey)
         }
     }
-    var isSideBySideVisible: Bool { isSideBySide && isComparisonAvailable }
+    /// Side-by-side is a retained presentation preference. An identity document still has valid
+    /// source pixels, so it can populate both panes even though there is no meaningful before/after
+    /// for the transient Space comparison.
+    var isSideBySideVisible: Bool { isSideBySide && sourceImage != nil }
 
     /// The visible render is owned by these surfaces, not published image values on this model.
     let previewSurface = PreviewSurface()
@@ -1910,7 +1915,6 @@ public final class AppViewModel: ObservableObject {
     /// the image or the develop settings change — not when the look does.
     private func scheduleOriginalPreview(allowHiddenPreparation: Bool = false) {
         guard lastPresentedVisibleRequest != nil,
-              isComparisonAvailable,
               (isSideBySideVisible || allowHiddenPreparation),
               let imageSource else {
             cancelComparisonPreview()
@@ -1973,7 +1977,11 @@ public final class AppViewModel: ObservableObject {
 
     @discardableResult
     func toggleSideBySide() -> Bool {
-        guard isComparisonAvailable else { return false }
+        // An active retained side-by-side preference must remain dismissible after Reset Photo or
+        // when navigation lands on an identity document. Enabling it from single view still uses
+        // the meaningful-edit gate, preserving the existing affordance semantics for untouched
+        // photos.
+        guard isComparisonAvailable || isSideBySideVisible else { return false }
         isSideBySide.toggle()
         if isSideBySide {
             scheduleOriginalPreview()

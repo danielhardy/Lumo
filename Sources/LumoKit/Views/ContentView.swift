@@ -200,10 +200,10 @@ public struct ContentView: View {
             hasImage: viewModel.sourceImage != nil
         )
 
-        // Side-by-side is only meaningful when the LUMO-047 comparison gate has something to show.
-        // Removing the control in the unsupported state keeps every visible view affordance
-        // actionable and keeps its label aligned with the rendered mode.
-        if viewModel.isComparisonAvailable {
+        // An active retained side-by-side preference remains actionable on an identity document so
+        // the user can return to single view after switching photos or using Reset Photo. Starting
+        // side-by-side from single view still follows the meaningful-comparison gate.
+        if viewModel.isComparisonAvailable || viewModel.isSideBySideVisible {
             Button {
                 viewModel.toggleSideBySide()
             } label: {
