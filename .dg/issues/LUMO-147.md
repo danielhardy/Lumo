@@ -1,6 +1,6 @@
 ---
 id: LUMO-147
-title: Save a set of compatible edits as a LUT
+title: Save the LUT-compatible part of a photo's edits as a Look
 type: feature
 status: ready
 priority: high
@@ -10,34 +10,48 @@ creation_provenance:
   actor: codex
 labels:
   - lut
-  - edits
+  - look
   - export
   - color
+  - editing
 created: 2026-09-03T01:12:25.648Z
-updated: 2026-09-03T01:12:25.932Z
+updated: 2026-09-03T01:26:36.000Z
+depends_on:
+  - LUMO-042
+  - LUMO-085
+estimate: 8
 order: zzy
 board: product
 ---
 
 ## Objective
 
-Let users save the color edits applied to a photo as a reusable LUT.
+Let users save the LUT-compatible portion of the active photo's non-destructive edits as a reusable Look.
 
 ## Context
 
-Users can create a look through the editor but cannot currently preserve it as a LUT. The feature must distinguish color-transform edits that can be represented in a LUT from edits such as crop or geometry that cannot.
+The editor stores edits in `EditDocument` and currently saves a derived LUT only from a RAW/JPEG recipe pair. This ticket adds a separate “Save as Look/LUT” path for the active document. A portable `.cube` represents a global RGB transform, not RAW decoding or spatial composition, so the implementation must define and surface a support matrix instead of silently flattening unsupported stages.
 
 ## Acceptance criteria
 
-- [ ] A Save as LUT action is available from the editing workflow when a photo is loaded.
-- [ ] The action opens a save flow that collects a name, validates it, and saves a standard LUT file; the supported format, color space, range, and resolution are documented.
-- [ ] Supported color edits are baked into the LUT; non-LUT-editable edits are not silently encoded.
-- [ ] If the current edit set contains unsupported operations, the UI clearly explains what will be omitted and lets the user cancel before saving.
-- [ ] A saved LUT appears in the Looks/LUT browser with its name and preview, and can be applied to another photo.
-- [ ] Applying the saved LUT to a representative photo produces a result consistent with the source color edits within the documented conversion limits.
-- [ ] Name collisions, invalid destinations, cancellation, and write failures are recoverable and do not mutate the current photo's edits.
-- [ ] Automated coverage verifies conversion, unsupported-edit messaging, persistence, browser visibility, and round-trip application.
+- [ ] A Save as Look/LUT action is available from the active editing workflow when a photo is loaded.
+- [ ] The save flow collects and validates a name, writes a standard `.cube`, and documents its LUT size, working color space, domain/range, and conversion limits.
+- [ ] The ticket defines a versioned support matrix for `EditDocument`: global color/tone stages are included only when the conversion is verified; RAW develop, crop/rotation, masking, vignette, grain, and other spatial/source-dependent stages are excluded unless an equivalent global transform is proven.
+- [ ] If unsupported or source-dependent edits are present, the UI identifies them, explains that they will be omitted, and lets the user cancel before saving.
+- [ ] A saved Look is registered in the existing `LUTLibrary`/Look browser with its name and preview and can be applied to another photo.
+- [ ] Applying the saved Look to representative standard and RAW-rendered RGB inputs produces results within the documented conversion tolerance; it does not claim to reproduce RAW development or spatial edits.
+- [ ] Name collisions, invalid destinations, cancellation, and write failures are recoverable and do not mutate the current photo's `EditDocument` or undo history.
+- [ ] Automated coverage verifies support-matrix conversion, unsupported-edit messaging, file validity, browser visibility, persistence, and round-trip application.
 
 ## Implementation notes
 
-Define the edit-to-LUT support matrix before implementation. Keep crop, rotation, masking, local adjustments, and other spatial operations out of the LUT unless the renderer explicitly supports an equivalent global color transform. Coordinate the canonical storage location with the Settings ticket.
+Define the edit-to-LUT support matrix before implementation. Keep crop, rotation, masking, local adjustments, vignette, grain, and other spatial/source operations out of the LUT unless the renderer explicitly supports an equivalent global color transform. Reuse the existing `.cube` writer and coordinate the canonical storage location with LUMO-146; keep the current RAW/JPEG recipe extractor as a separate workflow.
+
+## Verification
+
+Run support-matrix and `.cube` round-trip tests at the documented resolution and working space, then verify application to representative standard and RAW-rendered inputs. Run persistence, Look-browser, write-failure, and full Swift test coverage.
+
+## Out of scope
+
+- Replacing the existing recipe-extractor workflow or inventing a proprietary LUT format.
+- Claiming that a saved LUT preserves RAW decoder settings, crop geometry, or per-image spatial effects.

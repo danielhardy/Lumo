@@ -14,7 +14,7 @@ labels:
   - rendering
   - regression
 created: 2026-09-03T01:12:22.879Z
-updated: 2026-09-03T01:12:23.162Z
+updated: 2026-09-03T01:26:36.000Z
 depends_on:
   - LUMO-099
   - LUMO-109
@@ -42,6 +42,10 @@ Lumo calls this mode “Side by Side” and persists the single-versus-compariso
 ## Implementation notes
 
 Audit initialization of the comparison/current render surfaces and their revision gates when `AppViewModel.load` installs a new `ImageSource`. Avoid treating an identity document as “no render output”; the current pane should use the source-derived render until an edit pipeline produces a different result.
+
+## Verification
+
+Add a deterministic regression fixture for an unedited standard image and exercise no-record, empty-record, and default-document cases in single and side-by-side modes. Run the focused comparison tests and full Swift test suite.
 
 ## Out of scope
 

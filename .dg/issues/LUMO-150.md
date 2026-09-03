@@ -1,6 +1,6 @@
 ---
 id: LUMO-150
-title: Bundle a licensed starter library of pre-built LUTs
+title: Bundle a small, licensed starter library of Looks
 type: feature
 status: ready
 priority: medium
@@ -13,30 +13,44 @@ labels:
   - looks
   - assets
   - licensing
+  - ux
 created: 2026-09-03T01:12:27.350Z
-updated: 2026-09-03T01:12:27.663Z
+updated: 2026-09-03T01:26:36.000Z
+depends_on:
+  - LUMO-042
+  - LUMO-146
+estimate: 8
 order: zzy
 board: product
 ---
 
 ## Objective
 
-Ship a curated set of ready-to-use LUTs for common creative directions, including black and white, cinematic, film-inspired, and Fuji-inspired looks.
+Ship a small curated set of ready-to-use Looks for common creative directions, using only original or clearly redistributable `.cube` assets.
 
 ## Context
 
-A starter library would make Looks useful immediately and give users examples of what the LUT workflow can do. Only assets with compatible licenses and clear provenance may be bundled; proprietary camera profiles or ripped commercial film emulations must not be presented as official profiles.
+A starter library would make Lumo's existing Look inspector useful immediately and give users examples of what the LUT workflow can do. Lumo currently discovers user/imported files through `LUTLibrary`; bundled assets need a separate, read-only source and clear visual distinction. Only original or compatible redistributable assets with recorded provenance may ship. Proprietary camera profiles and ripped commercial film emulations must not be presented as official profiles. Avoid manufacturer trademarks in category or asset names unless rights are explicit; “warm slide-inspired” is sufficient for the intended direction.
 
 ## Acceptance criteria
 
-- [ ] The app ships a curated starter set of valid LUT files in documented categories: black and white, cinematic, film-inspired, and Fuji-inspired or analogous color profiles.
-- [ ] Every bundled asset has recorded source, author, license, attribution requirements, and any redistribution constraints in a machine-readable manifest and user-visible acknowledgements where required.
-- [ ] The UI groups the starter LUTs by category, shows usable names and previews, and distinguishes bundled LUTs from user-created LUTs.
-- [ ] Applying each bundled LUT succeeds on representative supported images without corrupting the source or edit history.
-- [ ] Invalid, missing, or incompatible bundled assets fail gracefully and do not prevent the rest of the Looks library from loading.
-- [ ] The package/build process verifies that every manifest entry points to an included valid LUT and rejects unlicensed or missing assets.
-- [ ] Automated coverage verifies manifest validation, loading, category display, previews, application, and graceful partial failure.
+- [ ] The app ships a deliberately small starter set of valid `.cube` Looks in documented categories such as Monochrome, Cinematic, Film-inspired, and Warm slide-inspired; names do not imply manufacturer endorsement.
+- [ ] Every bundled asset has source/author, license, attribution requirements, redistribution constraints, and an internal approval record in a machine-readable manifest; required user-visible acknowledgements are included.
+- [ ] The Look inspector groups starter Looks by category, shows usable names/previews, and distinguishes bundled read-only Looks from user-imported or saved Looks.
+- [ ] Applying each bundled Look succeeds on representative supported standard and RAW-rendered images without corrupting the source or edit history.
+- [ ] Invalid, missing, or incompatible bundled assets fail gracefully and do not prevent the rest of the Look library from loading.
+- [ ] The package/build process validates that every manifest entry points to an included valid LUT and fails closed for missing provenance, unlicensed, or malformed assets.
+- [ ] Automated coverage verifies manifest/provenance validation, loading, category display, previews, application, and graceful partial failure.
 
 ## Implementation notes
 
-Prefer genuinely redistributable open-source assets or create original in-house assets. Use descriptive “film-inspired” names unless a license explicitly permits a trademarked stock/profile name; do not imply endorsement by Fuji or any film manufacturer. Coordinate the asset directory and discovery rules with the Settings and Save as LUT tickets.
+Prefer original in-house assets or genuinely redistributable assets with licenses compatible with Lumo's distribution. Use descriptive names such as “Warm Slide” rather than a trademarked stock/profile name; do not imply endorsement by Fuji or any film manufacturer. Keep bundled assets in a package-owned resource directory and coordinate the discovery/source rules with LUMO-146 and LUMO-147.
+
+## Verification
+
+Run manifest/build validation and Look-library tests in a clean checkout, including malformed/missing partial-library cases. Manually review every bundled Look on representative standard and RAW-rendered images and verify attribution/acknowledgements before distribution.
+
+## Out of scope
+
+- Downloading assets at runtime, bundling proprietary camera profiles, or reproducing commercial film emulations.
+- Editing user LUT files in place or changing the existing external Look import semantics.

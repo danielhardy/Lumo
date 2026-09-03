@@ -13,7 +13,7 @@ labels:
   - ux
   - navigation
 created: 2026-09-03T01:12:22.295Z
-updated: 2026-09-03T01:12:22.591Z
+updated: 2026-09-03T01:26:36.000Z
 depends_on:
   - LUMO-129
 estimate: 2
@@ -41,6 +41,10 @@ The current Photos import path streams items through `ImageCollection`, opens th
 ## Implementation notes
 
 Trace the import-completion event through `AppViewModel` selection and `InspectorState.isPresented` rather than coupling the behavior to `PhotosPicker` implementation details. Preserve the existing selected tab and Info-inspector state model where possible.
+
+## Verification
+
+Run focused `AppViewModel`/Photos-import state tests plus the full Swift test suite. Manually verify first-success, partial-success, all-failure, cancellation, and repeated import from the menu and keyboard command path.
 
 ## Out of scope
 
