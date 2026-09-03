@@ -610,16 +610,8 @@ private struct LookPreviewSwatch: View {
     let look: CubeLUT
 
     private var colors: [Color] {
-        let values = look.tableFloats
-        let count = max(1, values.count / 4)
-        let indices = [0, count / 4, count / 2, max(0, count - 1)]
-        return indices.map { index in
-            let offset = min(index, count - 1) * 4
-            return Color(
-                red: Double(values[offset]),
-                green: Double(values[offset + 1]),
-                blue: Double(values[offset + 2])
-            )
+        look.previewSamples(count: 4).map { sample in
+            Color(red: Double(sample.x), green: Double(sample.y), blue: Double(sample.z))
         }
     }
 

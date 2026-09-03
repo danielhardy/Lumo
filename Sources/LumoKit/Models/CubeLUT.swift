@@ -317,6 +317,26 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
         tableData.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
     }
 
+    /// Up to `count` evenly-spaced RGB samples from the table, without materializing the full float
+    /// array. A 65³ table is ~4.4 MB; a SwiftUI preview swatch that copied `tableFloats` on every
+    /// row render would do that on every scroll/selection update instead of once per LUT.
+    func previewSamples(count: Int) -> [SIMD3<Float>] {
+        guard count > 0 else { return [] }
+        return tableData.withUnsafeBytes { raw -> [SIMD3<Float>] in
+            let floats = raw.bindMemory(to: Float.self)
+            let entries = floats.count / 4
+            guard entries > 0 else { return [] }
+            var result: [SIMD3<Float>] = []
+            result.reserveCapacity(count)
+            for i in 0..<count {
+                let entryIndex = i == count - 1 ? entries - 1 : min(i * entries / count, entries - 1)
+                let offset = entryIndex * 4
+                result.append(SIMD3(floats[offset], floats[offset + 1], floats[offset + 2]))
+            }
+            return result
+        }
+    }
+
     // MARK: - Core Image Filter
 
     /// Creates a CIColorCube filter configured with this LUT.
