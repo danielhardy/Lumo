@@ -25,6 +25,10 @@ public struct LumoCommands: Commands {
     public init() {}
 
     public var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            SettingsLink()
+        }
+
         CommandGroup(replacing: .newItem) {
             Button("Open Image...") { post(.openImage) }
                 .keyboardShortcut("o")
