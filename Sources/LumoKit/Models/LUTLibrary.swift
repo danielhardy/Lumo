@@ -9,6 +9,14 @@ final class LUTLibrary: ObservableObject {
         let id: String      // category name
         let name: String
         let luts: [CubeLUT]
+        let source: LUTSource
+
+        init(id: String, name: String, luts: [CubeLUT], source: LUTSource = .user) {
+            self.id = id
+            self.name = name
+            self.luts = luts
+            self.source = source
+        }
     }
 
     @Published var categories: [Category] = []
@@ -41,6 +49,13 @@ final class LUTLibrary: ObservableObject {
     /// Fired when an explicit import cannot be read or parsed.
     var onImportError: ((String) -> Void)?
 
+    /// Non-fatal diagnostics from the bundled starter resource loader. A damaged starter entry is
+    /// omitted, but these diagnostics never replace a healthy user library.
+    @Published private(set) var bundledLoadWarnings: [String]
+
+    /// The acknowledgement text shown in the Look inspector and sourced from the bundled manifest.
+    let bundledAcknowledgement: String
+
     private static let settingsKey = "lutFolderBookmark"
     private static let importedBookmarksKey = "lumo.importedLUTBookmarks"
 
@@ -50,12 +65,31 @@ final class LUTLibrary: ObservableObject {
     private var scanTask: Task<Void, Never>?
     private var importTask: Task<Void, Never>?
     private var scannedCategories: [Category] = []
+    private let bundledCategories: [Category]
     private var importedSourceURLs: [URL] = []
     private var importedLUTs: [CubeLUT] = []
     private var importedScopedURLs: [URL] = []
 
-    init() {
+    /// The app-owned home for user-created/imported Looks. A user-selected folder may still be
+    /// browsed through `setFolder`, but saved Looks have one stable destination supplied here.
+    let userLookFolderURL: URL
+    /// Explicit product-facing spelling for callers that need the canonical storage location.
+    var canonicalUserLookFolderURL: URL { userLookFolderURL }
+    private let preferences: UserDefaults
+
+    init(
+        preferences: UserDefaults = .standard,
+        userLookFolderURL: URL? = nil,
+        includeBundled: Bool = false
+    ) {
+        self.preferences = preferences
+        self.userLookFolderURL = userLookFolderURL ?? LumoSettings.defaultUserLookFolderURL()
+        let bundled = includeBundled ? BundledLookLibrary.load() : nil
+        self.bundledCategories = bundled?.categories ?? []
+        self.bundledLoadWarnings = bundled?.warnings ?? []
+        self.bundledAcknowledgement = bundled?.manifest.acknowledgement ?? ""
         restoreImportedLUTs()
+        publishCategories()
     }
 
     deinit {
@@ -226,21 +260,33 @@ final class LUTLibrary: ObservableObject {
     }
 
     private func publishCategories() {
-        var byCategory: [String: [CubeLUT]] = [:]
-        for category in scannedCategories {
-            byCategory[category.name, default: []].append(contentsOf: category.luts)
+        var byCategory: [String: (name: String, source: LUTSource, luts: [CubeLUT])] = [:]
+        for category in bundledCategories + scannedCategories {
+            let key = "\(category.source.rawValue):\(category.name)"
+            byCategory[key, default: (category.name, category.source, [])].luts.append(contentsOf: category.luts)
         }
         for lut in importedLUTs {
             // An imported file can also live inside the selected folder. One stable ID must produce
             // one browser row, not two rows whose selection would be indistinguishable.
-            if !byCategory.values.joined().contains(where: { $0.lutID == lut.lutID }) {
-                byCategory["Imported", default: []].append(lut)
+            if !byCategory.values.contains(where: { $0.luts.contains(where: { $0.lutID == lut.lutID }) }) {
+                byCategory["user:Imported", default: ("Imported", .user, [])].luts.append(lut)
             }
         }
 
-        categories = byCategory.keys.sorted().compactMap { key in
-            let luts = byCategory[key, default: []].sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            return luts.isEmpty ? nil : Category(id: key, name: key, luts: luts)
+        categories = byCategory.keys.sorted { lhs, rhs in
+            let left = byCategory[lhs]!
+            let right = byCategory[rhs]!
+            if left.source != right.source { return left.source == .bundled }
+            return left.name.localizedStandardCompare(right.name) == .orderedAscending
+        }.compactMap { key in
+            guard let group = byCategory[key] else { return nil }
+            let luts = group.luts.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            return luts.isEmpty ? nil : Category(
+                id: key,
+                name: group.name,
+                luts: luts,
+                source: group.source
+            )
         }
         allLUTs = categories.flatMap(\.luts)
     }
@@ -332,7 +378,7 @@ final class LUTLibrary: ObservableObject {
             let category = components.count > 1 ? String(components[0]) : "General"
 
             do {
-                let lut = try CubeLUT(url: fileURL, category: category)
+                let lut = try CubeLUT(url: fileURL, category: category, source: .user)
                 categoryMap[category, default: []].append(lut)
             } catch {
                 skipped += 1

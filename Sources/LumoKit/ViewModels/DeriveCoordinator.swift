@@ -29,6 +29,9 @@ final class DeriveCoordinator: ObservableObject {
     var onDerived: ((CubeLUT) -> Void)?
     /// Where the Save panel should open, and what to re-scan afterwards.
     var libraryFolder: (() -> URL?)?
+    /// Canonical app-owned fallback for a clean profile. Kept separate from `libraryFolder` so the
+    /// existing testable/current-folder seam still reports whether the user selected a Look folder.
+    var canonicalLibraryFolder: (() -> URL?)?
     /// Called after a successful save so the sidebar picks the new file up.
     var onSaved: ((URL) -> Void)?
 
@@ -170,7 +173,7 @@ final class DeriveCoordinator: ObservableObject {
             panel.allowedContentTypes = [cubeType]
         }
         panel.nameFieldStringValue = lut.name + ".cube"
-        if let folder = libraryFolder?() {
+        if let folder = libraryFolder?() ?? canonicalLibraryFolder?() {
             panel.directoryURL = folder
         }
 

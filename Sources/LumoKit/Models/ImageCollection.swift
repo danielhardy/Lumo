@@ -314,7 +314,7 @@ final class ImageCollection: ObservableObject {
     /// folder was resolved; the scan itself runs asynchronously.
     @discardableResult
     func restoreSourceFolder() -> Bool {
-        guard let data = UserDefaults.standard.data(forKey: Self.bookmarkKey) else { return false }
+        guard let data = defaults.data(forKey: Self.bookmarkKey) else { return false }
         var isStale = false
         guard let url = try? URL(
             resolvingBookmarkData: data,
@@ -342,7 +342,7 @@ final class ImageCollection: ObservableObject {
                 includingResourceValuesForKeys: nil,
                 relativeTo: nil
             )
-            UserDefaults.standard.set(bookmark, forKey: Self.bookmarkKey)
+            defaults.set(bookmark, forKey: Self.bookmarkKey)
         } catch {
             print("Failed to save source bookmark: \(error)")
         }

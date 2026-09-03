@@ -17,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var terminationFlushInProgress = false
 
     override init() {
-        viewModel = AppViewModel()
+        viewModel = AppViewModel(includeBundledLooks: true)
         super.init()
     }
 

@@ -47,7 +47,7 @@ enum LookInspectorEmptyState: Equatable, Sendable {
         case .emptyFolder:
             return "Add .cube or .look files to the selected folder, or import one from anywhere."
         case .firstLook:
-            return "Import an external .cube or .look file, or choose a folder to browse your own Looks. Lumo does not include a built-in starter library."
+            return "Try a bundled starter library Look, import an external .cube or .look file, or choose a folder to browse your own Looks."
         case .populated:
             return "Browse and apply a Look."
         }
@@ -94,7 +94,7 @@ struct LookInspectorView: View {
             let filtered = category.luts.filter { $0.name.lowercased().contains(query) }
             return filtered.isEmpty
                 ? nil
-                : LUTLibrary.Category(id: category.id, name: category.name, luts: filtered)
+                : LUTLibrary.Category(id: category.id, name: category.name, luts: filtered, source: category.source)
         }
     }
 
@@ -111,6 +111,10 @@ struct LookInspectorView: View {
                 }
                 Divider()
                 lookList
+                if !viewModel.library.bundledAcknowledgement.isEmpty,
+                   viewModel.library.allLUTs.contains(where: { $0.source == .bundled }) {
+                    starterAcknowledgement
+                }
                 unresolvedLookSection
                 intensitySection
             } else {
@@ -385,6 +389,15 @@ struct LookInspectorView: View {
                             Text(category.name)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            if category.source == .bundled {
+                                Text("Starter • Read-only")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(Color.accentColor.opacity(0.12), in: Capsule())
+                                    .accessibilityLabel("Starter Looks, read-only")
+                            }
                             Spacer()
                             Text("\(category.luts.count)")
                                 .font(.caption2)
@@ -463,6 +476,16 @@ struct LookInspectorView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(.bar)
+    }
+
+    private var starterAcknowledgement: some View {
+        Text(viewModel.library.bundledAcknowledgement)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .accessibilityLabel("Starter Look acknowledgement: \(viewModel.library.bundledAcknowledgement)")
     }
 
     @ViewBuilder
@@ -557,11 +580,20 @@ struct LookRow: View {
                 .fill(isSelected ? Color.accentColor : Color.secondary.opacity(0.3))
                 .frame(width: 4, height: 20)
 
+            LookPreviewSwatch(look: look)
+
             Text(look.name)
                 .font(.system(.body, design: .default))
                 .lineLimit(1)
 
             Spacer()
+            Text(look.source.displayName)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background(Color.primary.opacity(0.08), in: Capsule())
+                .accessibilityHidden(true)
             if isSelected {
                 Image(systemName: "checkmark")
                     .foregroundStyle(Color.accentColor)
@@ -569,7 +601,33 @@ struct LookRow: View {
             }
         }
         .contentShape(Rectangle())
-        .accessibilityLabel(look.name)
+        .accessibilityLabel("\(look.name), \(look.source.accessibilityDescription)")
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
+    }
+}
+
+private struct LookPreviewSwatch: View {
+    let look: CubeLUT
+
+    private var colors: [Color] {
+        let values = look.tableFloats
+        let count = max(1, values.count / 4)
+        let indices = [0, count / 4, count / 2, max(0, count - 1)]
+        return indices.map { index in
+            let offset = min(index, count - 1) * 4
+            return Color(
+                red: Double(values[offset]),
+                green: Double(values[offset + 1]),
+                blue: Double(values[offset + 2])
+            )
+        }
+    }
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 3)
+            .fill(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
+            .frame(width: 42, height: 20)
+            .overlay(RoundedRectangle(cornerRadius: 3).stroke(.white.opacity(0.18), lineWidth: 0.5))
+            .accessibilityHidden(true)
     }
 }

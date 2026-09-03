@@ -13,7 +13,7 @@ public struct ContentView: View {
     @State private var photosImportTask: Task<Void, Never>?
 
     public init() {
-        let viewModel = AppViewModel()
+        let viewModel = AppViewModel(includeBundledLooks: true)
         _viewModel = StateObject(wrappedValue: viewModel)
         _inspectorState = ObservedObject(wrappedValue: viewModel.inspectorState)
     }

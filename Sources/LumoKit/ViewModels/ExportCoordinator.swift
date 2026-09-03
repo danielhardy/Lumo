@@ -39,6 +39,9 @@ final class ExportCoordinator: ObservableObject {
     /// The format used by the most recently started export in this session.
     /// Both export dialogs use this to seed their accessory view.
     private(set) var lastUsedFormat: ExportFormat
+    /// Supplied by the app's settings owner at panel presentation time. It is a default only: the
+    /// chosen export destination is never written back into the setting automatically.
+    var defaultFolderURL: (() -> URL?)?
 
     var onStatus: ((String) -> Void)?
     var onError: ((String) -> Void)?
@@ -176,6 +179,7 @@ final class ExportCoordinator: ObservableObject {
         let formatPicker = ExportFormatAccessoryView(selectedFormat: lastUsedFormat)
         panel.title = "Export"
         panel.nameFieldStringValue = suggestedBaseName + "." + formatPicker.selectedFormat.fileExtension
+        panel.directoryURL = defaultFolderURL?()
         panel.allowedContentTypes = [formatPicker.selectedFormat.utType]
         formatPicker.onSelectionChanged = { [weak panel] format in
             panel?.nameFieldStringValue = suggestedBaseName + "." + format.fileExtension
@@ -309,6 +313,7 @@ final class ExportCoordinator: ObservableObject {
         panel.canChooseDirectories = true
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
+        panel.directoryURL = defaultFolderURL?()
         let formatPicker = ExportFormatAccessoryView(selectedFormat: lastUsedFormat)
         panel.accessoryView = formatPicker
         guard panel.runModal() == .OK, let folder = panel.url else { return }

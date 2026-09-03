@@ -496,7 +496,8 @@ public final class AppViewModel: ObservableObject {
 
     // MARK: - Owned state
 
-    let library = LUTLibrary()
+    public let settings: LumoSettings
+    let library: LUTLibrary
     let workScheduler: ImageWorkScheduler
     let collection: ImageCollection
     let editStore: EditDocumentStore
@@ -505,6 +506,9 @@ public final class AppViewModel: ObservableObject {
     let export: ExportCoordinator
     /// The "Derive Look from JPG" flow and its scratch-until-saved result.
     let derive = DeriveCoordinator()
+    /// The active-document global Look export flow. It snapshots edits and never mutates them while
+    /// the user reviews omissions or chooses a destination.
+    let lookSave = LookSaveCoordinator()
 
     // Convenience passthroughs so views and the menu don't have to know which
     // collaborator owns a given piece of state.
@@ -553,14 +557,21 @@ public final class AppViewModel: ObservableObject {
     // MARK: - Init
 
     public convenience init() {
-        self.init(engine: RenderEngine.shared, editStore: EditDocumentStore())
+        self.init(engine: RenderEngine.shared, editStore: EditDocumentStore(), includeBundledLooks: false)
+    }
+
+    /// Production entry points opt into the packaged starter library. The plain initializer stays
+    /// bundle-free for headless/test clients that intentionally provide their own Look folder.
+    public convenience init(includeBundledLooks: Bool) {
+        self.init(engine: RenderEngine.shared, editStore: EditDocumentStore(), includeBundledLooks: includeBundledLooks)
     }
 
     init(
         engine: any RenderEngining = RenderEngine.shared,
         editStore: EditDocumentStore = EditDocumentStore(),
         preferences: UserDefaults = .standard,
-        mediaVolumeProvider: any MediaVolumeProviding = MountedMediaVolumeProvider()
+        mediaVolumeProvider: any MediaVolumeProviding = MountedMediaVolumeProvider(),
+        includeBundledLooks: Bool = false
     ) {
         var interval = LumoSignpostInterval(.launch, context: .unknown)
         defer { interval.end() }
@@ -568,8 +579,14 @@ public final class AppViewModel: ObservableObject {
         self.engine = engine
         self.preferences = preferences
         self.editStore = editStore
+        self.settings = LumoSettings(preferences: preferences)
         self.workScheduler = ImageWorkScheduler()
-        self.collection = ImageCollection(scheduler: workScheduler)
+        self.collection = ImageCollection(scheduler: workScheduler, defaults: preferences)
+        self.library = LUTLibrary(
+            preferences: preferences,
+            userLookFolderURL: settings.ensureUserLookFolder(),
+            includeBundled: includeBundledLooks
+        )
         self.export = ExportCoordinator(engine: engine, editStore: editStore)
         self.previewCoordinator = PreviewCoordinator(engine: engine, scheduler: workScheduler)
         self.mediaVolumeProvider = mediaVolumeProvider
@@ -597,10 +614,12 @@ public final class AppViewModel: ObservableObject {
 
         // Forward nested ObservableObject changes so SwiftUI views update.
         for child in [
+            settings.objectWillChange.eraseToAnyPublisher(),
             library.objectWillChange.eraseToAnyPublisher(),
             collection.objectWillChange.eraseToAnyPublisher(),
             export.objectWillChange.eraseToAnyPublisher(),
             derive.objectWillChange.eraseToAnyPublisher(),
+            lookSave.objectWillChange.eraseToAnyPublisher(),
         ] {
             cancellables.append(child.sink { [weak self] _ in
                 Task { @MainActor [weak self] in
@@ -693,6 +712,7 @@ public final class AppViewModel: ObservableObject {
 
         export.onStatus = { [weak self] in self?.statusMessage = $0 }
         export.onError = { [weak self] in self?.presentError($0) }
+        export.defaultFolderURL = { [weak self] in self?.settings.defaultExportFolderURL }
 
         derive.onStatus = { [weak self] in self?.statusMessage = $0 }
         derive.onError = { [weak self] in self?.presentError($0) }
@@ -701,13 +721,33 @@ public final class AppViewModel: ObservableObject {
             guard let self, self.sourceImage != nil else { return }
             self.selectLook(lut)
         }
-        derive.libraryFolder = { [weak self] in self?.library.folderURL }
+        derive.libraryFolder = { [weak self] in
+            self?.library.folderURL
+        }
+        derive.canonicalLibraryFolder = { [weak self] in self?.settings.userLookFolderURL }
         derive.onSaved = { [weak self] destination in
             guard let self else { return }
             self.adoptSavedLUT(at: destination)
             // Re-scan so the new entry appears in the sidebar.
-            guard let folder = self.library.folderURL else { return }
-            self.library.scan(folder)
+            if let folder = self.library.folderURL {
+                self.library.scan(folder)
+            } else {
+                // A clean profile saves into the canonical user Look folder before any external
+                // folder is selected. Importing here keeps that saved user Look discoverable.
+                self.library.importLUT(from: destination, audition: false)
+            }
+        }
+
+        lookSave.onStatus = { [weak self] in self?.statusMessage = $0 }
+        lookSave.onError = { [weak self] in self?.presentError($0) }
+        lookSave.libraryFolder = { [weak self] in
+            self?.library.folderURL
+        }
+        lookSave.canonicalLibraryFolder = { [weak self] in self?.settings.userLookFolderURL }
+        lookSave.onSaved = { [weak self] destination in
+            // Registration is intentionally non-auditioning. Saving a Look must not add a new
+            // edit or undo entry to the photo whose document was exported.
+            self?.library.importLUT(from: destination, audition: false)
         }
     }
 
@@ -1107,6 +1147,7 @@ public final class AppViewModel: ObservableObject {
         panel.title = "Open Image"
         panel.allowedContentTypes = ImageDecoder.supportedTypes
         panel.allowsMultipleSelection = false
+        panel.directoryURL = settings.defaultSourceFolderURL
 
         if panel.runModal() == .OK, let url = panel.url {
             collection.clear()
@@ -1436,6 +1477,7 @@ public final class AppViewModel: ObservableObject {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
+        panel.directoryURL = settings.defaultSourceFolderURL
 
         if panel.runModal() == .OK, let url = panel.url {
             openSourceFolder(url: url)
@@ -2692,6 +2734,29 @@ public final class AppViewModel: ObservableObject {
 
     func saveDerivedLUT() {
         derive.saveDialog()
+    }
+
+    /// Present the support-matrix confirmation for the active photo's LUT-compatible edits.
+    func presentSaveLook() {
+        guard sourceImage != nil else {
+            statusMessage = "Open an image first"
+            return
+        }
+        let suggested: String
+        if let sourceURL {
+            suggested = sourceURL.deletingPathExtension().lastPathComponent + " Look"
+        } else {
+            suggested = "Look"
+        }
+        lookSave.present(document: document, lut: selectedLook, suggestedName: suggested)
+    }
+
+    func dismissSaveLook() {
+        lookSave.dismiss()
+    }
+
+    func saveLook() {
+        lookSave.saveDialog()
     }
 
     // MARK: - Look folder

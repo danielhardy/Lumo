@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "acknowledgement": "Starter Looks are original Lumo assets, distributed under the Lumo MIT License. No third-party attribution is required.",
+  "looks": [
+    {
+      "id": "lumo.starter.soft-mono",
+      "name": "Soft Mono",
+      "category": "Monochrome",
+      "resource": "soft-mono.cube",
+      "sourceAuthor": "Lumo project contributors",
+      "source": "Original in-house procedural asset; authored for Lumo.",
+      "license": "MIT License (Lumo project license)",
+      "attribution": "No third-party attribution required; retain the Lumo MIT notice.",
+      "redistribution": "Redistributable with Lumo; descriptive name does not imply manufacturer endorsement.",
+      "approval": {
+        "status": "approved",
+        "recordID": "LUMO-150-STARTER-2026-09-03",
+        "reviewer": "Lumo maintainers",
+        "approvedAt": "2026-09-03",
+        "notes": "Original monochrome transform; no camera profile or commercial emulation used."
+      }
+    },
+    {
+      "id": "lumo.starter.evening-cinema",
+      "name": "Evening Cinema",
+      "category": "Cinematic",
+      "resource": "evening-cinema.cube",
+      "sourceAuthor": "Lumo project contributors",
+      "source": "Original in-house procedural asset; authored for Lumo.",
+      "license": "MIT License (Lumo project license)",
+      "attribution": "No third-party attribution required; retain the Lumo MIT notice.",
+      "redistribution": "Redistributable with Lumo; descriptive name does not imply manufacturer endorsement.",
+      "approval": {
+        "status": "approved",
+        "recordID": "LUMO-150-STARTER-2026-09-03",
+        "reviewer": "Lumo maintainers",
+        "approvedAt": "2026-09-03",
+        "notes": "Original cool-shadow/warm-highlight transform; no commercial film emulation used."
+      }
+    },
+    {
+      "id": "lumo.starter.muted-film",
+      "name": "Muted Film",
+      "category": "Film-inspired",
+      "resource": "muted-film.cube",
+      "sourceAuthor": "Lumo project contributors",
+      "source": "Original in-house procedural asset; authored for Lumo.",
+      "license": "MIT License (Lumo project license)",
+      "attribution": "No third-party attribution required; retain the Lumo MIT notice.",
+      "redistribution": "Redistributable with Lumo; descriptive name does not imply manufacturer endorsement.",
+      "approval": {
+        "status": "approved",
+        "recordID": "LUMO-150-STARTER-2026-09-03",
+        "reviewer": "Lumo maintainers",
+        "approvedAt": "2026-09-03",
+        "notes": "Original restrained-contrast transform; not derived from a film stock or camera profile."
+      }
+    },
+    {
+      "id": "lumo.starter.warm-slide",
+      "name": "Warm Slide",
+      "category": "Warm slide-inspired",
+      "resource": "warm-slide.cube",
+      "sourceAuthor": "Lumo project contributors",
+      "source": "Original in-house procedural asset; authored for Lumo.",
+      "license": "MIT License (Lumo project license)",
+      "attribution": "No third-party attribution required; retain the Lumo MIT notice.",
+      "redistribution": "Redistributable with Lumo; descriptive name does not imply manufacturer endorsement.",
+      "approval": {
+        "status": "approved",
+        "recordID": "LUMO-150-STARTER-2026-09-03",
+        "reviewer": "Lumo maintainers",
+        "approvedAt": "2026-09-03",
+        "notes": "Original warm/high-saturation transform; name is descriptive and not a stock reference."
+      }
+    }
+  ]
+}

@@ -2,6 +2,30 @@ import Foundation
 import CoreImage
 import CryptoKit
 
+/// Where a Look came from. Bundled Looks are packaged with Lumo and are immutable; all other
+/// sources are user-owned or session-owned values and retain the existing import/save semantics.
+enum LUTSource: String, Sendable, Equatable {
+    case bundled
+    case user
+    case derived
+
+    var displayName: String {
+        switch self {
+        case .bundled: return "Starter"
+        case .user: return "User"
+        case .derived: return "Session"
+        }
+    }
+
+    var accessibilityDescription: String {
+        switch self {
+        case .bundled: return "Starter Look, read-only"
+        case .user: return "User Look"
+        case .derived: return "Session Look"
+        }
+    }
+}
+
 /// Parses a .cube 3D LUT file and creates a CIFilter for GPU-accelerated color grading.
 struct CubeLUT: Identifiable, Hashable, Sendable {
     /// Core Image handles the common 3D cube resolutions through 65³ reliably. Larger files are
@@ -18,6 +42,7 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
     let category: String    // folder name or "General"
     let url: URL
     let size: Int
+    let source: LUTSource
     private let tableData: Data  // flattened RGBARGBA... float32 for Core Image
 
     /// Includes table contents as well as the stable LUT ID, so replacing a file in place cannot
@@ -41,13 +66,15 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
         size: Int,
         name: String,
         category: String = "Derived",
-        sourceURL: URL? = nil
+        sourceURL: URL? = nil,
+        source: LUTSource = .derived
     ) {
         precondition(cube.count == size * size * size, "cube count must equal size^3")
         self.size = size
         self.name = name
         self.category = category
         self.url = sourceURL ?? URL(fileURLWithPath: "/dev/null")
+        self.source = source
 
         var floats = [Float]()
         floats.reserveCapacity(cube.count * 4)
@@ -89,10 +116,16 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
 
     // MARK: - Parsing
 
-    init(url: URL, category: String = "General") throws {
+    init(
+        url: URL,
+        category: String = "General",
+        source: LUTSource = .user,
+        displayName: String? = nil
+    ) throws {
         self.url = url
         self.id = Self.canonicalPath(url)
         self.category = category
+        self.source = source
 
         let rawName = url.deletingPathExtension().lastPathComponent
         // Clean common suffixes
