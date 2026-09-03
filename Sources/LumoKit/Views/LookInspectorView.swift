@@ -61,6 +61,8 @@ enum LookInspectorEmptyState: Equatable, Sendable {
         case .firstLook, .populated: return "wand.and.stars"
         }
     }
+
+    var accessibilityLabel: String { "Look inspector: \(title)" }
 }
 
 /// The one optional Look stage: a searchable, folder-aware browser for `.cube` looks and their
@@ -79,6 +81,19 @@ struct LookInspectorView: View {
 
     private var isSearching: Bool { !searchText.isEmpty }
     private var hasLooks: Bool { !viewModel.library.allLUTs.isEmpty }
+
+    /// Keep the state exposed by the inspector's accessibility container in sync with the
+    /// presentation matrix below. This is also useful to UI tests because it observes the real
+    /// rendered view rather than calling the matrix in isolation.
+    private var presentationState: LookInspectorEmptyState {
+        LookInspectorEmptyState.resolve(
+            isScanning: viewModel.library.isScanning,
+            lookCount: viewModel.library.allLUTs.count,
+            folderConfigured: viewModel.library.folderURL != nil,
+            scanError: viewModel.library.scanError,
+            hasMissingReference: viewModel.selectedLookID != nil && viewModel.selectedLook == nil
+        )
+    }
 
     private var filteredCategories: [LUTLibrary.Category] {
         if searchText.isEmpty {
@@ -125,6 +140,7 @@ struct LookInspectorView: View {
         .background(LumoTheme.windowBackground)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Look adjustments")
+        .accessibilityValue(presentationState.title)
     }
 
     private var header: some View {
@@ -222,13 +238,7 @@ struct LookInspectorView: View {
     }
 
     private var emptyState: some View {
-        let state = LookInspectorEmptyState.resolve(
-            isScanning: viewModel.library.isScanning,
-            lookCount: viewModel.library.allLUTs.count,
-            folderConfigured: viewModel.library.folderURL != nil,
-            scanError: viewModel.library.scanError,
-            hasMissingReference: viewModel.selectedLookID != nil && viewModel.selectedLook == nil
-        )
+        let state = presentationState
 
         return ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -287,7 +297,7 @@ struct LookInspectorView: View {
             .padding(16)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Look inspector: \(state.title)")
+        .accessibilityLabel(state.accessibilityLabel)
     }
 
     private var importLookButton: some View {
