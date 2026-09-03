@@ -2,16 +2,30 @@
 id: LUMO-135
 title: "ExportOptions: remove dead speculative aliases and clarify non-encoded-output mismatch error"
 type: task
-status: backlog
+status: done
 priority: low
 labels:
   - verification
 created: 2026-09-02T16:43:12.601Z
-updated: 2026-09-02T16:44:09.988Z
+updated: 2026-09-02T19:52:33.202Z
 depends_on:
   - LUMO-051
-order: zzz
+order: a0
 board: product
+commits:
+  - 801b152
+verification_report:
+  verdict: pass
+  acceptance_criteria: []
+  checks_run: []
+  findings: []
+  fixes: []
+  verification_commits:
+    - 801b152
+  actor: claude
+  resolved_model: sonnet
+  completed_at: 2026-09-02T19:52:33.201Z
+  session: 01MTKIFSTFITQZ5ZDO
 ---
 
 ## Objective
@@ -42,6 +56,27 @@ Separately, the preflight guard in `RenderEngine.render` (`guard case .encoded(l
 
 All aliases are internal to `LumoKit`, so removal is a non-breaking cleanup. The error case could either gain a new `ExportOptionsError` variant or the guard could simply skip the format equality check when output is not `.encoded` (options validation still runs).
 
+### Comment — codex @ 2026-09-02T19:49:46.995Z
+
+Implemented in 801b152. Removed the unused ExportOptions aliases/accessors (ExportAlphaMode, ExportResize, size, metadataPolicy, bit8, bit16, and ExportAlpha.none). Added ExportOptionsError.outputRequiresEncoded so export options paired with raster output report the actual output kind, while encoded format mismatches retain their existing error. Added regression coverage for the raster case. Verification: swift test (640 passed, 14 expected skips), swift build -c release, git diff --check, and dg validate passed; validator retained only pre-existing warnings.
+
 ## Agent log
 
 <!-- Generated summaries only. Detailed activity lives in events.jsonl. -->
+
+- 2026-09-02T19:52:33.202Z: Verification report
+Verdict: PASS
+Acceptance criteria:
+- None supplied
+Checks run:
+- None
+Findings:
+- None
+Fixes:
+- None
+Verification commits:
+- 801b152
+Actor: claude
+Resolved model: sonnet
+Pickup session: 01MTKIFSTFITQZ5ZDO
+Summary: Counterpoint verification passed: aliases removed cleanly (no dangling references), outputRequiresEncoded error added and correctly distinguishes raster-vs-encoded mismatch from format mismatch, regression test covers the raster case.

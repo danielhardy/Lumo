@@ -2,16 +2,35 @@
 id: LUMO-138
 title: Avoid per-slot linear scans in ImageCollection.thumbnailEntries during streamed imports
 type: task
-status: backlog
+status: done
 priority: low
 labels:
   - verification
 created: 2026-09-02T17:56:57.146Z
-updated: 2026-09-02T17:56:57.146Z
+updated: 2026-09-02T20:07:34.105Z
 depends_on:
   - LUMO-129
-order: zzzh
+order: zzzzy
 board: product
+commits:
+  - 657d94c
+verification_report:
+  verdict: pass
+  acceptance_criteria: []
+  checks_run:
+    - swift test --filter PhotosImportTests — 7 passed
+    - swift test — 643 executed, 14 skipped, 0 failures
+    - swift build -c release — passed
+    - git diff --check — passed
+    - dg validate — OK with pre-existing warnings
+  findings: []
+  fixes: []
+  verification_commits:
+    - 657d94c
+  actor: codex
+  resolved_model: gpt-5.6-luna
+  completed_at: 2026-09-02T20:07:34.099Z
+  session: 01MTKIVK1P0OJLP1WL
 ---
 
 ## Objective
@@ -28,3 +47,26 @@ A secondary cost in the same code path: when `finishDataImport` clears `pendingI
 ## Verification context
 
 Found during counterpoint verification of LUMO-129 (commit 2288d66). Not a blocker: measured behaviour is fine at realistic import sizes; this is a scalability/hygiene follow-up.
+
+## Agent log
+
+- 2026-09-02T20:07:34.105Z: Verification report
+Verdict: PASS
+Acceptance criteria:
+- None supplied
+Checks run:
+- swift test --filter PhotosImportTests — 7 passed
+- swift test — 643 executed, 14 skipped, 0 failures
+- swift build -c release — passed
+- git diff --check — passed
+- dg validate — OK with pre-existing warnings
+Findings:
+- None
+Fixes:
+- None
+Verification commits:
+- 657d94c
+Actor: codex
+Resolved model: gpt-5.6-luna
+Pickup session: 01MTKIVK1P0OJLP1WL
+Summary: Added an import-scoped PhotoAssetID-to-item-index cache for O(slots) thumbnail projection and kept loaded entry IDs stable through import completion. Added regression coverage.

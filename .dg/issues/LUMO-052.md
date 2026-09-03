@@ -2,21 +2,23 @@
 id: LUMO-052
 title: Export current or selected photos from originals and saved edits
 type: task
-status: backlog
+status: done
 priority: urgent
 labels:
   - mvp
   - epic:export
   - phase:9
 created: 2026-08-30T18:30:35.046Z
-updated: 2026-08-30T18:30:52.326Z
+updated: 2026-09-02T16:58:33.004Z
 depends_on:
   - LUMO-051
   - LUMO-021
   - LUMO-041
 estimate: 5
-order: zw
+order: zzzx
 board: product
+commits:
+  - 92e95ec
 ---
 
 ## Objective
@@ -52,3 +54,5 @@ Part of **Epic 9 — Reliable full-resolution export**. The source product brief
 ## Agent log
 
 <!-- Generated summaries only. Detailed activity lives in events.jsonl. -->
+
+- 2026-09-02T16:58:32.998Z: Implemented current and selected full-resolution export from original-backed sources. Batch items now carry stable asset identity, optional security-scoped source bookmarks, and per-photo live snapshots; unopened assets resolve persisted EditDocument records and LUTs through the app's store/library. Added selected-only UI/menu routing, scoped destination/source access, and regressions for selection, per-photo persistence, full scale, and original sources. Verification: swift test (624 passed, 13 expected skips), swift build -c release, git diff --check, dg validate.

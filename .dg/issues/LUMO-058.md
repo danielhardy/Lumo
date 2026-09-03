@@ -9,12 +9,12 @@ labels:
   - epic:quality
   - phase:10
 created: 2026-08-30T18:30:37.263Z
-updated: 2026-08-30T18:30:54.949Z
+updated: 2026-09-01T21:02:00.987Z
 depends_on:
   - LUMO-057
   - LUMO-056
 estimate: 8
-order: zzx
+order: zzvh
 board: product
 ---
 

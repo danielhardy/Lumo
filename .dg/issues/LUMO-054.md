@@ -2,20 +2,35 @@
 id: LUMO-054
 title: Add optional Apple Photos delivery after file export is stable
 type: task
-status: backlog
+status: done
 priority: low
+verification_report:
+  verdict: pass
+  acceptance_criteria: []
+  checks_run: []
+  findings:
+    - "Blocker (fixed): PhotoKitDelivery.addAsset in Sources/LumoKit/Models/PhotosDelivery.swift called PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle:) outside library.performChanges, then mutated it inside a separate performChanges block. This violates PhotoKit's change-request contract (factory + mutation must happen in the same change block) and would fail/crash at runtime the first time a user created a new Photos album. PhotosDeliveryTests only exercises a FakePhotosDelivering, so this path was untested. Fixed by moving the factory call inside the performChanges closure (commit 02e6541)."
+  fixes: []
+  verification_commits:
+    - "02e6541"
+  actor: claude
+  resolved_model: sonnet
+  completed_at: 2026-09-02T19:18:44.087Z
+  session: 01MTKH5UDZHVZW8YE6
 labels:
   - mvp
   - stretch
   - epic:export
   - phase:9
 created: 2026-08-30T18:30:35.848Z
-updated: 2026-08-30T18:33:00.789Z
+updated: 2026-09-02T19:18:48.267Z
 depends_on:
   - LUMO-053
 estimate: 5
-order: zz
+order: a0
 board: product
+commits:
+  - "02e6541"
 ---
 
 ## Objective
@@ -48,6 +63,27 @@ Part of **Epic 9 — Reliable full-resolution export**. The source product brief
 
 - Photos library editing or synchronization.
 
+### Comment — codex @ 2026-09-02T19:11:57.502Z
+
+Implemented in commit 7f3336c. Added value-only PhotosExportOptions, injected PhotosDelivering seam, production PhotoKit adapter with point-of-use read/write authorization and optional album create/select, post-commit delivery using the exact encoded export data, actionable denied/restricted/limited recovery guidance, separate Photos failure accounting for batch exports, and an Export panel Photos/album option. Verification: focused export/Photos tests 39/39 passed, swift build -c release passed, git diff --check passed, dg validate passed with only pre-existing warnings.
+
 ## Agent log
 
 <!-- Generated summaries only. Detailed activity lives in events.jsonl. -->
+
+- 2026-09-02T19:18:44.091Z: Verification report
+Verdict: PASS
+Acceptance criteria:
+- None supplied
+Checks run:
+- None
+Findings:
+- Blocker (fixed): PhotoKitDelivery.addAsset in Sources/LumoKit/Models/PhotosDelivery.swift called PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle:) outside library.performChanges, then mutated it inside a separate performChanges block. This violates PhotoKit's change-request contract (factory + mutation must happen in the same change block) and would fail/crash at runtime the first time a user created a new Photos album. PhotosDeliveryTests only exercises a FakePhotosDelivering, so this path was untested. Fixed by moving the factory call inside the performChanges closure (commit 02e6541).
+Fixes:
+- None
+Verification commits:
+- 02e6541
+Actor: claude
+Resolved model: sonnet
+Pickup session: 01MTKH5UDZHVZW8YE6
+Summary: Counterpoint verification passed after fixing a PhotoKit album-creation contract violation.

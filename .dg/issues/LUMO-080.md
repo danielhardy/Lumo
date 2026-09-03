@@ -2,7 +2,7 @@
 id: LUMO-080
 title: Make tone-curve dragging a smooth real-time curve with live image feedback
 type: task
-status: backlog
+status: done
 priority: high
 labels:
   - mvp
@@ -10,9 +10,11 @@ labels:
   - light
   - ux
 created: 2026-09-01T03:00:52.537Z
-updated: 2026-09-01T03:00:52.537Z
-order: zzzq
+updated: 2026-09-01T04:34:03.748Z
+order: a0
 board: product
+commits:
+  - a72203a
 ---
 
 ## Objective
@@ -69,6 +71,41 @@ values so the on-screen result remains authoritative.
   `Sources/LumoKit/Models/LightAdjustments.swift`,
   `Sources/LumoKit/ViewModels/AppViewModel+Light.swift`, and the live preview coordinator/surface.
 
+### Comment — codex @ 2026-09-01T04:31:43.582Z
+
+Implemented in commit a72203a. LightToneCurve now uses shared shape-preserving cubic Hermite/PCHIP interpolation for the SwiftUI graph and bounded renderer texture, with exact control-point preservation and monotonic no-overshoot behavior. Tone-curve handles retain stable slot identity during drags, and monotonic curves constrain dragged outputs to neighboring values while preserving input ordering; existing frame-paced/latest-wins live preview and undo coalescing remain in use. Added regression coverage for smoothness, invariants, intermediate interactive publication, and preview/export parity. Verification: swift test (435 passed, 24 skipped), swift build -c release, git diff --check, dg validate OK with known runner/context warnings.
+
+### Comment — claude @ 2026-09-01T04:34:00.212Z
+
+## Counterpoint verification — PASS
+
+Independent review of commit a72203a (smooth tone-curve live editing), after human review.
+
+**Checks run (all green):**
+- `swift build` — clean.
+- `swift build -c release` — clean.
+- `swift test` — 435 passed, 24 skipped, 0 failures (matches the implementer's reported numbers exactly).
+- `git diff --check` on the diff — no whitespace/conflict-marker issues.
+
+**Correctness review of `LightToneCurve.value(at:)` (PCHIP/Hermite):**
+- Endpoint slope formula and interior weighted-harmonic-mean slope formula both match the standard Fritsch–Carlson three-point/weighted-harmonic PCHIP derivation.
+- Sign/overshoot limiter on endpoint slopes matches the textbook PCHIP guard (zero out on sign mismatch with the adjacent delta; clamp to 3× the endpoint delta on local extrema).
+- Degenerates correctly to linear interpolation for 2-point curves (no spurious curvature at min configuration).
+- Final `min/max` clamp against `[lower.output, upper.output]` is a legitimate FP-safety net on top of an already-guaranteed-monotonic PCHIP result — not covering for a broken limiter.
+- Exact-knot case (`x == upper.input`) is special-cased to return the stored value directly, avoiding any FP round-trip through the Hermite basis at a control point.
+
+**Shared interpolation / preview-export parity:** confirmed `RenderPipeline.applyToneCurve` → `ToneCurveFilterCache` samples the same `LightToneCurve.value(at:)` used by the SwiftUI `Canvas` graph in `LightInspectorView` — one definition, no drift path. This file was untouched by the commit, so parity is inherited "for free" from the shared function change, consistent with the ticket's shared-definition requirement.
+
+**Drag-time invariant clamp in `AppViewModel+Light.moveToneCurvePoint`:** the new `constrainedOutput = min(max(output, points[index-1].output), points[index+1].output)` branch is gated on `isMonotonic`, which this codebase defines as non-decreasing (`$0.output <= $1.output`), so the ordering assumption baked into that min/max clamp is safe — it would silently misbehave for a general (non-decreasing-assumed) definition, but that's not what `isMonotonic` means here.
+
+**ForEach identity fix** (`id: \.offset` instead of `id: \.input`) is a real bug fix: keying handle views by `input` would tear down/rebuild the drag gesture on every pointer tick as the point's `input` changes, which is exactly the kind of thing that would make a drag look laggy/broken. Offset-based identity is safe here because interior points stay sorted and the slot count only changes on add/remove, not per drag tick.
+
+**Test coverage:** new tests directly exercise the acceptance criteria — smooth local bend + C1 continuity at a handle, no-overshoot across a full swept sample of a 3-point monotonic curve, drag-time ordering/bounding invariants, and an intermediate (pre-mouse-up) interactive publication reaching the preview coordinator with the in-flight curve value. All pass.
+
+No blocking or backlog-worthy findings. No code changes made during this verification pass (implementation already correct).
+
 ## Agent log
 
 <!-- Generated summaries only. Detailed activity lives in events.jsonl. -->
+
+- 2026-09-01T04:34:03.747Z: Independent verification passed: build/release/tests all green (435 passed/24 skipped), PCHIP interpolation math verified correct, shared value(at:) confirmed as single source for graph+renderer parity, ForEach identity fix confirmed as a real bug fix, drag-time monotonic clamp verified sound. No blockers.

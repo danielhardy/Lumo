@@ -4,14 +4,9 @@
 
 ### A native macOS RAW photo editor — develop, grade, and export on Apple's own stack.
 
-A fast, native macOS app for working with RAW and standard photos: non-destructive develop and
-adjust controls, `.cube` LUTs, full-resolution export — built entirely on Apple frameworks with
-**zero third-party dependencies**.
-
-> **An agent-driven software project.** Lumo is not just written by agents; it is driven by them
-> through [DispatchGraph](.dg/README.md). Agents plan and claim work, implement changes, verify
-> results, and advance the product through a shared issue graph — making the development process
-> part of the experiment, not just the code it produces.
+Lumo is a fast, non-destructive photo workflow for RAW and standard images. It is built with
+SwiftUI, Core Image, Metal, AppKit, PhotosUI, Swift Charts, ImageIO, and `simd` — with **zero
+third-party dependencies**.
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Swift](https://img.shields.io/badge/Swift-6-orange)
@@ -25,364 +20,291 @@ adjust controls, `.cube` LUTs, full-resolution export — built entirely on Appl
 
 ## What is Lumo?
 
-Lumo is a native macOS RAW photo editor built entirely on Apple frameworks — **SwiftUI** for the
-interface, **Core Image** (Metal-backed) for every pixel operation, and **zero third-party
-dependencies**. It is organised around the photographer's workflow:
+Lumo is a native macOS RAW editor organised around a real photo workflow:
 
-1. **Open a folder of photos** — native RAW/DNG demosaicing plus all the usual formats, with
-   asynchronous thumbnails so a large folder is browsable immediately.
-2. **Browse and select** — a filmstrip, a docked source-folder browser, and keyboard navigation
-   step through the set while your edits stay applied as you go.
-3. **Edit non-destructively** — every edit is a small value, not a baked bitmap: RAW develop
-   controls, tone and colour adjustments, and an optional `.cube` LUT compose into one render
-   pipeline that preview and export share. The original file is never touched.
-4. **Export at full quality** — 16-bit TIFF, JPEG, or PNG rendered from the original source plus
-   your edit, never from a downscaled preview.
+1. **Import** a folder, individual image, drag-and-drop payload, or up to 50 Photos assets.
+2. **Cull** in a grid-first Library workspace with picks, rejects, star ratings, filters, and
+   multi-selection.
+3. **Edit** each photo non-destructively through a shared value-based document and render pipeline.
+4. **Compare** the edited result with a develop-applied baseline, or inspect it on a pannable,
+   zoomable canvas.
+5. **Export** the current photo or the whole collection at full source resolution.
 
-The long-term goal is the full photographer's workflow: Lightroom-style **Light, Color, and
-Effects** panels, culling with ratings/picks, copy-edits between photos, and edits that survive a
-relaunch. The current build ships the foundation for all of it — see [What ships
-today](#what-ships-today) for exactly where things stand.
+Every edit is stored as data, never as a baked preview bitmap. Preview and export use the same
+pipeline, so the image on screen and the image written to disk follow the same edit order.
 
-## Fork & attribution
+Lumo is also an agent-driven software project. Agents plan, claim, implement, verify, and advance
+work through [DispatchGraph](.dg/README.md), making the development process part of the experiment.
+
+## Fork and attribution
 
 Lumo began as a fork of [LUTzy](https://github.com/tsvb/lutzy), an MIT-licensed macOS LUT
-color-grading app. The original project's copyright notice and the [MIT License](LICENSE) are
-retained unchanged, and much of Lumo's machinery comes from that fork: `.cube` parsing and GPU
-application, RAW decoding, folder/export plumbing, the LUT-derivation tool below, and most of the
-test suite.
-
-References to LUTzy in this repository are **historical** — they describe where Lumo came from.
-The product, its package targets (`Lumo`, `LumoKit`), and its identifiers are Lumo's own.
+color-grading app. The original copyright notice and [MIT License](LICENSE) are retained. The fork
+provided the initial `.cube` parsing/application, RAW decoding, folder/export plumbing, Look
+derivation, and much of the original test foundation; the current product and package targets are
+Lumo's own.
 
 ---
 
-## ✨ Features
+## Features
 
-### Open anything
-- **Native RAW/DNG** via Core Image's `CIRAWFilter` — proper demosaicing, not just the embedded preview.
-- Supported RAW: `DNG`, `CR2`, `CR3`, `NEF`, `ARW`, `ORF`, `RAF`, `RW2`, `PEF`, `SRW`, `X3F`, `RAW`.
-- Standard formats: `JPEG`, `PNG`, `TIFF`, `BMP`, `HEIC`.
-- **Drag & drop** a single image *or* a whole folder onto the window.
-- **Import from Photos** (up to 50 at once) or **import a folder** straight from the toolbar.
+### Import and library workflow
 
-### Browse in batches
-- Point Lumo at a **source folder** (**`⌘⌥I`**) and it scans recursively, groups by subfolder, and remembers the choice across launches. **`⌘R`** re-scans.
-- A **filmstrip** appears along the bottom, with async-generated thumbnails; a docked **source browser** lists the same set as files.
-- **`←` / `→`** (or **`[` / `]`**) step through the set; your current edit stays applied as you go.
+- Native RAW/DNG decoding through Core Image's `CIRAWFilter`, plus JPEG, PNG, TIFF, BMP, and HEIC.
+- RAW extensions: `DNG`, `CR2`, `CR3`, `NEF`, `ARW`, `ORF`, `RAF`, `RW2`, `PEF`, `SRW`, `X3F`, and
+  `RAW`.
+- Drag in a single image or a folder; choose a source folder (`⌘⌥I`) for recursive scanning,
+  subfolder grouping, remembered folder access, and re-scan (`⌘R`).
+- Streaming Photos import (`⌘⇧I`), capped at 50 selections, with cancellation and partial-failure
+  handling so successful transfers remain usable.
+- Grid-first Library workspace with a virtualized mosaic, async thumbnails, stable asset identities,
+  multi-select, and double-click-to-edit navigation.
+- Pick/reject flags, 0–5 star ratings, and combined culling filters for All, Picks, Rejected, and
+  rating ranges.
+- Edit workspace with a filmstrip, docked source browser, keyboard navigation, canvas pan/zoom,
+  Fit/Fill, and resettable panel sections.
 
-Each discovered photo is represented by a stable, Codable value record. File records prefer the
-macOS filesystem resource identifier (with a canonical-path fallback), while their cache key also
-includes file statistics and a bounded content sample so a replaced file cannot reuse stale derived
-state. A Photos import that supplies a local identifier uses that identifier; the current data-only
-picker path uses the SHA-256 of the delivered bytes. Consequently, identical data-only payloads are
-intentionally one logical source—callers that need to distinguish two Photos assets must provide
-their durable Photos identifiers.
+### Non-destructive editing
 
-### Edit non-destructively
-Every image carries an **edit document** — a small `Codable` value, never a baked bitmap. An empty
-document is the identity transform: it renders the source untouched. Preview and export render from
-the *same* document, so what you see is what exports.
+Each photo has a `Codable`, `Sendable`, `Equatable` `EditDocument`. Its current stages are:
 
-- **RAW Develop panel** — for RAW sources: exposure, baseline exposure, shadow bias, tone curve,
-  white balance (temperature/tint), sharpness/contrast/detail, moiré and noise reduction, lens
-  correction, gamut mapping, extended dynamic range, and highlight recovery. Each control appears
-  only if the file's decoder offers it, and is seeded from that file's own defaults.
-- **Adjust panel** — Exposure (EV), Brightness, Contrast, Saturation, Highlights, Shadows,
-  Temperature, Tint, and Vibrance.
-- **Look** — optional, at any intensity; a `.cube` LUT is one stage of the edit, not the whole edit.
+- **RAW Develop** — decoder-native exposure, baseline exposure, shadow bias, tone curve, white
+  balance, sharpness, contrast/detail, moiré and noise reduction, lens correction, gamut mapping,
+  extended dynamic range, and highlight recovery. Controls are probed and shown only when the
+  current decoder supports them; values start from that file's own defaults.
+- **Light** — Exposure, Contrast, Highlights, Shadows, Whites, Blacks, and a master RGB tone curve.
+- **Color** — RAW-aware white balance, Vibrance, Saturation, an eight-channel HSL mixer
+  (Red/Orange/Yellow/Green/Aqua/Blue/Purple/Magenta), and three-way Shadows/Midtones/Highlights
+  color grading with blending and balance.
+- **Effects** — Texture, Clarity, Dehaze, post-crop Vignette (Amount, Midpoint, Roundness, Feather,
+  Highlights), and deterministic film Grain (Amount, Size, Roughness).
+- **Crop** — freeform, non-destructive framing in normalized oriented-image coordinates. Draft
+  geometry is transient until Apply; preview and full-resolution export use the same crop.
+- **Look** — an optional `.cube` 3D LUT with adjustable intensity.
 
-### Apply an optional Look
-- Parses standard `.cube` 3D LUTs (`LUT_3D_SIZE`, `DOMAIN_MIN`/`MAX`) and applies them through `CIColorCubeWithColorSpace` — **fully GPU-accelerated** via Metal.
-- **Look inspector** is the single browser: it scans your Look folder recursively, groups looks by subfolder, and provides search, None, selection, and intensity controls.
-- **Folder access survives restarts** through App Sandbox security-scoped bookmarks — pick your Look folder once.
-- **`↑` / `↓`** auditions every Look in your library with instant preview; the inspector **intensity slider** (0–100%) blends the Look back toward the original.
+Individual controls and whole sections can be reset. Slider gestures use an interactive render path
+and become one undo entry when committed; numeric fields and resets use the settled path.
+
+### Looks and LUTs
+
+- Parses standard `.cube` 3D LUTs, including `LUT_3D_SIZE` and `DOMAIN_MIN`/`DOMAIN_MAX`.
+- Applies LUTs through `CIColorCubeWithColorSpace` with Metal-backed Core Image rendering.
+- Scans a Look folder recursively, groups files by subfolder, supports search and None, and keeps
+  folder access through App Sandbox security-scoped bookmarks.
+- Imports external `.cube` and `.look` files (`⌘⌥L`) and refreshes the library after files are
+  replaced externally.
+- Stores a stable Look reference in the edit document, so a rescan does not silently change the
+  selected Look. Missing references are reported while the stored edit is preserved.
 
 ### Derive a Look from a JPG
-- Most apps *apply* LUTs; Lumo can also **manufacture** one. Point it at a RAW file *and* the camera's straight-out-of-camera JPEG, and it synthesises a `.cube` LUT that turns the neutral RAW into that JPEG's look — bottle your camera's color science (or a borrowed film simulation) and apply it to everything else. See [Derive a Look from a JPG](#-derive-a-look-from-a-jpg).
 
-### Compare like you mean it
-- **Side-by-side** original vs. edited, or a single full-bleed view — toggle with **`V`**.
-- **Hold `Space`** to flash back to the original — develop applied, look removed.
+Lumo can manufacture a portable `.cube` Look from a camera RAW and its straight-out-of-camera JPG.
+Use `File ▸ Derive Look from JPG…` (`⌘D`) to choose the pair. Lumo renders the RAW through the
+same neutral `CIRAWFilter` baseline used by the editor, validates the pair's aspect ratio, aligns
+the images, masks JPEG edges, samples smooth regions, and builds a smoothed 33³ cube.
 
-### Inspect what you're looking at
-- **Info inspector** (**`⌘I`**) with tabs for a live RGB / luma histogram of the displayed image plus the file's EXIF, TIFF, and GPS metadata; the **Light** panel; **RAW Develop**; and **Adjust**.
+The report includes:
 
-### Export at full quality
-- **16-bit TIFF**, **JPEG** (q 0.95), or **PNG** — always at full source resolution, rendered from the original plus your edit.
-- Output is auto-named `‹photo›_‹Look name›.‹ext›` when a Look is in the document.
-- **Export All** (**`⌘⇧E`**) applies your current edit to every image in the set and writes them to a folder you pick, skipping (and counting) anything that fails rather than aborting the run.
+- Per-channel tone curves against identity.
+- Saturation and measured sharpening ratios. Sharpening is reported but not baked into a LUT.
+- Cube coverage and surviving sample count.
+- Camera make/model and relevant JPEG EXIF picture-style fields.
+- Alignment information and a Swift Charts visualization.
 
----
+The derived Look previews immediately as a scratch result. **Save to Look Folder…** makes it a
+library Look; the stable derived identity keeps the edit resolving across rescans.
 
-## What ships today
+### Compare, inspect, and export
 
-| Capability | Status |
-|---|---|
-| Non-destructive edit document; preview/export parity by construction | ✅ Shipped |
-| RAW Develop panel — decoder-native controls, gated per file | ✅ Shipped |
-| Adjust panel — exposure, brightness/contrast/saturation, highlights/shadows, temp/tint, vibrance | ✅ Shipped |
-| LUT library + GPU application + intensity | ✅ Shipped (inherited from the fork) |
-| Derive a `.cube` LUT from a RAW + JPG pair, with analysis report | ✅ Shipped (inherited) |
-| Folder import, filmstrip, source browser, Photos import | ✅ Shipped (inherited) |
-| Full-resolution TIFF / JPEG / PNG export, single + batch | ✅ Shipped (inherited) |
-| Undo / redo | 🔜 Next — the last open step of the render-pipeline migration |
-| Per-photo edit storage, persistence across launches | 🔜 Planned — documents are `Codable` precisely for this |
-| Copy / paste edits between photos | 🔜 Planned (MVP goal) |
-| Ratings, pick/reject culling + filters | 🔜 Planned (MVP goal) |
-| Light panel — photographer-facing tone controls and master RGB curve | ✅ Shipped |
-| Full Color / Effects panels in the Lightroom sense | 🔜 Planned (MVP goal) |
+- Single-view and side-by-side comparison (`V`) share the same render source. Hold `Space` to show
+  the develop-applied photo without the visible Light/Color/Effects/Look edits; crop framing is
+  retained.
+- Info inspector (`⌘I`) shows a live RGB/luma histogram and EXIF, TIFF, and GPS metadata.
+- Export the edited document as 16-bit TIFF, JPEG, or PNG. The format is selected in the save flow
+  and the last choice is retained for the session.
+- Single export (`⌘S`) and Export All (`⌘⇧E`) render from the original source at full resolution.
+  Export All continues past individual failures and reports the completed/skipped counts.
+- Output names include the photo name and selected Look, with collision-safe suffixes.
 
 ---
 
-## 🔬 Derive a Look from a JPG
+## Persistence and editing state
 
-This is what makes Lumo unusual. Most apps *apply* LUTs; Lumo can also **manufacture** one.
+Edits are isolated per photo and survive navigation and relaunch. Lumo stores a versioned JSON edit
+catalog under the user's Application Support directory; writes are serialized, coalesced during
+slider activity, atomically replaced, and backed up. The store also supports:
 
-**The idea:** your camera shot a RAW and, at the same instant, rendered its own JPEG using the manufacturer's color science (or whatever film simulation / picture profile you had dialed in). That JPEG *is* a look. Lumo compares the neutral RAW against that JPEG and bakes the difference into a portable `.cube` file you can apply to any other photo.
+- Up to 100 undo and redo snapshots per photo, containing only value-state documents.
+- Copy/paste of all edits between photos, including destinations that were never opened.
+- Recovery from a corrupt primary catalog using the last known-good backup.
+- Relinking a moved source through its stored bookmark/locator and re-keying the record.
+- Schema-version checks that refuse to overwrite edits written by a newer Lumo build.
+- A termination flush so queued edits are durable before the app exits.
 
-**Menu:** `File ▸ Derive Look from JPG…` (**`⌘D`**) → pick the RAW, pick the JPEG, hit **Derive**.
+Source records use stable filesystem identities where available and cache fingerprints include file
+metadata/content sampling. Photos imports use the Photos local identifier when supplied; data-only
+imports use a SHA-256 identity for the delivered bytes.
 
-```
-  RAW ──► CIRAWFilter (neutral baseline) ─┐
-                                          ├─► align ─► sample smooth regions ─► build 33³ cube ─► .cube
-  JPEG ─► decode ─► edge mask ────────────┘                                         │
-                                                                                    └─► Analysis report
-```
-
-Under the hood the extractor:
-
-1. Renders the RAW through the **same** default `CIRAWFilter` pipeline Lumo uses everywhere — so the derived LUT drops straight back into the normal apply path with no baseline mismatch.
-2. Checks the pair actually describes one frame (same aspect ratio) and refuses mismatched files rather than silently stretching one onto the other. Lanczos-scales both onto a common working extent — capped at 3000 px on the long edge, since 200k samples describe the color mapping just as well from a 3000 px render as from a 9000 px one — and finds the integer-pixel alignment by luma cross-correlation.
-3. Builds an **edge mask** from the JPEG (so in-camera sharpening can't contaminate the color samples) and draws ~200k samples from smooth regions only.
-4. Accumulates them into a **33³ color cube**, smooths any sparse cells from their neighbors, and anchors the rest to identity.
-
-### The analysis report
-
-Every derivation comes with a readout (rendered with Swift Charts) so you understand *what the look actually does*:
-
-| Metric | Meaning |
-|---|---|
-| **Tone curve** | Per-channel R/G/B input→output mapping, plotted against the identity line |
-| **Saturation** | Chroma ratio in smooth regions — `>1` more saturated, `<1` more muted |
-| **Sharpening** | High-frequency energy ratio (same operator, same pixels, both images) — **measured but deliberately *not* baked into the LUT** (a LUT can't sharpen; apply it separately if you want to match) |
-| **Coverage** | % of cube cells filled by real samples vs. interpolated |
-| **Samples** | How many smooth-region pixels survived the edge mask |
-| **Camera** | Make / model and EXIF contrast, saturation, sharpness, and white-balance tags from the JPEG |
-
-The result previews live on your current image immediately. It stays a scratch Look until you click
-**Save to Look Folder…**, at which point it joins the Look inspector like any other `.cube`; the
-edit document references it by a stable ID, so the look keeps resolving even after the library is
-rescanned.
-
----
-
-## ⌨️ Keyboard shortcuts
+## Keyboard shortcuts
 
 | Key | Action |
 |---|---|
-| `P` | Pick the focused photo and advance |
-| `X` | Reject the focused photo and advance |
+| `G` | Switch to Library |
+| `E` | Switch to Edit |
+| `Return` | Open the active Library item in Edit |
+| `P` | Mark the focused photo as Pick and advance |
+| `X` | Mark the focused photo as Reject and advance |
 | `0`–`5` | Clear or set the focused photo's star rating |
-| `G` | Switch to the Library grid |
-| `E` | Switch to the Edit workspace |
+| `←` / `→` or `[` / `]` | Previous / next image |
 | `↑` / `↓` | Previous / next Look |
-| `←` / `→` (or `[` / `]`) | Previous / next image (when a set is loaded) |
-| `Space` (hold) | Show original — develop applied, look removed |
-| `V` | Toggle side-by-side / single view |
-| `⌘I` | Toggle the inspector (Info / Develop / Adjust / Look tabs) |
-| `⌘O` | Open image |
+| `V` | Toggle single-view / side-by-side comparison |
+| `Space` (hold) | Show the comparison baseline |
+| `⌘I` | Toggle the Info inspector |
+| `⌘O` | Open an image |
 | `⌘⇧I` | Import from Photos |
-| `⌘⌥I` | Open source folder |
+| `⌘⌥I` | Open a source folder |
 | `⌘R` | Re-scan the source folder |
-| `⌘⇧L` | Choose Look folder |
-| `⌘D` | Derive Look from JPG |
-| `⌘⌥C` | Copy all edits |
-| `⌘⌥V` | Paste edits |
+| `⌘⇧L` | Choose a Look folder |
+| `⌘⌥L` | Import Look files |
+| `⌘D` | Derive a Look from a JPG |
+| `⌘Z` / `⌘⇧Z` | Undo / redo |
+| `⌘⇧R` | Reset the current photo |
+| `⌘⌥C` / `⌘⌥V` | Copy / paste all edits |
 | `⌘S` | Export |
 | `⌘⇧E` | Export all |
 
-> Arrow/letter shortcuts are handled by a window-level `NSEvent` monitor (SwiftUI's `.onKeyPress` doesn't fire reliably inside a `NavigationSplitView`). They pause while a text field, slider, button, or picker owns focus; `⌘`-shortcuts flow through the standard menu bar.
+Arrow, letter, culling, and comparison shortcuts are routed by a window-level `NSEvent` monitor so
+they work across the split view. They yield to text fields, sliders, buttons, pickers, system
+modifiers, and the derive sheet.
 
 ---
 
-## 🚀 Build & run
+## Build, run, and test
 
-Lumo is a Swift Package — no `.xcodeproj` to manage.
+Lumo is a Swift Package; there is no `.xcodeproj` to maintain.
 
-**Quickest (CLI):**
+### Requirements
+
+- **Run:** macOS 14.0 or newer.
+- **Build:** Xcode 26 or newer with the macOS 26 SDK.
+- **Language mode:** Swift 6.
+
+The deployment target and build SDK are intentionally different. The package deploys to macOS 14,
+while the current RAW capability surface requires the macOS 26 SDK to compile. Availability checks
+keep newer APIs optional at runtime.
+
+### Commands
+
 ```bash
+# Build and launch the executable target for quick iteration.
 swift run
-```
-Builds and launches the app for fast iteration. Note: the SwiftUI executable target runs without the bundled asset catalog or sandbox entitlements, so the app icon and security-scoped bookmark persistence won't be active in this mode.
 
-**Recommended (Xcode) — full app behavior, icon, and App Sandbox:**
-```bash
-open Package.swift     # or: xed .
-```
-Then select the **Lumo** scheme and **Run** (`⌘R`). For a sandboxed build, add the **App Sandbox** capability and point it at the included [`Lumo.entitlements`](Sources/Lumo/Lumo.entitlements) (user-selected read/write + app-scope bookmarks).
+# Build a release product.
+swift build -c release
 
-**Tests:**
-```bash
+# Run the test suite.
 swift test
 ```
-328 tests, no fixtures to download — everything they need is generated into a temp directory. The
-handful of tests that want real camera files look for an opt-in `realworldtest/` directory (gitignored)
-and skip cleanly without it, as on CI. The suite runs debug build → tests → release build in CI on
-every push and PR.
 
-For repeatable launch, photo-switch, slider, cache, histogram, and export profiling, see the
-[Instruments capture recipe](docs/INSTRUMENTS.md). Its thresholds are targets to validate with a
-trace, not claims that the current build has already met them.
+`swift run` launches the bare Swift Package executable. It does not include the bundled asset
+catalog or App Sandbox entitlements, so the app icon and security-scoped bookmark persistence are
+not active in that mode. For bundled app behavior, open `Package.swift` in Xcode, select the
+**Lumo** scheme, and run. The included [`Lumo.entitlements`](Sources/Lumo/Lumo.entitlements) is
+configured for user-selected read/write access and app-scope bookmarks.
 
-**Requirements:**
+The suite currently contains **574 XCTest methods**. Fixtures are generated in temporary
+directories; RAW-dependent tests may use files under `realworldtest/` and skip cleanly when a
+required RAW/JPG pair is unavailable. CI runs a debug build, tests, and a release build on every
+push and pull request using the macOS 26 runner.
 
-|  | |
-|---|---|
-| **To run Lumo** | macOS **14.0+** — unchanged, and what the deployment target targets |
-| **To build Lumo** | **Xcode 26+** (macOS 26 SDK) |
+Optional local benchmarks:
 
-Those are deliberately different. Building against a current SDK while deploying to macOS 14 is the
-normal Apple model, and the stricter one: the compiler refuses any API newer than macOS 14 unless it
-is `#available`-guarded. One RAW develop control (`CIRAWFilter`'s highlight recovery) only exists in
-the macOS 26 SDK, so an older Xcode cannot compile the package — while the app it produces still runs
-on macOS 14.
+```bash
+# Coalesced edit persistence across 10, 1,000, and 10,000-record catalogs.
+LUMO_PERSISTENCE_BENCHMARK=1 swift test --filter EditPersistenceBenchmarkTests
+
+# Real CAMetalLayer drawable presentation and input-to-presentation latency.
+LUMO_METAL_BENCHMARK=1 swift test --filter MetalPresentationBenchmark/testRealMetalPresentationBenchmark
+
+# The same real drawable benchmark using a released RAW fixture.
+LUMO_METAL_BENCHMARK=1 \
+LUMO_METAL_BENCHMARK_RAW=/absolute/path/to/realworldtest/DSC07826.ARW \
+swift test -c release --filter MetalPresentationBenchmark/testRealMetalPresentationBenchmark
+
+# Automated xctrace capture with Points of Interest + Metal System Trace.
+scripts/run-lumo-118-capture.sh realworldtest/DSC07826.ARW
+
+# Tracing overhead with and without an active Instruments recording.
+LUMO_TRACE_BENCHMARK=1 swift test --filter TracingOverheadBenchmark/testMeasureTracingOverhead
+```
+
+Hardware latency claims require a logged-in display and a Release build; the opt-in Metal benchmark
+does not turn CI timings into a product claim. See [Instruments capture recipe](docs/INSTRUMENTS.md)
+and the [performance audit](docs/PERFORMANCE_AUDIT_2026-09-01.md) for capture procedure, limits,
+and the current matrix.
 
 ---
 
-## 🗂 Project structure
+## Architecture
 
-Lumo is split into a `LumoKit` library and a thin `@main` executable, so the app's own code can be
-unit-tested — `@testable` cannot import an executable target.
+The package is split into a thin executable and a testable `LumoKit` library:
 
-```
+```text
 Sources/
-├── Lumo/                       # thin entry point only
-│   ├── LumoApp.swift           # @main App + AppDelegate — window, default size, commands
-│   ├── Assets.xcassets/        # App icon + accent color
-│   └── Lumo.entitlements       # App Sandbox + user-selected file access
-└── LumoKit/                    # everything of substance
-    ├── Models/
-    │   ├── AdjustmentControl.swift  # the nine Adjust-panel controls: node mapping, ranges, labels
-    │   ├── AdjustmentNode.swift     # closed enum of ordered tone/colour stages (exposure, color
-    │   │                            #   controls, highlights/shadows, temp/tint, vibrance)
-    │   ├── CubeLUT.swift            # .cube parser + writer → CIColorCube filter (also in-memory init)
-    │   ├── DerivedLUTRegistry.swift # LUTs a document can reference that no folder scan produces
-    │   ├── EditDocument.swift       # the edit as a value: RAW develop + ordered nodes + LUT reference
-    │   ├── ExportFormat.swift       # TIFF / JPEG / PNG, with UTType + file extension
-    │   ├── Histogram.swift          # 256-bin per-channel histogram data model
-    │   ├── ImageCollection.swift    # multi-image set: source folder, selection, navigation
-    │   ├── ImageDecoder.swift       # what Lumo can open, and how to turn it into a CIImage
-    │   ├── ImageMetadata.swift      # EXIF/TIFF/GPS read + display formatting for the inspector
-    │   ├── ImageSource.swift        # how to reproduce a source (URL/Data + extent) so a RAW can be
-    │   │                            #   re-developed per render
-    │   ├── LUTFilterCache.swift     # reusable CIColorCubeWithColorSpace filters, keyed by LUT + space
-    │   ├── LUTLibrary.swift         # scans the LUT folder, groups by category, bookmark persistence
-    │   ├── LUTSettings.swift        # a stable LUT ID (a path string) + intensity, stored in the document
-    │   ├── RAWCapabilities.swift    # per-file decoder capabilities; drives which develop controls appear
-    │   ├── RAWDevelopSettings.swift # the CIRAWFilter knobs — one optional per knob, nil = decoder default
-    │   ├── RecipeExtractor.swift    # (RAW, JPG) → 3D LUT derivation pipeline
-    │   ├── RecipeReport.swift       # analysis data model (tone curve, ratios, EXIF camera info)
-    │   ├── RenderEngine.swift       # actor owning the CIContext; evaluates a graph at one scale
-    │   ├── RenderPipeline.swift     # folds an EditDocument into one lazy CIImage (a pure function)
-    │   ├── RenderScale.swift        # preview vs. full — the one argument that differs between them
-    │   ├── Thumbnails.swift         # filmstrip/browser thumbnails from embedded previews — no CIContext
-    │   └── WorkingSpace.swift       # the one colour space: LUT interpolation + output encoding
-    ├── ViewModels/
-    │   ├── AppViewModel.swift       # central @MainActor state: source, document, collection, LUT
-    │   ├── AppViewModel+Adjust.swift  # the nine Adjust-panel bindings onto document.adjustments
-    │   ├── AppViewModel+Develop.swift # develop-panel bindings, seeded from per-file decoder defaults
-    │   ├── DeriveCoordinator.swift  # "Derive Look from JPG" flow, scratch-until-saved result
-    │   └── ExportCoordinator.swift  # single + batch export, and the naming they share
-    └── Views/
-        ├── AdjustInspectorView.swift  # slider rows for the adjust controls (data-driven)
-        ├── ContentView.swift          # split-view layout + toolbar                          [public]
-        ├── DevelopInspectorView.swift # RAW develop panel — one row per capability the file offers
-        ├── FilmstripView.swift        # horizontal thumbnail strip for batches
-        ├── InfoInspectorView.swift    # inspector pane: Info (histogram + EXIF) / Develop / Adjust tabs
-        ├── KeyboardShortcuts.swift    # window-level NSEvent monitor for arrow/letter keys
-        ├── LookInspectorView.swift    # single searchable, category-grouped Look browser
-        ├── MenuCommands.swift         # File menu + its notification names                   [public]
-        ├── PreviewView.swift          # side-by-side / single canvas, drag-drop, badges
-        ├── RecipeExtractorSheet.swift # "Derive Look from JPG" modal (pickers, progress, report)
-        ├── RecipeReportView.swift     # analysis card — Swift Charts tone curve + stat badges
-        ├── SourceBrowserView.swift    # docked source-folder file list, grouped by subfolder
-        └── StatusBar.swift            # status line + key hints along the bottom
+├── Lumo/
+│   ├── LumoApp.swift           # @main app, window, delegate, termination flush
+│   ├── Assets.xcassets/        # app icon and accent color
+│   └── Lumo.entitlements       # sandbox file access and bookmarks
+└── LumoKit/
+    ├── Models/                 # value state, image sources, pipeline, caches, persistence
+    ├── ViewModels/             # AppViewModel and export/derive/preview coordinators
+    └── Views/                  # Library, canvas, filmstrip, inspectors, menus, status bar
 
 Tests/
-└── LumoKitTests/               # XCTest; fixtures are generated, never committed
-    ├── Fixtures.swift                 # builds .cube files and orientation-tagged JPEGs in a temp dir
-    ├── AdjustmentControlTests.swift   # the nine controls' ranges, labels, and node mapping
-    ├── AdjustInspectorTests.swift     # adjust-panel binding behaviour
-    ├── AppViewModelTests.swift        # coordinator wiring — status, errors, sidebar refresh
-    ├── CubeLUTTests.swift             # parser, domain handling, index ordering, intensity, round-trip
-    ├── DeriveCoordinatorTests.swift   # derive lifecycle, scratch-until-saved, save
-    ├── DeriveInvarianceTests.swift    # a derived LUT ignores develop settings (gated on local RAW/JPG)
-    ├── DevelopInspectorTests.swift    # probing, seeding, capability gating (partly gated on local RAW)
-    ├── EditDocumentTests.swift        # identity invariant, Codable round-trip, versioning
-    ├── ExportCoordinatorTests.swift   # single + batch export, failure handling, collisions
-    ├── ExportCutoverTests.swift       # the migration of both export paths onto the document
-    ├── ExportNamingTests.swift        # `‹photo›_‹LUT name›` stems + collision handling
-    ├── FakeRenderEngine.swift         # a non-GPU renderer for driving the view model in tests
-    ├── HistogramTests.swift           # histogram tallies from rendered documents
-    ├── ImageLoadingTests.swift        # EXIF orientation across load/thumbnail/export
-    ├── ImageSourceTests.swift         # source-reproduction values (URL/Data, native extent)
-    ├── KeyMonitorTests.swift          # the keyboard monitor's start/stop + event routing
-    ├── LibraryScanTests.swift         # async folder scans, error surfacing, collection navigation
-    ├── LUTFilterCacheTests.swift      # filter caching keyed by LUT + colour space
-    ├── LUTIDTests.swift               # ID encoding, derived:// handling, determinism
-    ├── PackageSettingsTests.swift     # pins the manifest: target names + Swift 6 language mode
-    ├── PixelAssertions.swift          # shared helpers for perceptual pixel assertions
-    ├── PreviewCostBenchmark.swift     # preview render-cost measurements (skipped without local assets)
-    ├── PreviewCutoverTests.swift      # the migration of preview rendering onto the document
-    ├── RAWCapabilitiesTests.swift     # per-file capability probing drives the develop panel
-    ├── RAWDevelopSettingsTests.swift  # .neutral sets nothing; apply() honours is*Supported gates
-    ├── RecipeExtractorTests.swift     # cube assembly, neighbour smoothing, working resolution
-    ├── RenderEngineTests.swift        # engine evaluation at each scale (fake + real context)
-    ├── RenderPipelineTests.swift      # document → filter-graph folding; identity skips filters
-    ├── RenderStackTests.swift         # preview/export parity through the full stack
-    ├── ThumbnailTests.swift           # embedded-preview thumbnails (no demosaic, no CIContext)
-    └── WorkingSpaceTests.swift        # preview/export parity, LUT-interp ↔ output lockstep
+└── LumoKitTests/               # model, pipeline, integration, regression, and opt-in benchmarks
+
+docs/                           # architecture, validation, profiling, and audit records
 ```
 
-`ContentView` and `LumoCommands` are the only `public` symbols — the executable needs exactly those
-two and nothing else.
+The important boundaries are:
 
-`docs/PHASE2_SPEC.md` is the implementation plan behind the non-destructive render pipeline and RAW
-develop controls; `docs/CODE_REVIEW.md` records the standing findings from the last full review.
+- **Value document:** `EditDocument` contains RAW develop settings, Light, Color, Effects, crop,
+  legacy ordered adjustment nodes, and the Look reference. Empty state is the identity transform.
+- **One graph, multiple qualities:** `RenderPipeline` folds the document into one lazy Core Image
+  graph. `RenderEngine` evaluates it at interactive, preview, thumbnail, or full quality; preview
+  and export differ by an explicit quality/output policy rather than separate edit logic.
+- **Deterministic stage order:** source/develop → Light → Color → ordered adjustments → Look → crop
+  → post-crop vignette → deterministic grain. This keeps spatial effects aligned with the final
+  frame while preserving preview/export parity.
+- **Actor isolation:** Core Image objects stay inside the render engine. Sendable values cross the
+  boundary, and the package compiles in Swift 6 language mode without unchecked concurrency escapes.
+- **GPU presentation:** live previews use a persistent Metal-backed presentation surface. Interactive
+  edits are debounced/coalesced, stale work is discarded, and a valid last frame is retained when a
+  replacement fails.
+- **Bounded work:** developed-source, render, LUT, and thumbnail caches are bounded and respond to
+  memory pressure. Thumbnail work is prioritized around the visible library neighborhood.
+- **Coordinators:** `AppViewModel` owns app state while dedicated preview, export, derive, and
+  persistence collaborators keep expensive or file-dialog work off the main actor.
+- **Observability:** signposts and bounded live telemetry distinguish input, render, GPU completion,
+  and actual drawable presentation so profiling does not confuse “render finished” with “user saw
+  the frame.”
 
-## 🏗 Architecture notes
+Useful starting points are [`EditDocument`](Sources/LumoKit/Models/EditDocument.swift),
+[`RenderPipeline`](Sources/LumoKit/Models/RenderPipeline.swift),
+[`RenderEngine`](Sources/LumoKit/Models/RenderEngine.swift), and
+[`EditDocumentStore`](Sources/LumoKit/Models/EditDocumentStore.swift).
 
-- **The edit is a value.** [`EditDocument`](Sources/LumoKit/Models/EditDocument.swift) — RAW develop settings, ordered adjustment nodes, and a LUT reference — is `Codable`, `Sendable`, `Equatable`. An empty document renders the source untouched. That one invariant is what buys preview/export parity, and (once persistence lands) undo, presets, and per-photo edits.
-- **One pipeline, two scales.** [`RenderPipeline`](Sources/LumoKit/Models/RenderPipeline.swift) folds a document into one lazy `CIImage`; the [`RenderEngine`](Sources/LumoKit/Models/RenderEngine.swift) actor evaluates that graph at preview or full scale. Preview and export call the same function and differ only in `RenderScale` — their agreement is structural, not a convention.
-- **Core Image stays inside the engine.** `CIImage`, `CIFilter`, and `CIContext` are not `Sendable`; they never cross the module boundary. Only values do — `EditDocument`, `ImageSource`, `CubeLUT`, `WorkingSpace`, `RenderScale` — plus a `CGImage?` or `Data` on the way out. The whole package compiles in **Swift 6 language mode** with zero concurrency escape hatches, and `PackageSettingsTests` fails if that ever changes.
-- **MVVM with coordinators.** [`AppViewModel`](Sources/LumoKit/ViewModels/AppViewModel.swift) holds the source, document, and collection state, and owns four collaborators: `LUTLibrary`, `ImageCollection`, [`ExportCoordinator`](Sources/LumoKit/ViewModels/ExportCoordinator.swift), and [`DeriveCoordinator`](Sources/LumoKit/ViewModels/DeriveCoordinator.swift). The coordinators report *what* happened through `onStatus`/`onError` closures; deciding how to present it stays with the view model. Views observe, and the menu bar talks to it via `NotificationCenter`.
-- **Panels are a seam, not a dependency.** Every operation that needs a file dialog is split into a `perform…` core taking an explicit URL and a thin `…Dialog` wrapper that runs the panel. `NSOpenPanel`/`NSSavePanel` can't run headless, so this is what makes export and save testable at all.
-- **One colour seam.** [`WorkingSpace`](Sources/LumoKit/Models/WorkingSpace.swift) is the single source of truth for both the LUT interpolation space and the output encoding space, so they cannot drift apart; every render and export site takes it, defaulting to sRGB. Cube data is laid out R-fastest → G → B, matching both the `.cube` spec and Core Image's expected ordering.
-- **Images are rendered upright.** `CIRAWFilter` honors EXIF orientation; plain `CIImage(contentsOf:)` does not, so every non-RAW decode goes through oriented load options. Preview, filmstrip thumbnail, reported dimensions, and export all agree.
-- **Work stays off the main actor.** Decoding, preview rasterization, folder scans, LUT parsing, export, and recipe derivation all run detached and publish results back to `@MainActor`; slider changes are debounced and each render cancels the one before it. Previews are capped at 1600×1200; thumbnails read the file's embedded preview without ever demosaicing a RAW; exports are always full resolution.
-- **No third-party code.** Everything ships with the system: SwiftUI, Core Image, AppKit, PhotosUI, Swift Charts, ImageIO, Metal, simd.
+## Preparing for the App Store
 
----
+1. Add a 1024×1024 source icon to [`AppIcon.appiconset`](Sources/Lumo/Assets.xcassets/AppIcon.appiconset).
+2. Set the Bundle Identifier and Team in Xcode's Signing & Capabilities.
+3. Keep App Sandbox enabled with the included entitlements.
+4. Use **Product ▸ Archive ▸ Distribute App ▸ App Store Connect**.
 
-## 📦 Preparing for the App Store
+## License
 
-1. Drop a 1024×1024 source icon into [`Assets.xcassets/AppIcon.appiconset`](Sources/Lumo/Assets.xcassets/AppIcon.appiconset).
-2. Set your **Bundle Identifier** and **Team** in the target's Signing & Capabilities.
-3. Keep **App Sandbox** enabled (the included entitlements already grant user-selected file access + app-scope bookmarks).
-4. **Product ▸ Archive ▸ Distribute App ▸ App Store Connect.**
-
----
-
-## 📄 License & attribution
-
-Lumo is released under the [MIT License](LICENSE) — free to use, modify, and distribute.
-
-Lumo began as a fork of [LUTzy](https://github.com/tsvb/lutzy); the original project's copyright
-and license terms are preserved in `LICENSE`, as [Fork & attribution](#fork--attribution)
-describes.
-
----
+Lumo is released under the [MIT License](LICENSE). The LUTzy fork attribution and original license
+terms are preserved as described above.
 
 <div align="center">
 <sub>Built with SwiftUI · Core Image · Metal — and nothing else.</sub>
