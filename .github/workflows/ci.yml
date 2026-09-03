@@ -49,3 +49,8 @@ jobs:
 
       - name: Build (release)
         run: swift build -c release
+
+      - name: Build app bundle and verify AppIcon packaging
+        run: |
+          scripts/build-macos-app.sh
+          scripts/verify-app-icon.sh
