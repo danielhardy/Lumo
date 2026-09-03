@@ -3,6 +3,24 @@ import XCTest
 @testable import LumoKit
 
 final class MenuCommandTests: XCTestCase {
+    func testSettingsCommandComesFromTheNativeSettingsScene() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // LumoKitTests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // package root
+        let menuCommands = try String(
+            contentsOf: packageRoot.appendingPathComponent("Sources/LumoKit/Views/MenuCommands.swift"),
+            encoding: .utf8
+        )
+        let app = try String(
+            contentsOf: packageRoot.appendingPathComponent("Sources/Lumo/LumoApp.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(menuCommands.contains("SettingsLink()"))
+        XCTAssertEqual(app.components(separatedBy: "\n        Settings {").count - 1, 1)
+    }
+
     func testEditTransferShortcutsDoNotClaimStandardTextClipboardKeys() {
         let modifiers = LumoEditTransferShortcuts.modifiers
 
