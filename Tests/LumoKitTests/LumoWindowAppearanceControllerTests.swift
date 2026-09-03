@@ -42,7 +42,7 @@ final class LumoWindowAppearanceControllerTests: XCTestCase {
         controller.stop()
     }
 
-    func testStartedControllerUpdatesExistingWindowAfterPreferenceChange() async {
+    func testStartedControllerUpdatesExistingWindowImmediatelyAfterPreferenceChange() {
         let settings = makeSettings()
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
@@ -57,11 +57,9 @@ final class LumoWindowAppearanceControllerTests: XCTestCase {
         controller.start()
 
         settings.alwaysDarkMode = true
-        await Task.yield()
         XCTAssertEqual(window.appearance?.name, .darkAqua)
 
         settings.alwaysDarkMode = false
-        await Task.yield()
         XCTAssertNil(window.appearance)
         controller.stop()
     }

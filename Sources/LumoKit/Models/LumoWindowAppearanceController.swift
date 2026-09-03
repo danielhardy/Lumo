@@ -39,13 +39,17 @@ public final class LumoWindowAppearanceController {
     public func start() {
         guard settingsCancellable == nil else { return }
 
-        settingsCancellable = settings.objectWillChange.sink { [weak self] _ in
-            // LumoSettings publishes from willSet. Deferring until the main-actor turn makes
-            // sure the controller reads the newly assigned value rather than the old one.
-            Task { @MainActor [weak self] in
-                self?.applyCurrentAppearance()
+        // Subscribe to the value rather than `objectWillChange`. The latter only says that some
+        // setting is changing, and the previous implementation had to enqueue another main-actor
+        // task before it could read the new value. That makes an already-open window visibly lag
+        // behind the Settings toggle when the main actor is busy. `@Published` sends the incoming
+        // value while its property is changing, so use that value directly instead of reading the
+        // still-old stored property.
+        settingsCancellable = settings.$alwaysDarkMode
+            .dropFirst()
+            .sink { [weak self] alwaysDarkMode in
+                self?.applyAppearance(alwaysDarkMode: alwaysDarkMode)
             }
-        }
 
         let notificationCenter = NotificationCenter.default
         for name in [
@@ -80,14 +84,18 @@ public final class LumoWindowAppearanceController {
     /// Apply the current preference to a supplied window set. The injectable set makes the
     /// propagation seam testable without requiring a launched application or a real window.
     public func applyCurrentAppearance(to windows: [NSWindow]) {
+        applyAppearance(alwaysDarkMode: settings.alwaysDarkMode, to: windows)
+    }
+
+    private func applyAppearance(alwaysDarkMode: Bool, to windows: [NSWindow]? = nil) {
         let appearance = NSAppearance(named: .darkAqua)
-        let mode = LumoAppearanceMode(alwaysDarkMode: settings.alwaysDarkMode)
-        for window in windows {
+        let mode = LumoAppearanceMode(alwaysDarkMode: alwaysDarkMode)
+        for window in windows ?? windowProvider() {
             window.appearance = mode == .dark ? appearance : nil
         }
     }
 
     private func applyCurrentAppearance() {
-        applyCurrentAppearance(to: windowProvider())
+        applyAppearance(alwaysDarkMode: settings.alwaysDarkMode)
     }
 }
