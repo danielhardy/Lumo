@@ -1,5 +1,68 @@
 import SwiftUI
 
+/// The empty browser has a small, explicit presentation matrix so its copy and icon stay aligned
+/// across the initial, loading, unavailable-folder, and missing-reference states. Keeping this
+/// decision outside the `ViewBuilder` also makes the view-level state matrix easy to exercise.
+enum LookInspectorEmptyState: Equatable, Sendable {
+    case scanning
+    case folderUnavailable
+    case missingReference
+    case emptyFolder
+    case firstLook
+    case populated
+
+    static func resolve(
+        isScanning: Bool,
+        lookCount: Int,
+        folderConfigured: Bool,
+        scanError: String?,
+        hasMissingReference: Bool = false
+    ) -> Self {
+        if lookCount > 0 { return .populated }
+        if isScanning { return .scanning }
+        if scanError != nil { return .folderUnavailable }
+        if hasMissingReference { return .missingReference }
+        return folderConfigured ? .emptyFolder : .firstLook
+    }
+
+    var title: String {
+        switch self {
+        case .scanning: return "Scanning for Looks…"
+        case .folderUnavailable: return "Look folder unavailable"
+        case .missingReference: return "Look unavailable"
+        case .emptyFolder: return "No Looks found"
+        case .firstLook: return "Bring in your first Look"
+        case .populated: return "Looks"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .scanning:
+            return "Lumo is checking the selected folder for external .cube and .look files."
+        case .folderUnavailable:
+            return "Choose another Look folder, or import a file from anywhere."
+        case .missingReference:
+            return "This photo references a Look that is no longer available. Clear the reference or import the file again."
+        case .emptyFolder:
+            return "Add .cube or .look files to the selected folder, or import one from anywhere."
+        case .firstLook:
+            return "Import an external .cube or .look file, or choose a folder to browse your own Looks. Lumo does not include a built-in starter library."
+        case .populated:
+            return "Browse and apply a Look."
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .scanning: return "arrow.triangle.2.circlepath"
+        case .folderUnavailable, .missingReference: return "exclamationmark.triangle"
+        case .emptyFolder: return "folder"
+        case .firstLook, .populated: return "wand.and.stars"
+        }
+    }
+}
+
 /// The one optional Look stage: a searchable, folder-aware browser for `.cube` looks and their
 /// per-photo intensity. It is hosted in the editor inspector so Look is available without making
 /// one a prerequisite for ordinary editing.
@@ -15,6 +78,7 @@ struct LookInspectorView: View {
         Set(UserDefaults.standard.stringArray(forKey: LookInspectorView.collapsedKey) ?? [])
 
     private var isSearching: Bool { !searchText.isEmpty }
+    private var hasLooks: Bool { !viewModel.library.allLUTs.isEmpty }
 
     private var filteredCategories: [LUTLibrary.Category] {
         if searchText.isEmpty {
@@ -37,11 +101,21 @@ struct LookInspectorView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            searchField
-            Divider()
-            lookList
-            unresolvedLookSection
-            intensitySection
+            if hasLooks {
+                searchField
+                if let scanError = viewModel.library.scanError {
+                    folderErrorBanner(scanError)
+                }
+                if let importError = viewModel.library.importError {
+                    importErrorBanner(importError)
+                }
+                Divider()
+                lookList
+                unresolvedLookSection
+                intensitySection
+            } else {
+                emptyState
+            }
         }
         .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
         .background(LumoTheme.windowBackground)
@@ -69,14 +143,17 @@ struct LookInspectorView: View {
                 .help(allExpanded ? "Collapse all folders" : "Expand all folders")
             }
 
-            Button {
-                viewModel.chooseLookFile()
-            } label: {
-                Image(systemName: "plus")
+            if hasLooks {
+                Button {
+                    viewModel.chooseLookFile()
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help("Import a Look file")
+                .accessibilityLabel("Import Look")
             }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .help("Import a Look file")
 
             Button {
                 viewModel.refreshLooks()
@@ -138,6 +215,125 @@ struct LookInspectorView: View {
         .onExitCommand { searchText = "" }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
+    }
+
+    private var emptyState: some View {
+        let state = LookInspectorEmptyState.resolve(
+            isScanning: viewModel.library.isScanning,
+            lookCount: viewModel.library.allLUTs.count,
+            folderConfigured: viewModel.library.folderURL != nil,
+            scanError: viewModel.library.scanError,
+            hasMissingReference: viewModel.selectedLookID != nil && viewModel.selectedLook == nil
+        )
+
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 10) {
+                    if state == .scanning {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 44, height: 44)
+                            .background(Color.accentColor.opacity(0.12), in: Circle())
+                            .accessibilityLabel("Scanning Look folder")
+                    } else {
+                        Image(systemName: state.iconName)
+                            .font(.system(size: 24, weight: .medium))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 44, height: 44)
+                            .background(Color.accentColor.opacity(0.12), in: Circle())
+                            .accessibilityHidden(true)
+                    }
+
+                    Text(state.title)
+                        .font(.title3.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text(state.message)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let scanError = viewModel.library.scanError {
+                    folderErrorBanner(scanError)
+                }
+
+                if let importError = viewModel.library.importError {
+                    importErrorBanner(importError)
+                }
+
+                if viewModel.selectedLookID != nil && viewModel.selectedLook == nil {
+                    unresolvedLookSection
+                }
+
+                importLookButton
+
+                Button {
+                    viewModel.chooseLookFolder()
+                } label: {
+                    Label("Choose Look Folder…", systemImage: "folder")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .help("Choose a folder containing Look files")
+                .accessibilityHint("Browse for a folder containing external cube or look files")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Look inspector: \(state.title)")
+    }
+
+    private var importLookButton: some View {
+        Button {
+            viewModel.chooseLookFile()
+        } label: {
+            Label(
+                viewModel.library.isImporting ? "Importing Look…" : "Import Look",
+                systemImage: viewModel.library.isImporting ? "hourglass" : "plus"
+            )
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .disabled(viewModel.library.isImporting)
+        .help(viewModel.library.isImporting ? "Importing Look…" : "Import an external .cube or .look file")
+        .accessibilityLabel(viewModel.library.isImporting ? "Importing Look" : "Import Look")
+        .accessibilityHint(
+            viewModel.library.isImporting
+                ? "Wait for the current Look import to finish"
+                : "Choose an external cube or look file"
+        )
+    }
+
+    private func folderErrorBanner(_ message: String) -> some View {
+        Label(message, systemImage: "exclamationmark.triangle")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+            .accessibilityLabel("Look folder warning: \(message)")
+    }
+
+    private func importErrorBanner(_ message: String) -> some View {
+        Label(message, systemImage: "xmark.octagon")
+            .font(.caption)
+            .foregroundStyle(.red)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+            .accessibilityLabel("Look import error: \(message)")
     }
 
     private var lookList: some View {
