@@ -66,6 +66,24 @@ final class PreviewCoordinatorTests: XCTestCase {
         XCTAssertEqual(publications[0].revision, 2)
     }
 
+    func testPublicationCarriesCallerGenerationsThroughSettling() async throws {
+        let fake = FakeRenderEngine()
+        let coordinator = PreviewCoordinator(engine: fake, settleDelay: .zero)
+        var publications: [PreviewCoordinator.Publication] = []
+        coordinator.onPublication = { publications.append($0) }
+        let source = makeSource()
+
+        coordinator.submit(
+            request(source: source, exposure: 0.5),
+            sourceRevision: 17,
+            displayRevision: 23
+        )
+
+        try await waitUntil("the generation-tagged publication") { publications.count == 1 }
+        XCTAssertEqual(publications[0].sourceRevision, 17)
+        XCTAssertEqual(publications[0].displayRevision, 23)
+    }
+
     func testSettledGPUPublicationDoesNotRasterizeASecondImage() async throws {
         let fake = GPUBackedRenderEngine()
         let coordinator = PreviewCoordinator(engine: fake)
@@ -230,7 +248,7 @@ final class PreviewCoordinatorTests: XCTestCase {
     ) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while !(await condition()) {
-            if Date() > deadline { return XCTFail("timed out waiting for (description)") }
+            if Date() > deadline { return XCTFail("timed out waiting for \(description)") }
             try await Task.sleep(for: .milliseconds(5))
         }
     }

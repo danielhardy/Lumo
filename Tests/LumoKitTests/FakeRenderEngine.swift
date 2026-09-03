@@ -67,6 +67,7 @@ actor FakeRenderEngine: RenderEngining {
     /// revision guards observable instead of letting a synchronous fake hide a late-result race.
     private var histogramIsGated = false
     private var parkedHistograms: [CheckedContinuation<Void, Never>] = []
+    private var shouldFailHistogram = false
 
     struct Request: Equatable {
         let document: EditDocument
@@ -171,6 +172,7 @@ actor FakeRenderEngine: RenderEngining {
         if histogramIsGated {
             await withCheckedContinuation { parkedHistograms.append($0) }
         }
+        if shouldFailHistogram { return nil }
         // A recognisable tally rather than `nil`: a caller that drops the result would otherwise be
         // indistinguishable from one that publishes it.
         var bins = [Int](repeating: 0, count: 256)
@@ -187,6 +189,8 @@ actor FakeRenderEngine: RenderEngining {
 
     /// Hold histogram responses until the test has arranged a newer display revision.
     func gateHistogram() { histogramIsGated = true }
+
+    func setShouldFailHistogram(_ value: Bool) { shouldFailHistogram = value }
 
     /// Release only the oldest parked response while leaving the gate closed. This is useful for
     /// proving that an obsolete response cannot publish over a newer request that is still running.

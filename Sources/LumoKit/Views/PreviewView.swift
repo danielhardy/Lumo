@@ -24,7 +24,7 @@ struct PreviewView: View {
         ZStack {
             bgColor
 
-            if viewModel.sourceImage != nil {
+            if viewModel.previewSurface.image != nil {
                 if canvasState.isCropToolActive {
                     singleView
                 } else if viewModel.isSideBySideVisible {
@@ -32,16 +32,31 @@ struct PreviewView: View {
                 } else {
                     singleView
                 }
-            } else if viewModel.isLoading {
+            } else if viewModel.isLoading || viewModel.previewState == .loading {
                 ProgressView()
                     .scaleEffect(1.5)
                     .progressViewStyle(.circular)
+            } else if viewModel.previewState == .failed {
+                failedState
             } else {
                 emptyState
             }
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers)
+        }
+    }
+
+    private var failedState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 28, weight: .thin))
+                .foregroundStyle(.secondary.opacity(0.7))
+            Text(viewModel.statusMessage)
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 24)
         }
     }
 

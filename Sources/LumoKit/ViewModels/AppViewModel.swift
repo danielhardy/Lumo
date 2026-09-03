@@ -412,10 +412,23 @@ public final class AppViewModel: ObservableObject {
     /// Histogram of the currently displayed image (graded result, or original
     /// while comparing). `nil` until computed / when no image is loaded.
     @Published var histogram: HistogramData?
+    /// A nil histogram is otherwise ambiguous: it can mean loading, cancellation, an
+    /// unsupported source, or a failed calculation. Keep the terminal UI state explicit.
+    @Published private(set) var isHistogramLoading = false
+    @Published private(set) var histogramErrorMessage: String?
     private var histogramTaskRevision: UInt64?
     private var histogramTaskRequest: RenderRequest?
 
     @Published var isLoading: Bool = false
+    enum PreviewState: Equatable, Sendable {
+        case empty
+        case loading
+        case ready
+        case failed
+    }
+    /// Source preparation and preview presentation are separate async stages. This state keeps
+    /// the transparent source marker from making a not-yet-presented canvas look like a black one.
+    @Published private(set) var previewState: PreviewState = .empty
     @Published var statusMessage: String = "Open an image to get started"
 
     /// Non-nil when a hard failure should be surfaced as a dismissible alert.
@@ -514,6 +527,7 @@ public final class AppViewModel: ObservableObject {
         // useful status instead of leaving the user with a permanent black canvas.
         previewSurface.onPresentationFailure = { [weak self] in
             guard let self, self.sourceImage != nil else { return }
+            self.previewState = .failed
             self.statusMessage = "Could not display \(self.sourceName). Try Fit or reload the photo."
         }
         originalPreviewSurface.onPresentationFailure = { [weak self] in
@@ -554,7 +568,9 @@ public final class AppViewModel: ObservableObject {
         }
         previewCoordinator.onFailure = { [weak self] request in
             guard request.quality == .preview else { return }
-            self?.statusMessage = "Could not render \(self?.sourceName ?? "image")"
+            guard let self, request.source == self.imageSource else { return }
+            self.previewState = .failed
+            self.statusMessage = "Could not render \(self.sourceName)"
         }
 
         wireCoordinators()
@@ -730,6 +746,7 @@ public final class AppViewModel: ObservableObject {
         // Do not let the previous surface briefly show the photo we are leaving while the new
         // source is being decoded.
         sourceImage = nil
+        previewState = .loading
         // The old source must not describe the empty/loading state or gate the new image's
         // inspector while its pixels are being decoded.
         imageSource = nil
@@ -811,6 +828,7 @@ public final class AppViewModel: ObservableObject {
 
         guard let preparation else {
             isLoading = false
+            previewState = .failed
             presentError("Error: Cannot load \(request.name)")
             storedTask.cancel()
             return
@@ -839,6 +857,7 @@ public final class AppViewModel: ObservableObject {
         sourceImage = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(
             to: CGRect(origin: .zero, size: preparation.nativeExtent)
         )
+        previewState = .loading
         statusMessage = "\(request.name)  \(Int(preparation.nativeExtent.width))\u{00D7}\(Int(preparation.nativeExtent.height))"
         isLoading = false
         keepInspectorTabValid()
@@ -1235,6 +1254,7 @@ public final class AppViewModel: ObservableObject {
         if activeAssetID == item.id {
             if imageSource != nil, sourceImage != nil {
                 if previewSurface.image == nil {
+                    previewState = .loading
                     schedulePreview()
                 }
                 return
@@ -1580,7 +1600,8 @@ public final class AppViewModel: ObservableObject {
                 source: imageSource, document: requested, lut: look,
                 targetSize: previewRenderTargetSize(for: requested, surface: .mainPreview), quality: .preview,
                 output: .raster, space: .current
-            ), phase: .settled)
+            ), phase: .settled, sourceRevision: sourceRevision,
+            displayRevision: displayRevision)
     }
 
     /// A viewport-sized interactive render. `PreviewCoordinator` drops superseded values and
@@ -1594,7 +1615,8 @@ public final class AppViewModel: ObservableObject {
             source: imageSource, document: requested, lut: lut,
             targetSize: previewRenderTargetSize(for: requested, surface: .mainPreview), quality: .interactive,
             output: .raster, space: .current
-        ), phase: .interactive)
+        ), phase: .interactive, sourceRevision: sourceRevision,
+        displayRevision: displayRevision)
     }
 
     /// Called by the persistent preview surface after layout. Keeping this as value state avoids
@@ -1853,7 +1875,9 @@ public final class AppViewModel: ObservableObject {
     }
 
     private func publishPreview(_ publication: PreviewCoordinator.Publication) {
-        guard publication.request.source == imageSource else { return }
+        guard publication.sourceRevision == sourceRevision,
+              publication.displayRevision == displayRevision,
+              publication.request.source == imageSource else { return }
         let request = publication.request
         let detailIdentity = PreviewFrameIdentity(
             sourceToken: request.source.traceToken,
@@ -1862,7 +1886,12 @@ public final class AppViewModel: ObservableObject {
         )
         let detailFactor = request.renderScale.factor(for: request.source.nativeExtent)
         let presentationConfirmation: (() -> Void)? = publication.phase == .settled
-            ? { [weak self] in self?.didPresentVisibleFrame(request) }
+            ? { [weak self] in
+                self?.didPresentVisibleFrame(
+                    request, sourceRevision: publication.sourceRevision,
+                    displayRevision: publication.displayRevision
+                )
+            }
             : nil
         if let gpuImage = publication.gpuImage {
             previewSurface.present(gpuImage, space: request.space,
@@ -1888,6 +1917,7 @@ public final class AppViewModel: ObservableObject {
         }
         guard publication.gpuImage != nil || publication.image != nil else {
             if publication.phase == .settled {
+                previewState = .failed
                 statusMessage = "Could not render \(sourceName)"
             }
             return
@@ -1898,8 +1928,13 @@ public final class AppViewModel: ObservableObject {
     /// Supporting work starts only after the persistent presentation surface confirms that the
     /// visible frame made it through its drawable lifecycle. This keeps a completed renderer result
     /// from being mistaken for pixels the user has actually received.
-    private func didPresentVisibleFrame(_ request: RenderRequest) {
-        guard request.source == imageSource else { return }
+    private func didPresentVisibleFrame(
+        _ request: RenderRequest, sourceRevision: UInt64, displayRevision: UInt64
+    ) {
+        guard sourceRevision == self.sourceRevision,
+              displayRevision == self.displayRevision,
+              request.source == imageSource else { return }
+        previewState = .ready
         lastPresentedVisibleRequest = request
         let needsComparisonRefresh = pendingDevelopChange
         pendingDevelopChange = false
@@ -2051,6 +2086,8 @@ public final class AppViewModel: ObservableObject {
         cancelHistogram(clear: false)
         histogramTaskRevision = displayRevision
         histogramTaskRequest = request
+        isHistogramLoading = true
+        histogramErrorMessage = nil
         workScheduler.enqueue(id: histogramJobID, lane: .editor, priority: .histogram) {
             [weak self, engine] in
             guard !Task.isCancelled, let self else { return }
@@ -2065,6 +2102,14 @@ public final class AppViewModel: ObservableObject {
                   displayRevision == self.displayRevision,
                   self.imageSource == request.source else { return }
             self.histogram = result
+            self.isHistogramLoading = false
+            if result == nil {
+                let message = "Histogram unavailable for \(self.sourceName)."
+                self.histogramErrorMessage = message
+                self.statusMessage = message
+            } else {
+                self.histogramErrorMessage = nil
+            }
         }
     }
 
@@ -2074,6 +2119,8 @@ public final class AppViewModel: ObservableObject {
         workScheduler.cancel(id: histogramJobID, pump: pump)
         histogramTaskRevision = nil
         histogramTaskRequest = nil
+        if isHistogramLoading { isHistogramLoading = false }
+        if histogramErrorMessage != nil { histogramErrorMessage = nil }
         if clear { histogram = nil }
     }
 

@@ -22,6 +22,11 @@ final class PreviewCoordinator {
         let image: CGImage?
         let gpuImage: CIImage?
         let revision: UInt64
+        /// The caller's navigation generations. The coordinator's own revision protects its
+        /// queue, while these protect the owning view model when equal-valued sources are selected
+        /// by different photo assets.
+        let sourceRevision: UInt64
+        let displayRevision: UInt64
         let phase: Phase
     }
 
@@ -30,6 +35,8 @@ final class PreviewCoordinator {
 
     private struct Token: Equatable {
         let source: ImageSource
+        let sourceRevision: UInt64
+        let displayRevision: UInt64
         let revision: UInt64
     }
 
@@ -85,7 +92,12 @@ final class PreviewCoordinator {
 
     /// Submit a complete display request. The request is value state, so a caller can safely create
     /// it on the main actor and the renderer can evaluate it elsewhere.
-    func submit(_ request: RenderRequest, phase: Phase = .settled) {
+    func submit(
+        _ request: RenderRequest,
+        phase: Phase = .settled,
+        sourceRevision: UInt64 = 0,
+        displayRevision: UInt64 = 0
+    ) {
         let hadPendingWork = interactiveTask != nil || settleTask != nil
             || (interactiveJobID.map(scheduler.contains) ?? false)
             || (settledJobID.map(scheduler.contains) ?? false)
@@ -101,7 +113,10 @@ final class PreviewCoordinator {
         }
 
         nextRevision &+= 1
-        let token = Token(source: request.source, revision: nextRevision)
+        let token = Token(
+            source: request.source, sourceRevision: sourceRevision,
+            displayRevision: displayRevision, revision: nextRevision
+        )
         telemetry.input(source: request.source, request: request, revision: token.revision)
         LumoObservability.liveEdit(.pointerInput, source: request.source, quality: request.quality,
                                    revision: token.revision)
@@ -162,9 +177,14 @@ final class PreviewCoordinator {
 
     private func settleLatest() {
         guard let request = latestRequest else { return }
+        let sourceRevision = latestToken?.sourceRevision ?? 0
+        let displayRevision = latestToken?.displayRevision ?? 0
         let originatingRevision = latestToken?.revision
         nextRevision &+= 1
-        let token = Token(source: request.source, revision: nextRevision)
+        let token = Token(
+            source: request.source, sourceRevision: sourceRevision,
+            displayRevision: displayRevision, revision: nextRevision
+        )
         latestToken = token
         interactiveTask?.cancel()
         interactiveTask = nil
@@ -281,7 +301,8 @@ final class PreviewCoordinator {
         }
         onPublication?(Publication(
             request: request, image: image, gpuImage: gpuImage,
-            revision: token.revision, phase: phase
+            revision: token.revision, sourceRevision: token.sourceRevision,
+            displayRevision: token.displayRevision, phase: phase
         ))
     }
 

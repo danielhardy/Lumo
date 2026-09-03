@@ -99,12 +99,23 @@ struct InfoInspectorView: View {
                         RoundedRectangle(cornerRadius: 6)
                             .stroke(LumoTheme.analysisBorder, lineWidth: 1)
                     )
-            } else {
+            } else if viewModel.isHistogramLoading {
                 RoundedRectangle(cornerRadius: 6)
                     // Match the loaded histogram's intentionally dark analysis surface.
                     .fill(LumoTheme.analysisBackground)
                     .frame(height: 120)
                     .overlay(ProgressView().controlSize(.small))
+            } else {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(LumoTheme.analysisBackground)
+                    .frame(height: 120)
+                    .overlay {
+                        Text(viewModel.histogramErrorMessage ?? "Histogram unavailable")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(12)
+                    }
             }
 
             Picker("Channel", selection: $channel) {
