@@ -14,14 +14,18 @@ import LumoKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let viewModel: AppViewModel
+    private let appearanceController: LumoWindowAppearanceController
     private var terminationFlushInProgress = false
 
     override init() {
-        viewModel = AppViewModel(includeBundledLooks: true)
+        let viewModel = AppViewModel(includeBundledLooks: true)
+        self.viewModel = viewModel
+        self.appearanceController = LumoWindowAppearanceController(settings: viewModel.settings)
         super.init()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        appearanceController.start()
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
