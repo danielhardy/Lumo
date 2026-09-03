@@ -309,7 +309,7 @@ Useful starting points are [`EditDocument`](Sources/LumoKit/Models/EditDocument.
 
 ## Preparing for the App Store
 
-1. Add a 1024×1024 source icon to [`AppIcon.appiconset`](Sources/Lumo/Assets.xcassets/AppIcon.appiconset).
+1. Build and verify the checked-in product icon with [`scripts/build-macos-app.sh`](scripts/build-macos-app.sh) and [`scripts/verify-app-icon.sh`](scripts/verify-app-icon.sh); see [`docs/LUMO_ICON.md`](docs/LUMO_ICON.md) for the source, safe area, and review checklist.
 2. Set the Bundle Identifier and Team in Xcode's Signing & Capabilities.
 3. Keep App Sandbox enabled with the included entitlements.
 4. Use **Product ▸ Archive ▸ Distribute App ▸ App Store Connect**.

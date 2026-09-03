@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Lumo product icon source
+  Canvas: 1024 × 1024 points/pixels. The inner artwork lives inside the
+  128-point safe area (x/y 128…896) so Finder/Dock masks do not trim it.
+  The mark is deliberately geometric and text-free: a warm luminous disc
+  crossing a cool, open L formed by two broad rounded beams.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x1="96" y1="72" x2="928" y2="952" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#25285B"/>
+      <stop offset="0.52" stop-color="#151735"/>
+      <stop offset="1" stop-color="#080B1D"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(680 326) rotate(90) scale(360)">
+      <stop offset="0" stop-color="#FFDFA1" stop-opacity="0.35"/>
+      <stop offset="0.42" stop-color="#A894FF" stop-opacity="0.13"/>
+      <stop offset="1" stop-color="#5E66FF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="beam" x1="262" y1="750" x2="786" y2="244" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6EE7F9"/>
+      <stop offset="0.48" stop-color="#9BA7FF"/>
+      <stop offset="1" stop-color="#FFE0A4"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(690 324) rotate(90) scale(132)">
+      <stop offset="0" stop-color="#FFF8D6"/>
+      <stop offset="0.55" stop-color="#FFD98A"/>
+      <stop offset="1" stop-color="#FFB45D"/>
+    </radialGradient>
+    <filter id="softGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="24"/>
+    </filter>
+    <filter id="beamGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="16"/>
+    </filter>
+    <clipPath id="iconShape">
+      <rect x="0" y="0" width="1024" height="1024" rx="224"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#iconShape)">
+    <rect width="1024" height="1024" fill="url(#background)"/>
+    <circle cx="680" cy="326" r="360" fill="url(#halo)"/>
+
+    <!-- restrained ambient glow behind the mark -->
+    <circle cx="690" cy="324" r="144" fill="#FFC86F" opacity="0.33" filter="url(#softGlow)"/>
+
+    <!-- open L beam; the glow is a separate low-contrast underlay -->
+    <path d="M 304 244 V 736 H 764" fill="none" stroke="#7D8EFF" stroke-opacity="0.28" stroke-width="112" stroke-linecap="round" stroke-linejoin="round" filter="url(#beamGlow)"/>
+    <path d="M 304 244 V 736 H 764" fill="none" stroke="url(#beam)" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- the disc interrupts the corner-to-corner reading and adds the light cue -->
+    <circle cx="690" cy="324" r="116" fill="url(#sun)"/>
+    <circle cx="656" cy="288" r="34" fill="#FFFCEB" opacity="0.62"/>
+
+    <!-- tiny highlight, intentionally large enough to survive 16 px rendering -->
+    <path d="M 778 206 L 786 228 L 808 236 L 786 244 L 778 266 L 770 244 L 748 236 L 770 228 Z" fill="#FFF5CD" opacity="0.86"/>
+  </g>
+</svg>

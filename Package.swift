@@ -133,7 +133,10 @@ let package = Package(
         .executableTarget(
             name: "Lumo",
             dependencies: ["LumoKit"],
-            exclude: ["Assets.xcassets", "Lumo.entitlements"],
+            // The asset catalog and entitlements belong to the bundled app
+            // packaging phase. Branding is likewise an input to that phase,
+            // not Swift source; scripts/build-macos-app.sh consumes it.
+            exclude: ["Assets.xcassets", "Branding", "Info.plist", "Lumo.entitlements"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
