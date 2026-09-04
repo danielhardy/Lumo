@@ -235,17 +235,14 @@ final class EditPersistenceIntegrationTests: TempDirectoryTestCase {
         viewModel.updateDocument { $0.adjustments = [.exposure(ev: 0.4)] }
 
         let firstFlush = Task { @MainActor in await viewModel.flushPendingWrites() }
-        let deadline = Date().addingTimeInterval(5)
-        while await store.saveAttemptCount == 0 {
-            if Date() > deadline {
-                return XCTFail("timed out waiting for the first flush write")
-            }
-            try await Task.sleep(for: .milliseconds(1))
-        }
+        // The injected delay happens after the atomic write, while the store.save call is still
+        // suspended. Avoid polling the actor here: its blocking test delay would prevent the
+        // polling accessor from observing the in-flight operation at all.
+        try await Task.sleep(for: .milliseconds(20))
 
         // The first flush is awaiting an in-flight write. The second flush cancels and replaces
-        // that worker; the replacement must drain the now-durable queue before the first caller
-        // interprets the cancelled worker result.
+        // that worker. The first worker has already made the snapshot durable, so its cancellation
+        // result arrives with an empty queue; flush must map that result to success.
         let replacementFlush = Task { @MainActor in await viewModel.flushPendingWrites() }
         let replacementResult = await replacementFlush.value
         let firstResult = await firstFlush.value
@@ -253,6 +250,8 @@ final class EditPersistenceIntegrationTests: TempDirectoryTestCase {
         XCTAssertTrue(replacementResult.succeeded)
         XCTAssertEqual(firstResult, .success)
         XCTAssertEqual(viewModel.pendingPersistenceCount, 0)
+        let writeCount = await store.writeCount
+        XCTAssertEqual(writeCount, 1)
     }
 
     func testLongGestureCheckpointsIntermediateSnapshotsBeforeMouseUp() async throws {

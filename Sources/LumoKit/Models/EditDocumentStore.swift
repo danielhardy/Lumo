@@ -338,11 +338,6 @@ actor EditDocumentStore {
         lastIOWasMainThread = Thread.isMainThread
         saveAttemptCount += 1
 
-        if artificialWriteDelay > .zero {
-            let components = artificialWriteDelay.components
-            let seconds = Double(components.seconds) + Double(components.attoseconds) / 1e18
-            Thread.sleep(forTimeInterval: seconds)
-        }
         if failuresRemaining > 0 {
             failuresRemaining -= 1
             throw StoreError.cannotWrite("injected persistence failure")
@@ -369,6 +364,15 @@ actor EditDocumentStore {
             try data.write(to: fileURL, options: .atomic)
             writeCount += 1
             bytesWritten += data.count
+
+            // Keep the save suspended after the write is durable so persistence tests can cancel
+            // a worker between its final successful save and its cancellation check. This remains
+            // a test-only seam; normal stores use the zero delay.
+            if artificialWriteDelay > .zero {
+                let components = artificialWriteDelay.components
+                let seconds = Double(components.seconds) + Double(components.attoseconds) / 1e18
+                Thread.sleep(forTimeInterval: seconds)
+            }
         } catch {
             throw StoreError.cannotWrite(error.localizedDescription)
         }
