@@ -130,6 +130,68 @@ final class CubeLUTTests: TempDirectoryTestCase {
         }
     }
 
+    func testRejectsOversizedFileBeforeParsingItsContents() throws {
+        let url = tempDirectory.appendingPathComponent("too-big.cube")
+        try Data(repeating: 0, count: CubeLUT.maximumFileBytes + 1).write(to: url)
+
+        XCTAssertThrowsError(try CubeLUT(url: url)) { error in
+            guard case LUTError.invalidFormat(let message) = error else {
+                return XCTFail("expected an invalid-format error, got \(error)")
+            }
+            XCTAssertTrue(message.contains("maximum import size"), message)
+        }
+    }
+
+    func testRejectsAnOversizedLineWhileStreaming() throws {
+        let text = "LUT_3D_SIZE 2\n" + String(repeating: "x", count: CubeLUT.maximumLineBytes + 1)
+        let url = try Fixtures.writeCube(text, named: "long-line.cube", in: tempDirectory)
+
+        XCTAssertThrowsError(try CubeLUT(url: url)) { error in
+            guard case LUTError.invalidFormat(let message) = error else {
+                return XCTFail("expected an invalid-format error, got \(error)")
+            }
+            XCTAssertTrue(message.contains("line length"), message)
+        }
+    }
+
+    func testRejectsExcessiveMetadataBeforeAllocatingTable() throws {
+        let metadataLine = "VENDOR \(String(repeating: "x", count: 300))\n"
+        let text = String(repeating: metadataLine, count: 3500) + "LUT_3D_SIZE 2\n"
+        let url = try Fixtures.writeCube(text, named: "metadata.cube", in: tempDirectory)
+
+        XCTAssertThrowsError(try CubeLUT(url: url)) { error in
+            guard case LUTError.invalidFormat(let message) = error else {
+                return XCTFail("expected an invalid-format error, got \(error)")
+            }
+            XCTAssertTrue(message.contains("metadata"), message)
+        }
+    }
+
+    func testRejectsTrailingTableRowsAfterTheDeclaredCube() throws {
+        let text = Fixtures.identityCubeText(size: 2) + "0 0 0\n"
+        let url = try Fixtures.writeCube(text, named: "trailing-row.cube", in: tempDirectory)
+
+        XCTAssertThrowsError(try CubeLUT(url: url)) { error in
+            guard case LUTError.invalidFormat(let message) = error else {
+                return XCTFail("expected an invalid-format error, got \(error)")
+            }
+            XCTAssertTrue(message.contains("trailing"), message)
+        }
+    }
+
+    func testParsesTheMaximumSupported65CubeIncrementally() throws {
+        let url = try Fixtures.writeCube(
+            Fixtures.identityCubeText(size: CubeLUT.maximumSupportedSize),
+            named: "maximum.cube", in: tempDirectory
+        )
+        let lut = try CubeLUT(url: url)
+
+        XCTAssertEqual(lut.size, 65)
+        XCTAssertEqual(lut.tableFloats.count, 65 * 65 * 65 * 4)
+        XCTAssertEqual(lut.tableFloats[0], 0, accuracy: 0.0001)
+        XCTAssertEqual(lut.tableFloats[4], Float(1.0 / 64.0), accuracy: 0.0001)
+    }
+
     func testRejectsReversedDomain() throws {
         let text = """
             LUT_3D_SIZE 2

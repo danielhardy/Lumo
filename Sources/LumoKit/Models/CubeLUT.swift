@@ -35,6 +35,14 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
     /// explicit so an unsupported file fails before any large allocation.
     static let minimumSupportedSize = 2
     static let maximumSupportedSize = 65
+    /// A 65³ text cube is normally well below this limit. Keep malformed imports from becoming
+    /// general-purpose large-file reads before their contents are checked.
+    static let maximumFileBytes = 16 * 1024 * 1024
+    /// Lines are parsed into a temporary String, so bound that allocation independently.
+    static let maximumLineBytes = 64 * 1024
+    /// Comments and non-table vendor metadata are useful, but do not need an unbounded budget.
+    static let maximumMetadataBytes = 1 * 1024 * 1024
+    static let maximumMetadataLines = 4096
     static let supportedFileExtensions = Set(["cube", "look"])
 
     let id: String          // full file path (or a synthetic id for in-memory LUTs)
@@ -137,36 +145,88 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
             ? displayName!
             : cleaned
 
-        let content: String
+        let fileSize: UInt64
         do {
-            content = try String(contentsOf: url, encoding: .utf8)
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard let byteCount = (attributes[.size] as? NSNumber)?.uint64Value else {
+                throw LUTError.unreadable("file size is unavailable")
+            }
+            fileSize = byteCount
         } catch {
+            if let error = error as? LUTError { throw error }
             throw LUTError.unreadable(error.localizedDescription)
         }
-        let lines = content.components(separatedBy: .newlines)
+        guard fileSize <= UInt64(Self.maximumFileBytes) else {
+            throw LUTError.invalidFormat(
+                "file exceeds the maximum import size"
+            )
+        }
 
         var lutSize = 0
         var domainMin: SIMD3<Float> = .zero
         var domainMax: SIMD3<Float> = .one
-        var rows: [(Float, Float, Float)] = []
+        var expected = 0
+        var floats: [Float] = []
+        var normalizationMin: SIMD3<Float> = .zero
+        var normalizationScale: SIMD3<Float> = .one
         var sawSize = false
-        var sawOneDimensionalSize = false
         var sawTableData = false
+        var metadataBytes = 0
+        var metadataLines = 0
+        var lineNumber = 0
+        var reader: LUTLineReader
+        do {
+            reader = try LUTLineReader(url: url, maximumFileBytes: Self.maximumFileBytes,
+                                       maximumLineBytes: Self.maximumLineBytes)
+        } catch {
+            if let error = error as? LUTError { throw error }
+            throw LUTError.unreadable(error.localizedDescription)
+        }
 
-        for (lineNumber, rawLine) in lines.enumerated() {
+        func accountForMetadata(_ line: String) throws {
+            metadataLines += 1
+            metadataBytes += line.utf8.count
+            guard metadataLines <= Self.maximumMetadataLines else {
+                throw LUTError.invalidFormat(
+                    "metadata exceeds the maximum metadata line count"
+                )
+            }
+            guard metadataBytes <= Self.maximumMetadataBytes else {
+                throw LUTError.invalidFormat(
+                    "metadata exceeds the maximum metadata size"
+                )
+            }
+        }
+
+        while let rawLine = try reader.readLine() {
+            lineNumber += 1
             // A UTF-8 BOM is legal in files emitted by some Windows tools. It is metadata, not part
             // of the first keyword. The parser otherwise treats the file as ordinary UTF-8 text.
-            let line = lineNumber == 0
+            let line = lineNumber == 1
                 ? rawLine.replacingOccurrences(of: "\u{FEFF}", with: "")
                 : rawLine
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            if trimmed.isEmpty || trimmed.hasPrefix("#") {
+                try accountForMetadata(line)
+                continue
+            }
 
             // Vendors commonly put a trailing comment after a data row. The `TITLE` value is not
             // used as the identity, so treating a # in metadata as a comment is harmless here.
             let withoutComment = trimmed.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
                 .trimmingCharacters(in: .whitespaces)
-            if withoutComment.isEmpty { continue }
+            if withoutComment.isEmpty {
+                try accountForMetadata(line)
+                continue
+            }
+
+            // Once the declared table is full, no further semantic content is valid. Comments and
+            // blank lines are accepted above, but an extra row is rejected before it is stored.
+            if expected > 0 && floats.count == expected * 4 {
+                throw LUTError.invalidFormat(
+                    "trailing content after the expected table entries"
+                )
+            }
             let parts = withoutComment.split(whereSeparator: { $0 == " " || $0 == "\t" })
             guard let first = parts.first else { continue }
 
@@ -186,13 +246,14 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
                     )
                 }
                 lutSize = s
+                expected = s * s * s
                 sawSize = true
+                try accountForMetadata(line)
                 continue
             }
 
             if first == "LUT_1D_SIZE" {
-                sawOneDimensionalSize = true
-                continue
+                throw LUTError.unsupported("1D .cube LUTs are not supported; import a 3D LUT")
             }
 
             if first == "DOMAIN_MIN" || first == "DOMAIN_MAX" {
@@ -211,6 +272,7 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
                 } else {
                     domainMax = value
                 }
+                try accountForMetadata(line)
                 continue
             }
 
@@ -226,20 +288,22 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
                 }
                 domainMin = SIMD3(repeating: minimum)
                 domainMax = SIMD3(repeating: maximum)
+                try accountForMetadata(line)
                 continue
             }
 
             if first == "TITLE" {
                 // TITLE is display metadata. Lumo keeps the filename as the stable, predictable
                 // browser name because it must not change when a vendor rewrites metadata in place.
+                guard !sawTableData else {
+                    throw LUTError.invalidFormat("TITLE must appear before table data")
+                }
+                try accountForMetadata(line)
                 continue
             }
 
             let numericValues = parts.compactMap { Float($0) }
             if numericValues.count == parts.count {
-                if sawOneDimensionalSize && !sawSize {
-                    throw LUTError.unsupported("1D .cube LUTs are not supported; import a 3D LUT")
-                }
                 guard sawSize else {
                     throw LUTError.invalidFormat("table data appears before LUT_3D_SIZE (line \(lineNumber + 1))")
                 }
@@ -248,56 +312,49 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
                 else {
                     throw LUTError.invalidFormat("table row must contain three finite numbers (line \(lineNumber + 1))")
                 }
-                rows.append((numericValues[0], numericValues[1], numericValues[2]))
+
+                if !sawTableData {
+                    for axis in 0..<3 where domainMax[axis] < domainMin[axis] {
+                        throw LUTError.invalidFormat("DOMAIN_MAX must not be below DOMAIN_MIN")
+                    }
+                    normalizationMin = domainMin
+                    normalizationScale = domainMax - domainMin
+                    for axis in 0..<3 where !(normalizationScale[axis] > 0) {
+                        normalizationMin[axis] = 0
+                        normalizationScale[axis] = 1
+                    }
+                    // The dimension, file, line, and metadata limits have all been checked before
+                    // this allocation. Rows go directly into the final RGBA table.
+                    floats.reserveCapacity(expected * 4)
+                }
+
+                let r = (numericValues[0] - normalizationMin.x) / normalizationScale.x
+                let g = (numericValues[1] - normalizationMin.y) / normalizationScale.y
+                let b = (numericValues[2] - normalizationMin.z) / normalizationScale.z
+                floats.append(contentsOf: [r, g, b, 1.0])
                 sawTableData = true
             } else if numericValues.isEmpty {
                 // Unknown vendor metadata is safe to ignore. Numeric-looking malformed rows are
                 // rejected above so a broken LUT cannot be silently shortened or partially applied.
+                guard !sawTableData else {
+                    throw LUTError.invalidFormat("metadata must appear before table data")
+                }
+                try accountForMetadata(line)
                 continue
             } else {
                 throw LUTError.invalidFormat("unrecognized numeric line (line \(lineNumber + 1))")
             }
         }
 
-        if sawOneDimensionalSize {
-            throw LUTError.unsupported("1D .cube LUTs are not supported; import a 3D LUT")
-        }
         guard lutSize > 0 else {
             throw LUTError.invalidFormat("LUT_3D_SIZE not found")
         }
-        let expected = lutSize * lutSize * lutSize
-        guard rows.count == expected else {
-            throw LUTError.invalidFormat("Expected \(expected) entries, got \(rows.count)")
+        let actualRows = floats.count / 4
+        guard actualRows == expected else {
+            throw LUTError.invalidFormat("Expected \(expected) entries, got \(actualRows)")
         }
 
         self.size = lutSize
-
-        // Build Core Image color cube data: RGBA float32, R varies fastest.
-        // .cube format: R fastest, G middle, B slowest — same as Core Image expects.
-        // Normalize from domain to [0,1] if needed. A degenerate domain (min ==
-        // max on any axis) would divide by zero and fill the table with NaN, so
-        // treat that axis as the default 0…1 range instead.
-        for axis in 0..<3 where domainMax[axis] < domainMin[axis] {
-            throw LUTError.invalidFormat("DOMAIN_MAX must not be below DOMAIN_MIN")
-        }
-
-        var scale = domainMax - domainMin
-        for axis in 0..<3 where !(scale[axis] > 0) {
-            domainMin[axis] = 0
-            scale[axis] = 1
-        }
-        var floats = [Float]()
-        floats.reserveCapacity(expected * 4)
-
-        for row in rows {
-            let r = (row.0 - domainMin.x) / scale.x
-            let g = (row.1 - domainMin.y) / scale.y
-            let b = (row.2 - domainMin.z) / scale.z
-            floats.append(r)
-            floats.append(g)
-            floats.append(b)
-            floats.append(1.0) // alpha
-        }
 
         self.tableData = floats.withUnsafeBufferPointer { buffer in
             Data(buffer: buffer)
@@ -452,6 +509,91 @@ struct CubeLUT: Identifiable, Hashable, Sendable {
     /// matrix and conversion-limit comments while the ordinary writer remains unchanged.
     static func write(text: String, to url: URL) throws {
         try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+}
+
+/// Small, bounded line reader for user-provided LUT text. It never loads more than one chunk and
+/// one line, and checks the byte limit again while reading to cover a file that grows after its
+/// attributes were inspected.
+private final class LUTLineReader {
+    private let handle: FileHandle
+    private let maximumFileBytes: Int
+    private let maximumLineBytes: Int
+    private var bytesRead = 0
+    private var chunk: [UInt8] = []
+    private var chunkIndex = 0
+    private var reachedEOF = false
+
+    init(url: URL, maximumFileBytes: Int, maximumLineBytes: Int) throws {
+        do {
+            self.handle = try FileHandle(forReadingFrom: url)
+        } catch {
+            throw LUTError.unreadable(error.localizedDescription)
+        }
+        self.maximumFileBytes = maximumFileBytes
+        self.maximumLineBytes = maximumLineBytes
+    }
+
+    deinit {
+        try? handle.close()
+    }
+
+    func readLine() throws -> String? {
+        var line: [UInt8] = []
+        line.reserveCapacity(min(maximumLineBytes, 4096))
+
+        while true {
+            if chunkIndex >= chunk.count {
+                guard !reachedEOF else {
+                    return line.isEmpty ? nil : try decode(line)
+                }
+
+                if bytesRead >= maximumFileBytes {
+                    let extra = try read(upToCount: 1)
+                    guard extra.isEmpty else {
+                        throw LUTError.invalidFormat("file exceeds the maximum import size")
+                    }
+                    reachedEOF = true
+                    return line.isEmpty ? nil : try decode(line)
+                }
+
+                let amount = min(64 * 1024, maximumFileBytes - bytesRead)
+                let data = try read(upToCount: amount)
+                guard !data.isEmpty else {
+                    reachedEOF = true
+                    return line.isEmpty ? nil : try decode(line)
+                }
+                chunk = Array(data)
+                chunkIndex = 0
+            }
+
+            let byte = chunk[chunkIndex]
+            chunkIndex += 1
+            bytesRead += 1
+            if byte == 0x0A { // LF; CRLF is handled by removing the preceding CR below.
+                if line.last == 0x0D { line.removeLast() }
+                return try decode(line)
+            }
+            guard line.count < maximumLineBytes else {
+                throw LUTError.invalidFormat("line exceeds the maximum import line length")
+            }
+            line.append(byte)
+        }
+    }
+
+    private func decode(_ bytes: [UInt8]) throws -> String {
+        guard let line = String(bytes: bytes, encoding: .utf8) else {
+            throw LUTError.unreadable("file is not valid UTF-8")
+        }
+        return line
+    }
+
+    private func read(upToCount count: Int) throws -> Data {
+        do {
+            return try handle.read(upToCount: count) ?? Data()
+        } catch {
+            throw LUTError.unreadable(error.localizedDescription)
+        }
     }
 }
 
