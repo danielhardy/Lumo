@@ -135,7 +135,8 @@ let package = Package(
             dependencies: ["LumoKit"],
             // The asset catalog and entitlements belong to the bundled app
             // packaging phase. Branding is likewise an input to that phase,
-            // not Swift source; scripts/build-macos-app.sh consumes it.
+            // not Swift source; scripts/build-macos-app.sh consumes the
+            // entitlements explicitly when signing the completed bundle.
             exclude: ["Assets.xcassets", "Branding", "Info.plist", "Lumo.entitlements"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

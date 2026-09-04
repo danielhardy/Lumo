@@ -54,3 +54,5 @@ jobs:
         run: |
           scripts/build-macos-app.sh
           scripts/verify-app-icon.sh
+          scripts/verify-app-signature.sh
+          git diff --exit-code -- Sources/Lumo/Assets.xcassets
