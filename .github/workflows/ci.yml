@@ -71,7 +71,7 @@ jobs:
       - name: Run RAW and hardware coverage
         run: >-
           swift test --parallel
-          --filter '(RAWCapabilitiesTests|RAWDevelopSettingsTests|DeriveInvarianceTests|ImageLoadingTests|ImageSourceTests|RenderPipelineTests|RenderEngineTests|PreviewCutoverTests|MetalPresentationBenchmark|ConcurrentExportEditingBenchmark|PhotosImportPerformanceTests|PreviewCostBenchmark)'
+          --filter '(RAWCapabilitiesTests|RAWDevelopSettingsTests|DeriveInvarianceTests|ImageLoadingTests|ImageSourceTests|RenderPipelineTests|RenderEngineTests|PreviewCutoverTests|MetalPresentationBenchmark|ConcurrentExportEditingBenchmark|PhotosImportPerformanceTests|PreviewCostBenchmark|EditPersistenceBenchmarkTests|TracingOverheadBenchmark)'
 
   package:
     name: Package, sign, and verify app
