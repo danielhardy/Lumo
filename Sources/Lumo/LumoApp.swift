@@ -37,11 +37,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminationFlushInProgress else { return .terminateLater }
         terminationFlushInProgress = true
-        Task { @MainActor [viewModel] in
-            await viewModel.flushPendingWrites()
-            sender.reply(toApplicationShouldTerminate: true)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let result = await viewModel.flushPendingWrites()
+            await handleTerminationFlushResult(result, sender: sender)
         }
         return .terminateLater
+    }
+
+    private func handleTerminationFlushResult(
+        _ result: PersistenceFlushResult,
+        sender: NSApplication
+    ) async {
+        guard case .success = result else {
+            let alert = NSAlert()
+            alert.messageText = "Couldn’t save edits before quitting"
+            alert.informativeText = terminationFailureMessage(for: result)
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Retry Saving")
+            alert.addButton(withTitle: "Quit Without Saving")
+            alert.addButton(withTitle: "Cancel")
+
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                terminationFlushInProgress = false
+                startTerminationFlush(sender)
+            case .alertSecondButtonReturn:
+                await viewModel.discardPendingWrites()
+                terminationFlushInProgress = false
+                sender.reply(toApplicationShouldTerminate: true)
+            default:
+                terminationFlushInProgress = false
+                sender.reply(toApplicationShouldTerminate: false)
+            }
+            return
+        }
+
+        sender.reply(toApplicationShouldTerminate: true)
+    }
+
+    private func startTerminationFlush(_ sender: NSApplication) {
+        terminationFlushInProgress = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let result = await viewModel.flushPendingWrites()
+            await handleTerminationFlushResult(result, sender: sender)
+        }
+    }
+
+    private func terminationFailureMessage(for result: PersistenceFlushResult) -> String {
+        switch result {
+        case .failure(let detail):
+            return "\(detail)\n\nRetry saving, quit without saving these edits, or cancel quitting."
+        case .cancelled:
+            return "Saving edits was cancelled before all changes were written.\n\nRetry saving, quit without saving these edits, or cancel quitting."
+        case .success:
+            return "All edits were saved."
+        }
     }
 }
 

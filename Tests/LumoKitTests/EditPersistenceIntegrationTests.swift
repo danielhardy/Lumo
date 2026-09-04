@@ -172,6 +172,55 @@ final class EditPersistenceIntegrationTests: TempDirectoryTestCase {
         XCTAssertEqual(writeCount, 1)
     }
 
+    func testFailedTerminationFlushCannotApproveQuitSilently() async throws {
+        let imageURL = try Fixtures.writeGradientPNG(
+            width: 32, height: 24, named: "failed-termination.png", in: tempDirectory
+        )
+        let store = EditDocumentStore(
+            fileURL: tempDirectory.appendingPathComponent("failed-termination-edits.json"),
+            failuresBeforeSuccess: 1
+        )
+        let viewModel = AppViewModel(engine: FakeRenderEngine(), editStore: store)
+        viewModel.openImage(url: imageURL)
+        try await waitUntil("the failed-termination image") { viewModel.sourceImage != nil }
+        viewModel.updateDocument { $0.adjustments = [.exposure(ev: 0.8)] }
+
+        let result = await viewModel.flushPendingWrites()
+
+        guard case .failure = result else {
+            return XCTFail("a failed termination flush must report failure")
+        }
+        XCTAssertFalse(result.succeeded)
+        XCTAssertEqual(viewModel.pendingPersistenceCount, 1,
+                       "failed edits must remain dirty instead of being approved as saved")
+
+        let retry = await viewModel.flushPendingWrites()
+        XCTAssertTrue(retry.succeeded)
+        XCTAssertEqual(viewModel.pendingPersistenceCount, 0)
+    }
+
+    func testCancelledFlushIsReportedDistinctly() async throws {
+        let imageURL = try Fixtures.writeGradientPNG(
+            width: 32, height: 24, named: "cancelled-flush.png", in: tempDirectory
+        )
+        let store = EditDocumentStore(
+            fileURL: tempDirectory.appendingPathComponent("cancelled-flush-edits.json"),
+            artificialWriteDelay: .milliseconds(250)
+        )
+        let viewModel = AppViewModel(engine: FakeRenderEngine(), editStore: store)
+        viewModel.openImage(url: imageURL)
+        try await waitUntil("the cancelled-flush image") { viewModel.sourceImage != nil }
+        viewModel.updateDocument { $0.adjustments = [.exposure(ev: 0.2)] }
+
+        let flush = Task { @MainActor in await viewModel.flushPendingWrites() }
+        try await Task.sleep(for: .milliseconds(20))
+        flush.cancel()
+        let result = await flush.value
+
+        XCTAssertEqual(result, .cancelled)
+        XCTAssertTrue(viewModel.pendingPersistenceCount <= 1)
+    }
+
     func testLongGestureCheckpointsIntermediateSnapshotsBeforeMouseUp() async throws {
         let imageURL = try Fixtures.writeGradientPNG(
             width: 32, height: 24, named: "long-gesture.png", in: tempDirectory

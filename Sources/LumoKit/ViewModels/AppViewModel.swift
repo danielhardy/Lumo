@@ -61,6 +61,18 @@ enum AutoAdjustmentState: Equatable, Sendable {
     }
 }
 
+/// The outcome of attempting to make all queued edit snapshots durable.
+public enum PersistenceFlushResult: Equatable, Sendable {
+    case success
+    case failure(String)
+    case cancelled
+
+    public var succeeded: Bool {
+        if case .success = self { return true }
+        return false
+    }
+}
+
 /// Central state for the Lumo app.
 @MainActor
 public final class AppViewModel: ObservableObject, LookPreviewProviding {
@@ -231,7 +243,7 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
     private var activeAssetID: PhotoAssetID?
     private var activeHistory = EditHistory()
     private var activeSourceReference: EditSourceReference?
-    private var persistenceTask: Task<Void, Never>?
+    private var persistenceTask: Task<PersistenceFlushResult, Never>?
     private var persistenceGeneration = 0
     private struct PendingPersistence: Equatable {
         let document: EditDocument
@@ -2882,36 +2894,46 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
     /// current `persistenceTask` — could return while that orphaned save was still writing to disk.
     /// Awaiting `previous` first keeps writes serialized to at most one in flight and keeps
     /// `flushPendingWrites` a real guarantee.
-    private func startPersistenceWorker(force: Bool, after previous: Task<Void, Never>?) {
+    private func startPersistenceWorker(
+        force: Bool,
+        after previous: Task<PersistenceFlushResult, Never>?
+    ) {
         persistenceGeneration &+= 1
         let generation = persistenceGeneration
         persistenceTask = Task { [weak self] in
-            await previous?.value
-            guard let self else { return }
+            _ = await previous?.value
+            guard let self else { return .cancelled }
             if !force { try? await Task.sleep(for: Self.persistenceCheckpoint) }
-            await self.drainPersistence(generation: generation)
+            return await self.drainPersistence(generation: generation)
         }
     }
 
-    private func drainPersistence(generation: Int) async {
-        while !Task.isCancelled, let assetID = pendingPersistence.keys.sorted(by: { $0.description < $1.description }).first,
+    private func drainPersistence(generation: Int) async -> PersistenceFlushResult {
+        defer {
+            if persistenceGeneration == generation { persistenceTask = nil }
+        }
+
+        while let assetID = pendingPersistence.keys.sorted(by: { $0.description < $1.description }).first,
               let snapshot = pendingPersistence[assetID] {
+            guard !Task.isCancelled else { return .cancelled }
             do {
                 try await editStore.save(snapshot.document, for: snapshot.reference)
                 if pendingPersistence[assetID] == snapshot { pendingPersistence.removeValue(forKey: assetID) }
                 if snapshot.reportsStatus { editStoreStatus = nil }
+            } catch is CancellationError {
+                return .cancelled
             } catch {
                 // Keep the snapshot dirty. A later edit or termination flush retries it rather than
                 // falsely presenting a durable state that never reached disk.
                 editStoreStatus = error.localizedDescription
                 statusMessage = error.localizedDescription
-                break
+                return .failure(error.localizedDescription)
             }
             if !snapshot.force, !pendingPersistence.isEmpty {
                 try? await Task.sleep(for: Self.persistenceCheckpoint)
             }
         }
-        if persistenceGeneration == generation { persistenceTask = nil }
+        return Task.isCancelled ? .cancelled : .success
     }
 
     private func requestPersistenceFlush() {
@@ -2922,8 +2944,32 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
     }
 
     /// Wait for queued snapshots before clean application termination.
-    public func flushPendingWrites() async {
+    public func flushPendingWrites() async -> PersistenceFlushResult {
+        guard !Task.isCancelled else { return .cancelled }
         requestPersistenceFlush()
-        while let pending = persistenceTask { await pending.value }
+        while let pending = persistenceTask {
+            let result = await pending.value
+            if Task.isCancelled { return .cancelled }
+
+            // A concurrent forced flush can cancel the worker we just awaited and replace it.
+            // Do not report that internal cancellation as the final outcome.
+            if persistenceTask != nil, !pendingPersistence.isEmpty {
+                continue
+            }
+            return result
+        }
+
+        return pendingPersistence.isEmpty
+            ? .success
+            : .failure(editStoreStatus ?? "Could not save pending edit records")
+    }
+
+    /// Explicitly abandon snapshots that could not be written. This is only used after the user
+    /// has chosen Quit Without Saving; ordinary edits and failed flushes leave snapshots dirty.
+    public func discardPendingWrites() async {
+        let pending = persistenceTask
+        pending?.cancel()
+        pendingPersistence.removeAll()
+        if let pending { _ = await pending.value }
     }
 }
