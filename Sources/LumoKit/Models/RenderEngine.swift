@@ -239,22 +239,31 @@ actor RenderEngine: RenderEngining {
     /// The app's engine. One instance, therefore one actor-owned processing context and queue.
     static let shared = RenderEngine()
 
-    private let context: CIContext
-    private let device: MTLDevice?
-    private let commandQueue: MTLCommandQueue?
+    /// All non-Sendable GPU and cache resources live in this actor-confined storage boundary.
+    private let resources: RenderEngineResources
 
-    /// Cube filters, reused across renders. Lives here rather than on `CubeLUT` because it is mutable
-    /// reference state: a `CIFilter` gets its `inputImage` written on every use, so it is only safe
-    /// behind this actor's serialization (§4.5).
-    private let lutCache = LUTFilterCache()
-    /// One-entry, small-resource cache for the master curve. It is actor-confined just like the
-    /// LUT cache; changing the curve replaces a 4 KiB texture and never allocates a 64³ cube.
-    private let toneCurveCache = ToneCurveFilterCache()
-    private var toneCurveSource: RenderSourceFingerprint?
-    private var toneCurveSpace: WorkingSpace?
-    private let previewCache: BoundedLRUCache<PreviewCacheKey, RenderResult>
-    private let developedSourceCache: BoundedLRUCache<DevelopedSourceCacheKey, CIImage>
-    private let processingPrefixCache: BoundedLRUCache<ProcessingPrefixCacheKey, CIImage>
+    // These narrow aliases keep the render algorithm readable while making ownership explicit in
+    // `RenderEngineResources`. They are actor-isolated through their enclosing engine.
+    private var context: CIContext { resources.context }
+    private var device: MTLDevice? { resources.device }
+    private var commandQueue: MTLCommandQueue? { resources.commandQueue }
+    private var lutCache: LUTFilterCache { resources.lutCache }
+    private var toneCurveCache: ToneCurveFilterCache { resources.toneCurveCache }
+    private var toneCurveSource: RenderSourceFingerprint? {
+        get { resources.toneCurveSource }
+        set { resources.toneCurveSource = newValue }
+    }
+    private var toneCurveSpace: WorkingSpace? {
+        get { resources.toneCurveSpace }
+        set { resources.toneCurveSpace = newValue }
+    }
+    private var previewCache: BoundedLRUCache<PreviewCacheKey, RenderResult> { resources.previewCache }
+    private var developedSourceCache: BoundedLRUCache<DevelopedSourceCacheKey, CIImage> {
+        resources.developedSourceCache
+    }
+    private var processingPrefixCache: BoundedLRUCache<ProcessingPrefixCacheKey, CIImage> {
+        resources.processingPrefixCache
+    }
     /// The interactive RAW decoder is deliberately a single-entry cache. `CIRAWFilter` is mutable
     /// and is only safe behind this actor; retaining one filter for the visible source avoids
     /// rebuilding its immutable source/decode setup on every pointer tick. It is discarded at the
@@ -267,53 +276,14 @@ actor RenderEngine: RenderEngining {
     private var memoryPressureSource: DispatchSourceMemoryPressure?
 
     init(configuration: RenderCacheConfiguration = .default) {
-        // The processing context owns its queue. Using contextWithMTLCommandQueue makes the
-        // asynchronous completion boundary explicit instead of letting Core Image hide work in an
-        // internal queue that the caller cannot pace.
-        if let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() {
-            self.device = device
-            self.commandQueue = queue
-            self.context = CIContext(mtlCommandQueue: queue)
-        } else {
-            self.device = nil
-            self.commandQueue = nil
-            self.context = CIContext()
-        }
-        self.previewCache = BoundedLRUCache(
-            maxEntries: configuration.previewMaxEntries,
-            maxCostBytes: configuration.previewMaxCostBytes
-        )
-        self.developedSourceCache = BoundedLRUCache(
-            maxEntries: configuration.developedSourceMaxEntries,
-            maxCostBytes: configuration.developedSourceMaxCostBytes
-        )
-        self.processingPrefixCache = BoundedLRUCache(
-            maxEntries: configuration.processingPrefixMaxEntries,
-            maxCostBytes: configuration.processingPrefixMaxCostBytes
-        )
+        self.resources = RenderEngineResources(configuration: configuration)
         Task { [weak self] in await self?.installMemoryPressureMonitor() }
     }
 
     /// Inject a context — for tests that need to pin the backend rather than take whatever the
     /// machine offers.
     init(context: CIContext, configuration: RenderCacheConfiguration = .default) {
-        self.context = context
-        // An injected context may be CPU-backed or may target a device unknown to the caller, so
-        // retain the deterministic graph seam for tests instead of guessing a mismatched device.
-        self.device = nil
-        self.commandQueue = nil
-        self.previewCache = BoundedLRUCache(
-            maxEntries: configuration.previewMaxEntries,
-            maxCostBytes: configuration.previewMaxCostBytes
-        )
-        self.developedSourceCache = BoundedLRUCache(
-            maxEntries: configuration.developedSourceMaxEntries,
-            maxCostBytes: configuration.developedSourceMaxCostBytes
-        )
-        self.processingPrefixCache = BoundedLRUCache(
-            maxEntries: configuration.processingPrefixMaxEntries,
-            maxCostBytes: configuration.processingPrefixMaxCostBytes
-        )
+        self.resources = RenderEngineResources(context: context, configuration: configuration)
         Task { [weak self] in await self?.installMemoryPressureMonitor() }
     }
 
@@ -732,10 +702,9 @@ actor RenderEngine: RenderEngining {
     /// Drop every cached LUT-dependent render resource. For a library rescan: a `LUTID` is a file
     /// path, so a `.cube` edited in place keeps its ID and would otherwise keep serving the old cube.
     func invalidateLUTCache() {
-        lutCache.removeAll()
         // A preview submitted while a scan was unresolved has no LUT fingerprint. Clear it too so
         // the scan completion can safely publish a newly resolved render.
-        previewCache.removeAll()
+        resources.invalidateLUTDependentCaches()
     }
 
     /// Snapshot cache counters for instrumentation and performance diagnostics.
@@ -759,25 +728,14 @@ actor RenderEngine: RenderEngining {
 
     /// Release all reusable intermediates. This is also the memory-pressure handler.
     func evictForMemoryPressure() {
-        previewCache.removeAll(countAsEvictions: true)
-        developedSourceCache.removeAll(countAsEvictions: true)
-        processingPrefixCache.removeAll(countAsEvictions: true)
+        resources.evictAll()
         interactiveRAWSession = nil
-        lutCache.removeAll()
-        toneCurveCache.removeAll()
-        toneCurveSource = nil
-        toneCurveSpace = nil
         Thumbnails.evictForMemoryPressure()
     }
 
     /// Explicit invalidation for a source-folder refresh or a caller that knows a source changed.
     func invalidateRenderCaches() {
-        previewCache.removeAll()
-        developedSourceCache.removeAll()
-        processingPrefixCache.removeAll()
-        toneCurveCache.removeAll()
-        toneCurveSource = nil
-        toneCurveSpace = nil
+        resources.invalidateAll()
         interactiveRAWSession = nil
         Thumbnails.invalidateCache()
     }
@@ -859,7 +817,7 @@ actor RenderEngine: RenderEngining {
                 includePostRenderWhiteBalance: includePostRenderWhiteBalance
             )
         }
-        return RenderPipeline.buildImage(
+        return RenderStageFacade.buildFinalStages(
             preLUT: upstream, document: document, lut: lut, space: space, lutCache: lutCache,
             grainSeed: RenderPipeline.grainSeed(for: source)
         )

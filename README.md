@@ -271,8 +271,8 @@ Sources/
 │   ├── Assets.xcassets/        # app icon and accent color
 │   └── Lumo.entitlements       # sandbox file access and bookmarks
 └── LumoKit/
-    ├── Models/                 # value state, image sources, pipeline, caches, persistence
-    ├── ViewModels/             # AppViewModel and export/derive/preview coordinators
+    ├── Models/                 # value state, source projections, pipeline, GPU/cache resources
+    ├── ViewModels/             # AppViewModel and focused source/persistence/export coordinators
     └── Views/                  # Library, canvas, filmstrip, inspectors, menus, status bar
 
 Tests/
@@ -298,8 +298,9 @@ The important boundaries are:
   replacement fails.
 - **Bounded work:** developed-source, render, LUT, and thumbnail caches are bounded and respond to
   memory pressure. Thumbnail work is prioritized around the visible library neighborhood.
-- **Coordinators:** `AppViewModel` owns app state while dedicated preview, export, derive, and
-  persistence collaborators keep expensive or file-dialog work off the main actor.
+- **Coordinators:** `AppViewModel` is the composition root while dedicated source, persistence,
+  preview, export, derive, and Look-preview collaborators own their stable responsibilities. The
+  ownership contract is documented in [`docs/ARCHITECTURE_BOUNDARIES.md`](docs/ARCHITECTURE_BOUNDARIES.md).
 - **Observability:** signposts and bounded live telemetry distinguish input, render, GPU completion,
   and actual drawable presentation so profiling does not confuse “render finished” with “user saw
   the frame.”

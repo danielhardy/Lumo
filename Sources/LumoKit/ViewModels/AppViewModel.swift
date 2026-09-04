@@ -110,6 +110,11 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
     /// image from opening, but it should remain visible to the user.
     @Published private(set) var editStoreStatus: String?
 
+    /// Compatibility diagnostics for the application boundary. Persistence accounting is owned by
+    /// `EditPersistenceCoordinator`; these accessors keep existing integrations and tests stable.
+    var pendingPersistenceCount: Int { persistence.pendingCount }
+    var peakPendingPersistenceCount: Int { persistence.peakPendingCount }
+
     /// How to reproduce the open image. Held instead of a decoded `CIImage` because a RAW has to be
     /// re-developed to honour `document.rawDevelop` (§4.2).
     private var imageSource: ImageSource?
@@ -243,23 +248,6 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
     private var activeAssetID: PhotoAssetID?
     private var activeHistory = EditHistory()
     private var activeSourceReference: EditSourceReference?
-    private var persistenceTask: Task<PersistenceFlushResult, Never>?
-    private var persistenceGeneration = 0
-    private struct PendingPersistence: Equatable {
-        let document: EditDocument
-        let reference: EditSourceReference
-        let reportsStatus: Bool
-        let force: Bool
-    }
-    private var pendingPersistence: [PhotoAssetID: PendingPersistence] = [:]
-    /// A gesture is checkpointed at most 250 ms apart. This bounds the amount of recent work that
-    /// can be lost while retaining immediate live document/render updates.
-    private static let persistenceCheckpoint: Duration = .milliseconds(250)
-
-    var pendingPersistenceCount: Int { pendingPersistence.count }
-    var peakPendingPersistenceCount: Int { peakPendingPersistence }
-    private var peakPendingPersistence = 0
-
     /// Source generation prevents delayed work from a previous navigation selection from publishing
     /// into the new image, even if the source values happen to compare equal.
     private var sourceRevision: UInt64 = 0
@@ -517,6 +505,9 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
     let lookPreviewCoordinator: LookPreviewCoordinator
     let collection: ImageCollection
     let editStore: EditDocumentStore
+    /// Coalesced durable edit snapshots. The application model routes persistence policy here;
+    /// file I/O remains inside `EditDocumentStore`.
+    let persistence: EditPersistenceCoordinator
     /// Writing images to disk — the single export, the batch run, and naming. Production exports
     /// use an isolated RenderEngine lane while preserving the same render request funnel.
     let export: ExportCoordinator
@@ -606,6 +597,7 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
         self.editStore = editStore
         self.settings = LumoSettings(preferences: preferences)
         self.workScheduler = ImageWorkScheduler()
+        self.persistence = EditPersistenceCoordinator(store: editStore)
         // Look thumbnails have a bounded, independent thumbnail lane. Sharing the editor's lane
         // would let a burst of filmstrip/grid work evict a row's continuation before it can return.
         self.lookPreviewCoordinator = LookPreviewCoordinator(
@@ -620,6 +612,13 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
         self.export = ExportCoordinator(engine: engine, editStore: editStore)
         self.previewCoordinator = PreviewCoordinator(engine: engine, scheduler: workScheduler)
         self.mediaVolumeProvider = mediaVolumeProvider
+
+        persistence.onStatusChange = { [weak self] status in
+            self?.editStoreStatus = status
+        }
+        persistence.onFailure = { [weak self] message in
+            self?.statusMessage = message
+        }
 
         // A missing value is the first-launch state: single-photo editing is the primary surface.
         // Read this after all stored properties are initialized because the published property's
@@ -938,14 +937,18 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
         name: String, url: URL?, data: Data?, assetID: PhotoAssetID? = nil,
         traceQuality: String = "open", dataFingerprint: String? = nil
     ) {
-        let assetID = assetID ?? (url.map(PhotoAssetID.file) ?? data.map(PhotoAssetID.data) ?? .data(Data()))
+        let importPlan = SourceImportPlan(
+            name: name, url: url, data: data, assetID: assetID,
+            dataFingerprint: dataFingerprint, traceQuality: traceQuality
+        )
+        let assetID = importPlan.assetID
         endUndoGrouping()
         cancelAutoAdjustment()
         // Discrete edits are queued normally; switching sources is a durability boundary for them.
         // Do not rewrite an unchanged document merely because navigation occurred.
         requestPersistenceFlush()
         activeAssetID = assetID
-        let sourceReference = EditSourceReference(assetID: assetID, url: url)
+        let sourceReference = importPlan.sourceReference
         activeSourceReference = sourceReference
         let session = editSessions[assetID]
         document = session?.document ?? EditDocument()
@@ -1000,22 +1003,13 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
         isLoading = true
         statusMessage = "Loading \(name)..."
 
-        let source: ImageSource
-        if let url {
-            source = ImageSource(url: url, nativeExtent: .zero)
-        } else if let data {
-            source = ImageSource(
-                data: data, nativeExtent: .zero, dataFingerprint: dataFingerprint
-            )
-        } else {
-            source = ImageSource(backing: .data(Data()), kind: .standard, nativeExtent: .zero)
-        }
         pendingSourceLoad = SourceLoadRequest(
-            name: name, source: source, sourceReference: sourceReference, assetID: assetID,
+            name: importPlan.name, source: importPlan.source,
+            sourceReference: sourceReference, assetID: assetID,
             sourceRevision: sourceRevision,
             editSessionRevision: editSessionRevisions[assetID] ?? 0,
             hadInMemorySession: session != nil,
-            traceQuality: traceQuality
+            traceQuality: importPlan.traceQuality
         )
         startSourceLoadWorkerIfNeeded()
     }
@@ -2889,102 +2883,26 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
         reportsStatus: Bool,
         force: Bool = false
     ) {
-        let assetID = reference.assetID
-        let priorForce = pendingPersistence[assetID]?.force ?? false
-        pendingPersistence[assetID] = PendingPersistence(
-            document: document, reference: reference,
-            reportsStatus: reportsStatus || (pendingPersistence[assetID]?.reportsStatus ?? false),
-            force: force || priorForce
+        persistence.enqueue(
+            document,
+            for: reference,
+            reportsStatus: reportsStatus,
+            force: force
         )
-        peakPendingPersistence = max(peakPendingPersistence, pendingPersistence.count)
-        guard persistenceTask == nil || force else { return }
-        let previous = persistenceTask
-        if force { previous?.cancel() }
-        startPersistenceWorker(force: force, after: previous)
-    }
-
-    /// Chain onto `previous` rather than letting a cancelled worker run orphaned: cancelling a task
-    /// only stops it from starting its *next* save, it does not abort a save already in flight. If a
-    /// forced restart simply replaced `persistenceTask`, `flushPendingWrites` — which only awaits the
-    /// current `persistenceTask` — could return while that orphaned save was still writing to disk.
-    /// Awaiting `previous` first keeps writes serialized to at most one in flight and keeps
-    /// `flushPendingWrites` a real guarantee.
-    private func startPersistenceWorker(
-        force: Bool,
-        after previous: Task<PersistenceFlushResult, Never>?
-    ) {
-        persistenceGeneration &+= 1
-        let generation = persistenceGeneration
-        persistenceTask = Task { [weak self] in
-            _ = await previous?.value
-            guard let self else { return .cancelled }
-            if !force { try? await Task.sleep(for: Self.persistenceCheckpoint) }
-            return await self.drainPersistence(generation: generation)
-        }
-    }
-
-    private func drainPersistence(generation: Int) async -> PersistenceFlushResult {
-        defer {
-            if persistenceGeneration == generation { persistenceTask = nil }
-        }
-
-        while let assetID = pendingPersistence.keys.sorted(by: { $0.description < $1.description }).first,
-              let snapshot = pendingPersistence[assetID] {
-            guard !Task.isCancelled else { return .cancelled }
-            do {
-                try await editStore.save(snapshot.document, for: snapshot.reference)
-                if pendingPersistence[assetID] == snapshot { pendingPersistence.removeValue(forKey: assetID) }
-                if snapshot.reportsStatus { editStoreStatus = nil }
-            } catch is CancellationError {
-                return .cancelled
-            } catch {
-                // Keep the snapshot dirty. A later edit or termination flush retries it rather than
-                // falsely presenting a durable state that never reached disk.
-                editStoreStatus = error.localizedDescription
-                statusMessage = error.localizedDescription
-                return .failure(error.localizedDescription)
-            }
-            if !snapshot.force, !pendingPersistence.isEmpty {
-                try? await Task.sleep(for: Self.persistenceCheckpoint)
-            }
-        }
-        return Task.isCancelled ? .cancelled : .success
     }
 
     private func requestPersistenceFlush() {
-        guard !pendingPersistence.isEmpty else { return }
-        let previous = persistenceTask
-        previous?.cancel()
-        startPersistenceWorker(force: true, after: previous)
+        persistence.requestFlush()
     }
 
     /// Wait for queued snapshots before clean application termination.
     public func flushPendingWrites() async -> PersistenceFlushResult {
-        guard !Task.isCancelled else { return .cancelled }
-        requestPersistenceFlush()
-        while let pending = persistenceTask {
-            let result = await pending.value
-            if Task.isCancelled { return .cancelled }
-
-            // A concurrent forced flush can cancel the worker we just awaited and replace it.
-            // Do not report that internal cancellation as the final outcome.
-            if persistenceTask != nil, !pendingPersistence.isEmpty {
-                continue
-            }
-            return result
-        }
-
-        return pendingPersistence.isEmpty
-            ? .success
-            : .failure(editStoreStatus ?? "Could not save pending edit records")
+        await persistence.flush()
     }
 
     /// Explicitly abandon snapshots that could not be written. This is only used after the user
     /// has chosen Quit Without Saving; ordinary edits and failed flushes leave snapshots dirty.
     public func discardPendingWrites() async {
-        let pending = persistenceTask
-        pending?.cancel()
-        pendingPersistence.removeAll()
-        if let pending { _ = await pending.value }
+        await persistence.discard()
     }
 }

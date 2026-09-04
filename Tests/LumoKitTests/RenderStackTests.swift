@@ -11,7 +11,8 @@ import CoreImage
 /// *applied* in (§4.4). Folding it into the engine would quietly couple those two spaces together.
 ///
 /// So the invariant is not "one context in the module". It is "one context in the live render path,
-/// plus the explicitly named recipe and one-shot Look-export samplers".
+/// owned by RenderEngineResources, plus the explicitly named recipe and one-shot Look-export
+/// samplers".
 ///
 /// **This reads source text, and that is deliberate.** A `CIContext` leaves no observable trace —
 /// two of them render identically, cost twice the memory, and no runtime assertion can tell them
@@ -66,10 +67,13 @@ final class RenderStackTests: XCTestCase {
         let owners = try filesConstructingAContext()
         XCTAssertEqual(
             owners,
-            ["LookLUTConverter.swift", "RenderEngine.swift", "RecipeExtractor.swift"],
+            [
+                "LookLUTConverter.swift", "RenderEngine.swift", "RenderEngineResources.swift",
+                "RecipeExtractor.swift",
+            ],
             """
-            RenderEngine owns the live render context. RecipeExtractor and LookLUTConverter are \
-            explicit one-shot samplers outside the live render path; any fourth owner is a regression.
+            RenderEngineResources owns the live render context. RecipeExtractor and LookLUTConverter \
+            are explicit one-shot samplers outside the live render path; any fourth owner is a regression.
             """
         )
     }

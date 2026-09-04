@@ -220,7 +220,7 @@ final class ImageCollection: ObservableObject {
     /// The current edit-transfer destinations, in source order. The active item remains separate
     /// from this selection so command-click can prepare a batch without changing the open photo.
     var selectedIndices: [Int] {
-        items.indices.filter { selection.selectedIDs.contains(items[$0].id) }
+        CollectionProjection.selectedIndices(items: items, selection: selection)
     }
 
     var selectedItems: [Item] {
@@ -228,13 +228,11 @@ final class ImageCollection: ObservableObject {
     }
 
     var filteredItems: [Item] {
-        items.filter { filter.matches(flag: $0.asset.flag, rating: $0.asset.rating) }
+        CollectionProjection.filteredItems(items: items, filter: filter)
     }
 
     var filteredIndices: [Int] {
-        items.indices.filter { index in
-            filter.matches(flag: items[index].asset.flag, rating: items[index].asset.rating)
-        }
+        CollectionProjection.filteredIndices(items: items, filter: filter)
     }
 
     var filteredItemCount: Int { filteredIndices.count }
@@ -830,59 +828,13 @@ final class ImageCollection: ObservableObject {
     /// the active culling filter and can therefore collapse out during an import. An arrival with
     /// no reservation is rendered as a loaded tail entry rather than being silently omitted.
     var thumbnailEntries: [ThumbnailEntry] {
-        guard !pendingImportSlots.isEmpty else {
-            return filteredIndices.map { index in
-                ThumbnailEntry(
-                    id: items[index].id,
-                    itemIndex: index,
-                    placeholder: nil,
-                    aspectRatio: items[index].libraryAspectRatio
-                )
-            }
-        }
-
-        let reservedEntries = pendingImportSlots.compactMap { slot in
-            guard let assetID = slot.assetID,
-                  let itemIndex = dataImportItemIndices[assetID] else {
-                return ThumbnailEntry(
-                    id: slot.id,
-                    itemIndex: nil,
-                    placeholder: slot,
-                    aspectRatio: 4.0 / 3.0
-                )
-            }
-            let item = items[itemIndex]
-            guard filter.matches(flag: item.asset.flag, rating: item.asset.rating) else {
-                return nil
-            }
-            return ThumbnailEntry(
-                // Loaded entries use their source identity as soon as the payload arrives. This
-                // keeps that identity stable when finishDataImport clears the reservations.
-                id: assetID,
-                itemIndex: itemIndex,
-                placeholder: nil,
-                aspectRatio: item.libraryAspectRatio
-            )
-        }
-
-        let overflowEntries = items.indices.compactMap { itemIndex -> ThumbnailEntry? in
-            guard dataImportOverflowItemIDs.contains(items[itemIndex].id),
-                  filter.matches(
-                    flag: items[itemIndex].asset.flag,
-                    rating: items[itemIndex].asset.rating
-                  ) else {
-                return nil
-            }
-            let item = items[itemIndex]
-            return ThumbnailEntry(
-                id: item.id,
-                itemIndex: itemIndex,
-                placeholder: nil,
-                aspectRatio: item.libraryAspectRatio
-            )
-        }
-
-        return reservedEntries + overflowEntries
+        CollectionProjection.thumbnailEntries(
+            items: items,
+            filter: filter,
+            pendingSlots: pendingImportSlots,
+            itemIndices: dataImportItemIndices,
+            overflowIDs: dataImportOverflowItemIDs
+        )
     }
 
     /// Number of source items currently retained by a streamed import.
