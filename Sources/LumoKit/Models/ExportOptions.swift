@@ -75,6 +75,20 @@ enum ExportMetadataPolicy: String, Codable, CaseIterable, Sendable, Equatable {
     case strip
 }
 
+/// Whether precise source location data may be copied to an export.
+///
+/// Location is separate from camera metadata because preserving useful camera details (for
+/// example, make, model, lens, and capture time) does not require sharing where a photo was taken.
+/// The privacy-safe default is to exclude GPS data.
+enum ExportLocationPolicy: String, Codable, CaseIterable, Sendable, Equatable {
+    case exclude
+    case include
+
+    /// Compatibility spellings for callers that describe metadata handling as strip/preserve.
+    static var strip: Self { .exclude }
+    static var preserve: Self { .include }
+}
+
 /// The formats and encoder constraints supported by the current Core Image path.
 struct ExportFormatCapabilities: Codable, Sendable, Equatable {
     let bitDepths: [ExportBitDepth]
@@ -105,6 +119,8 @@ struct ExportOptions: Codable, Sendable, Equatable {
     let filenamePolicy: ExportFilenamePolicy
     let destination: ExportDestination?
     let metadata: ExportMetadataPolicy
+    /// GPS/location metadata is opt-in, even when camera metadata is preserved.
+    let location: ExportLocationPolicy
     /// Optional post-export delivery. The file/folder destination is committed first.
     let photos: PhotosExportOptions?
 
@@ -118,6 +134,7 @@ struct ExportOptions: Codable, Sendable, Equatable {
         filenamePolicy: ExportFilenamePolicy = .sourceNameWithLook,
         destination: ExportDestination? = nil,
         metadata: ExportMetadataPolicy = .preserve,
+        location: ExportLocationPolicy = .exclude,
         photos: PhotosExportOptions? = nil
     ) {
         self.format = format
@@ -129,10 +146,33 @@ struct ExportOptions: Codable, Sendable, Equatable {
         self.filenamePolicy = filenamePolicy
         self.destination = destination
         self.metadata = metadata
+        self.location = location
         self.photos = photos
     }
 
     static let `default` = ExportOptions()
+
+    private enum CodingKeys: String, CodingKey {
+        case format, quality, sizing, colorSpace, bitDepth, alpha, filenamePolicy, destination
+        case metadata, location, photos
+    }
+
+    /// Older queued/persisted export descriptions did not have a location field. Decoding those
+    /// descriptions as the privacy-safe default keeps them from unexpectedly gaining GPS data.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.format = try values.decode(ExportFormat.self, forKey: .format)
+        self.quality = try values.decode(Double.self, forKey: .quality)
+        self.sizing = try values.decode(ExportSizing.self, forKey: .sizing)
+        self.colorSpace = try values.decode(WorkingSpace.self, forKey: .colorSpace)
+        self.bitDepth = try values.decode(ExportBitDepth.self, forKey: .bitDepth)
+        self.alpha = try values.decode(ExportAlpha.self, forKey: .alpha)
+        self.filenamePolicy = try values.decode(ExportFilenamePolicy.self, forKey: .filenamePolicy)
+        self.destination = try values.decodeIfPresent(ExportDestination.self, forKey: .destination)
+        self.metadata = try values.decode(ExportMetadataPolicy.self, forKey: .metadata)
+        self.location = try values.decodeIfPresent(ExportLocationPolicy.self, forKey: .location) ?? .exclude
+        self.photos = try values.decodeIfPresent(PhotosExportOptions.self, forKey: .photos)
+    }
 
     func validate() throws {
         guard quality.isFinite, (0...1).contains(quality) else {

@@ -16,6 +16,7 @@ final class ExportOptionsTests: TempDirectoryTestCase {
         XCTAssertEqual(options.alpha, .opaque)
         XCTAssertEqual(options.filenamePolicy, .sourceNameWithLook)
         XCTAssertEqual(options.metadata, .preserve)
+        XCTAssertEqual(options.location, .exclude)
         try options.validate()
     }
 
@@ -198,7 +199,8 @@ final class ExportOptionsTests: TempDirectoryTestCase {
             alpha: .preserve,
             filenamePolicy: .sourceName,
             destination: .folder(URL(fileURLWithPath: "/tmp/Exports")),
-            metadata: .strip
+            metadata: .strip,
+            location: .include
         )
         let encoded = try JSONEncoder().encode(options)
         XCTAssertEqual(try JSONDecoder().decode(ExportOptions.self, from: encoded), options)
@@ -213,6 +215,18 @@ final class ExportOptionsTests: TempDirectoryTestCase {
         )
         XCTAssertEqual(request.exportOptions, options)
         XCTAssertEqual(request.renderScale, .preview(maxSize: CGSize(width: 2400, height: 1600)))
+    }
+
+    func testOlderExportOptionsDecodeWithPrivacySafeLocationDefault() throws {
+        let options = ExportOptions(format: .jpeg, metadata: .preserve)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(options)) as? [String: Any]
+        )
+        object.removeValue(forKey: "location")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(ExportOptions.self, from: legacyData)
+        XCTAssertEqual(decoded.location, .exclude)
     }
 
     func testFilenamePolicyIsIndependentOfTheExportPanel() {

@@ -124,7 +124,9 @@ library Look; the stable derived identity keeps the edit resolving across rescan
   retained.
 - Info inspector (`⌘I`) shows a live RGB/luma histogram and EXIF, TIFF, and GPS metadata.
 - Export the edited document as 16-bit TIFF, JPEG, or PNG. The format is selected in the save flow
-  and the last choice is retained for the session.
+  and the last choice is retained for the session. The export panel explicitly controls camera
+  metadata and location metadata separately: camera metadata is preserved by default, while GPS
+  location is excluded by default as a privacy safeguard. Location is included only when selected.
 - Single export (`⌘S`) and Export All (`⌘⇧E`) render from the original source at full resolution.
   Export All continues past individual failures and reports the completed/skipped counts.
 - Output names include the photo name and selected Look, with collision-safe suffixes.

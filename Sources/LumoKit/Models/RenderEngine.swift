@@ -529,9 +529,12 @@ actor RenderEngine: RenderEngining {
     /// Read only the source's metadata dictionaries. The image itself is rendered upright before
     /// this is called, so copying the source orientation would apply that transform a second time.
     /// Pixel dimensions are likewise omitted: a long-edge export may intentionally resize them.
+    /// GPS is independently controlled because preserving camera metadata does not imply consent
+    /// to share precise location.
     private func exportMetadata(for request: RenderRequest) -> [CFString: Any]? {
         let policy = request.exportOptions?.metadata ?? .preserve
         guard policy == .preserve else { return nil }
+        let locationPolicy = request.exportOptions?.location ?? .exclude
 
         let source: CGImageSource?
         switch request.source.backing {
@@ -547,11 +550,13 @@ actor RenderEngine: RenderEngining {
             return nil
         }
 
-        let dictionaryKeys: [CFString] = [
+        var dictionaryKeys: [CFString] = [
             kCGImagePropertyTIFFDictionary,
             kCGImagePropertyExifDictionary,
-            kCGImagePropertyGPSDictionary,
         ]
+        if locationPolicy == .include {
+            dictionaryKeys.append(kCGImagePropertyGPSDictionary)
+        }
         var metadata: [CFString: Any] = [:]
         for key in dictionaryKeys {
             guard var dictionary = properties[key] as? [CFString: Any], !dictionary.isEmpty else {

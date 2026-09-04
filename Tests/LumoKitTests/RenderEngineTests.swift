@@ -180,7 +180,7 @@ final class RenderEngineTests: TempDirectoryTestCase {
                 source: source,
                 document: EditDocument(),
                 lut: nil,
-                options: ExportOptions(format: format, metadata: .preserve)
+                options: ExportOptions(format: format, metadata: .preserve, location: .include)
             )
             let imageSource = try XCTUnwrap(CGImageSourceCreateWithData(result as CFData, nil))
             let properties = try XCTUnwrap(
@@ -199,6 +199,94 @@ final class RenderEngineTests: TempDirectoryTestCase {
             let longitude = try XCTUnwrap(gps[kCGImagePropertyGPSLongitude] as? Double)
             XCTAssertEqual(latitude, 43.6150, accuracy: 0.0001, format.rawValue)
             XCTAssertEqual(longitude, 116.2023, accuracy: 0.0001, format.rawValue)
+        }
+    }
+
+    func testLocationPolicyIsExplicitForURLAndDataSourcesAcrossShareableFormats() async throws {
+        let url = try Fixtures.writeJPEG(
+            named: "location-policy-source.jpg",
+            in: tempDirectory,
+            exif: [kCGImagePropertyExifLensModel: "Lumo Prime 35mm"],
+            tiff: [kCGImagePropertyTIFFMake: "Lumo"],
+            gps: [
+                kCGImagePropertyGPSLatitude: 43.6150,
+                kCGImagePropertyGPSLongitude: 116.2023,
+            ]
+        )
+        let data = try Data(contentsOf: url)
+        let sources = [
+            ImageSource(url: url, nativeExtent: CGSize(width: 64, height: 48)),
+            ImageSource(data: data, nativeExtent: CGSize(width: 64, height: 48)),
+        ]
+        let formats: [ExportFormat] = [.jpeg, .tiff, .png]
+
+        for source in sources {
+            for format in formats {
+                let excluded = try await RenderEngine().encode(
+                    source: source,
+                    document: EditDocument(),
+                    lut: nil,
+                    options: ExportOptions(
+                        format: format, metadata: .preserve, location: .exclude
+                    )
+                )
+                let excludedProperties = try XCTUnwrap(
+                    CGImageSourceCopyPropertiesAtIndex(
+                        try XCTUnwrap(CGImageSourceCreateWithData(excluded as CFData, nil)), 0, nil
+                    ) as? [CFString: Any]
+                )
+                let excludedExif = excludedProperties[kCGImagePropertyExifDictionary]
+                    as? [CFString: Any]
+                let excludedGPS = excludedProperties[kCGImagePropertyGPSDictionary]
+                    as? [CFString: Any]
+                XCTAssertEqual(
+                    excludedExif?[kCGImagePropertyExifLensModel] as? String,
+                    "Lumo Prime 35mm",
+                    "camera metadata should remain available for \(format.rawValue)"
+                )
+                XCTAssertNil(
+                    excludedGPS?[kCGImagePropertyGPSLatitude],
+                    "URL/Data location exclusion must strip latitude for \(format.rawValue)"
+                )
+                XCTAssertNil(
+                    excludedGPS?[kCGImagePropertyGPSLongitude],
+                    "URL/Data location exclusion must strip longitude for \(format.rawValue)"
+                )
+
+                let included = try await RenderEngine().encode(
+                    source: source,
+                    document: EditDocument(),
+                    lut: nil,
+                    options: ExportOptions(
+                        format: format, metadata: .preserve, location: .include
+                    )
+                )
+                let includedProperties = try XCTUnwrap(
+                    CGImageSourceCopyPropertiesAtIndex(
+                        try XCTUnwrap(CGImageSourceCreateWithData(included as CFData, nil)), 0, nil
+                    ) as? [CFString: Any]
+                )
+                let includedGPS = try XCTUnwrap(
+                    includedProperties[kCGImagePropertyGPSDictionary] as? [CFString: Any],
+                    "explicit location inclusion must retain GPS for \(format.rawValue)"
+                )
+                XCTAssertEqual(
+                    try XCTUnwrap(
+                        (includedGPS[kCGImagePropertyGPSLatitude] as? NSNumber)?.doubleValue
+                    ),
+                    43.6150,
+                    accuracy: 0.0001,
+                    "latitude should survive explicit inclusion for \(format.rawValue)"
+                )
+                XCTAssertEqual(
+                    try XCTUnwrap(
+                        (includedGPS[kCGImagePropertyGPSLongitude] as? NSNumber)?.doubleValue
+                    ),
+                    116.2023,
+                    accuracy: 0.0001,
+                    "longitude should survive explicit inclusion for \(format.rawValue)"
+                )
+            }
         }
     }
 
@@ -245,7 +333,7 @@ final class RenderEngineTests: TempDirectoryTestCase {
             source: source,
             document: EditDocument(),
             lut: nil,
-            options: ExportOptions(format: .jpeg, metadata: .preserve)
+            options: ExportOptions(format: .jpeg, metadata: .preserve, location: .include)
         )
         let imageSource = try XCTUnwrap(CGImageSourceCreateWithData(result as CFData, nil))
         let properties = try XCTUnwrap(

@@ -195,6 +195,8 @@ final class ExportCoordinator: ObservableObject {
             options: ExportOptions(
                 format: formatPicker.selectedFormat,
                 destination: .file(url),
+                metadata: formatPicker.metadataPolicy,
+                location: formatPicker.locationPolicy,
                 photos: formatPicker.photosOptions
             ),
             to: url
@@ -324,6 +326,8 @@ final class ExportCoordinator: ObservableObject {
         let options = ExportOptions(
             format: format,
             destination: .folder(folder),
+            metadata: formatPicker.metadataPolicy,
+            location: formatPicker.locationPolicy,
             photos: formatPicker.photosOptions
         )
         batchTask = Task { [weak self] in
@@ -660,6 +664,8 @@ final class ExportCoordinator: ObservableObject {
 @MainActor
 private final class ExportFormatAccessoryView: NSView {
     private let picker: NSSegmentedControl
+    private let metadataCheckbox: NSButton
+    private let locationCheckbox: NSButton
     private let photosCheckbox: NSButton
     private let albumField: NSTextField
     var onSelectionChanged: ((ExportFormat) -> Void)?
@@ -670,6 +676,12 @@ private final class ExportFormatAccessoryView: NSView {
             trackingMode: .selectOne,
             target: nil,
             action: nil
+        )
+        metadataCheckbox = NSButton(
+            checkboxWithTitle: "Preserve camera metadata (EXIF/TIFF)", target: nil, action: nil
+        )
+        locationCheckbox = NSButton(
+            checkboxWithTitle: "Include location metadata (GPS)", target: nil, action: nil
         )
         photosCheckbox = NSButton(
             checkboxWithTitle: "Also add to Photos", target: nil, action: nil
@@ -687,6 +699,22 @@ private final class ExportFormatAccessoryView: NSView {
         picker.setAccessibilityLabel("Export format")
         picker.setAccessibilityHelp("Choose TIFF, JPEG, PNG, or HEIF for the exported image")
 
+        metadataCheckbox.state = .on
+        metadataCheckbox.target = self
+        metadataCheckbox.action = #selector(metadataSelectionChanged)
+        metadataCheckbox.setAccessibilityLabel("Preserve camera metadata")
+        metadataCheckbox.setAccessibilityHelp(
+            "Keep camera and capture metadata without enabling location sharing"
+        )
+
+        locationCheckbox.state = .off
+        locationCheckbox.target = self
+        locationCheckbox.action = #selector(locationSelectionChanged)
+        locationCheckbox.setAccessibilityLabel("Include location metadata")
+        locationCheckbox.setAccessibilityHelp(
+            "Share the source photo's precise GPS location; off by default"
+        )
+
         photosCheckbox.setAccessibilityLabel("Also add to Photos")
         photosCheckbox.target = self
         photosCheckbox.action = #selector(photosSelectionChanged)
@@ -703,7 +731,11 @@ private final class ExportFormatAccessoryView: NSView {
         photosStack.orientation = .horizontal
         photosStack.alignment = .centerY
         photosStack.spacing = 8
-        let stack = NSStackView(views: [formatStack, photosStack])
+        let privacyStack = NSStackView(views: [metadataCheckbox, locationCheckbox])
+        privacyStack.orientation = .vertical
+        privacyStack.alignment = .leading
+        privacyStack.spacing = 2
+        let stack = NSStackView(views: [formatStack, privacyStack, photosStack])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -722,7 +754,7 @@ private final class ExportFormatAccessoryView: NSView {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: 420, height: 64)
+        NSSize(width: 480, height: 112)
     }
 
     var selectedFormat: ExportFormat {
@@ -736,9 +768,23 @@ private final class ExportFormatAccessoryView: NSView {
         return PhotosExportOptions(albumName: albumField.stringValue)
     }
 
+    var metadataPolicy: ExportMetadataPolicy {
+        metadataCheckbox.state == .on ? .preserve : .strip
+    }
+
+    var locationPolicy: ExportLocationPolicy {
+        metadataCheckbox.state == .on && locationCheckbox.state == .on ? .include : .exclude
+    }
+
     @objc private func selectionChanged() {
         onSelectionChanged?(selectedFormat)
     }
+
+    @objc private func metadataSelectionChanged() {
+        locationCheckbox.isEnabled = metadataCheckbox.state == .on
+    }
+
+    @objc private func locationSelectionChanged() {}
 
     @objc private func photosSelectionChanged() {
         albumField.isEnabled = photosCheckbox.state == .on
