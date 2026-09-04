@@ -221,6 +221,40 @@ final class EditPersistenceIntegrationTests: TempDirectoryTestCase {
         XCTAssertTrue(viewModel.pendingPersistenceCount <= 1)
     }
 
+    func testRacedFlushReportsSuccessAfterReplacementDrainsQueue() async throws {
+        let imageURL = try Fixtures.writeGradientPNG(
+            width: 32, height: 24, named: "raced-flush.png", in: tempDirectory
+        )
+        let store = EditDocumentStore(
+            fileURL: tempDirectory.appendingPathComponent("raced-flush-edits.json"),
+            artificialWriteDelay: .milliseconds(100)
+        )
+        let viewModel = AppViewModel(engine: FakeRenderEngine(), editStore: store)
+        viewModel.openImage(url: imageURL)
+        try await waitUntil("the raced-flush image") { viewModel.sourceImage != nil }
+        viewModel.updateDocument { $0.adjustments = [.exposure(ev: 0.4)] }
+
+        let firstFlush = Task { @MainActor in await viewModel.flushPendingWrites() }
+        let deadline = Date().addingTimeInterval(5)
+        while await store.saveAttemptCount == 0 {
+            if Date() > deadline {
+                return XCTFail("timed out waiting for the first flush write")
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+
+        // The first flush is awaiting an in-flight write. The second flush cancels and replaces
+        // that worker; the replacement must drain the now-durable queue before the first caller
+        // interprets the cancelled worker result.
+        let replacementFlush = Task { @MainActor in await viewModel.flushPendingWrites() }
+        let replacementResult = await replacementFlush.value
+        let firstResult = await firstFlush.value
+
+        XCTAssertTrue(replacementResult.succeeded)
+        XCTAssertEqual(firstResult, .success)
+        XCTAssertEqual(viewModel.pendingPersistenceCount, 0)
+    }
+
     func testLongGestureCheckpointsIntermediateSnapshotsBeforeMouseUp() async throws {
         let imageURL = try Fixtures.writeGradientPNG(
             width: 32, height: 24, named: "long-gesture.png", in: tempDirectory
