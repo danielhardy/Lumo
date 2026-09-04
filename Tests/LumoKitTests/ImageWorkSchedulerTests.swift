@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import LumoKit
 
 @MainActor
@@ -19,9 +20,10 @@ final class ImageWorkSchedulerTests: XCTestCase {
     }
 
     func testActiveEditorStartsAheadOfQueuedBackgroundThumbnails() async throws {
-        let scheduler = ImageWorkScheduler(configuration: .init(
-            maxConcurrentThumbnails: 1, maxQueuedThumbnails: 4
-        ))
+        let scheduler = ImageWorkScheduler(
+            configuration: .init(
+                maxConcurrentThumbnails: 1, maxQueuedThumbnails: 4
+            ))
         let gate = Gate()
         var started: [String] = []
 
@@ -46,9 +48,10 @@ final class ImageWorkSchedulerTests: XCTestCase {
     }
 
     func testQueuedThumbnailCanBeCancelledBeforeItStarts() async throws {
-        let scheduler = ImageWorkScheduler(configuration: .init(
-            maxConcurrentThumbnails: 1, maxQueuedThumbnails: 4
-        ))
+        let scheduler = ImageWorkScheduler(
+            configuration: .init(
+                maxConcurrentThumbnails: 1, maxQueuedThumbnails: 4
+            ))
         let gate = Gate()
         var started: [String] = []
 
@@ -70,9 +73,10 @@ final class ImageWorkSchedulerTests: XCTestCase {
     }
 
     func testThumbnailQueueIsBoundedAndRetainsHigherPriorityWork() async throws {
-        let scheduler = ImageWorkScheduler(configuration: .init(
-            maxConcurrentThumbnails: 1, maxQueuedThumbnails: 2
-        ))
+        let scheduler = ImageWorkScheduler(
+            configuration: .init(
+                maxConcurrentThumbnails: 1, maxQueuedThumbnails: 2
+            ))
         let gate = Gate()
         var started: [String] = []
 
@@ -101,10 +105,108 @@ final class ImageWorkSchedulerTests: XCTestCase {
         XCTAssertEqual(started, ["running", "adjacent", "background-a"])
     }
 
+    func testQueueEvictionCompletesTheEvictedJobExactlyOnce() async throws {
+        let scheduler = ImageWorkScheduler(
+            configuration: .init(
+                maxConcurrentThumbnails: 1, maxQueuedThumbnails: 1
+            ))
+        let gate = Gate()
+        var started = false
+        var outcomes: [String: [ImageWorkScheduler.TerminalOutcome]] = [:]
+        let record: @MainActor (String, ImageWorkScheduler.TerminalOutcome) -> Void = {
+            id, outcome in outcomes[id, default: []].append(outcome)
+        }
+
+        scheduler.enqueue(id: .init("running"), lane: .thumbnail, priority: .background) {
+            started = true
+            await gate.wait()
+        }
+        try await waitUntil("the running thumbnail") { started }
+
+        scheduler.enqueue(
+            id: .init("evicted"), lane: .thumbnail, priority: .background,
+            onTerminal: { record("evicted", $0) }, operation: {}
+        )
+        scheduler.enqueue(
+            id: .init("replacement"), lane: .thumbnail, priority: .adjacentFilmstrip,
+            onTerminal: { record("replacement", $0) }, operation: {}
+        )
+
+        XCTAssertEqual(outcomes["evicted"], [.evicted])
+        XCTAssertTrue(outcomes["replacement", default: []].isEmpty)
+        await gate.releaseAll()
+        try await waitUntil("the scheduler to drain") { scheduler.isIdle }
+        XCTAssertEqual(outcomes["replacement"], [.completed])
+    }
+
+    func testCancelAllCompletesQueuedAndRunningJobsExactlyOnce() async throws {
+        let scheduler = ImageWorkScheduler(
+            configuration: .init(
+                maxConcurrentThumbnails: 1, maxQueuedThumbnails: 2
+            ))
+        let gate = Gate()
+        var outcomes: [String: [ImageWorkScheduler.TerminalOutcome]] = [:]
+        func record(_ id: String, _ outcome: ImageWorkScheduler.TerminalOutcome) {
+            outcomes[id, default: []].append(outcome)
+        }
+
+        scheduler.enqueue(
+            id: .init("running"), lane: .thumbnail, priority: .background,
+            onTerminal: { record("running", $0) }, operation: { await gate.wait() }
+        )
+        try await waitUntil("the running thumbnail") { scheduler.runningThumbnailCount == 1 }
+        scheduler.enqueue(
+            id: .init("queued"), lane: .thumbnail, priority: .background,
+            onTerminal: { record("queued", $0) }, operation: {}
+        )
+
+        scheduler.cancelAll()
+        XCTAssertEqual(outcomes["running"], [.cancelled])
+        XCTAssertEqual(outcomes["queued"], [.cancelled])
+        XCTAssertEqual(scheduler.runningCount, 0)
+        XCTAssertEqual(scheduler.pendingCount, 0)
+        await gate.releaseAll()
+        try await Task.sleep(for: .milliseconds(10))
+        XCTAssertEqual(outcomes["running"], [.cancelled])
+    }
+
+    func testRejectedJobReportsItsTerminalOutcome() {
+        let scheduler = ImageWorkScheduler(
+            configuration: .init(
+                maxConcurrentThumbnails: 0, maxQueuedThumbnails: 0
+            ))
+        var outcomes: [ImageWorkScheduler.TerminalOutcome] = []
+
+        let admitted = scheduler.enqueue(
+            id: .init("rejected"), lane: .thumbnail, priority: .visibleGrid,
+            onTerminal: { outcomes.append($0) }, operation: {}
+        )
+
+        XCTAssertFalse(admitted)
+        XCTAssertEqual(outcomes, [.rejected])
+    }
+
+    func testSuccessfulJobReportsCompletion() async throws {
+        let scheduler = ImageWorkScheduler(
+            configuration: .init(
+                maxConcurrentThumbnails: 1, maxQueuedThumbnails: 1
+            ))
+        var outcomes: [ImageWorkScheduler.TerminalOutcome] = []
+
+        scheduler.enqueue(
+            id: .init("success"), lane: .thumbnail, priority: .visibleGrid,
+            onTerminal: { outcomes.append($0) }, operation: {}
+        )
+
+        try await waitUntil("the successful job") { scheduler.isIdle }
+        XCTAssertEqual(outcomes, [.completed])
+    }
+
     func testThumbnailRunsImmediatelyWhenTheQueueIsDisabled() async throws {
-        let scheduler = ImageWorkScheduler(configuration: .init(
-            maxConcurrentThumbnails: 2, maxQueuedThumbnails: 0
-        ))
+        let scheduler = ImageWorkScheduler(
+            configuration: .init(
+                maxConcurrentThumbnails: 2, maxQueuedThumbnails: 0
+            ))
         var started: [String] = []
 
         scheduler.enqueue(id: .init("thumb"), lane: .thumbnail, priority: .background) {
@@ -118,9 +220,10 @@ final class ImageWorkSchedulerTests: XCTestCase {
     }
 
     func testVisibleEditorDropsQueuedSupportBeforeItIsAdmitted() async throws {
-        let scheduler = ImageWorkScheduler(configuration: .init(
-            maxConcurrentThumbnails: 1, maxQueuedThumbnails: 4, maxQueuedEditorJobs: 2
-        ))
+        let scheduler = ImageWorkScheduler(
+            configuration: .init(
+                maxConcurrentThumbnails: 1, maxQueuedThumbnails: 4, maxQueuedEditorJobs: 2
+            ))
         let gate = Gate()
         var started: [String] = []
 

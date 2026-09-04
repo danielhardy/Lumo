@@ -1,6 +1,8 @@
 import Foundation
 import AppKit
 import Combine
+import ImageIO
+import UniformTypeIdentifiers
 
 /// Manages a collection of imported images with async thumbnail generation.
 @MainActor
@@ -139,9 +141,13 @@ final class ImageCollection: ObservableObject {
     @Published var isScanning: Bool = false
     @Published private(set) var scanWarnings: [ScanWarning] = []
     @Published private(set) var filter = LibraryFilter.all
-    /// The persistent source folder, if one is set (nil for Photos imports or
-    /// one-off single-image opens).
+    /// The persistent user-selected source folder, if one is set. Imported files live in
+    /// `libraryFolderURL` and are present regardless of this value.
     @Published var sourceFolderURL: URL?
+
+    /// Lumo's managed, durable destination for files imported from Photos or one-off opens.
+    /// This is intentionally injectable for tests and remains separate from a user's source folder.
+    let libraryFolderURL: URL
 
     /// Revisions cover only inputs to the shared collection projections. In particular, thumbnail
     /// state and the decoded NSImage live on `Item` and do not advance this value.
@@ -189,6 +195,8 @@ final class ImageCollection: ObservableObject {
     /// Data imports can finish out of order. Keeping their ordinals alongside the items preserves
     /// picker order without changing the stable source IDs used by editing and persistence.
     private var dataImportOrdinals: [Int] = []
+    private var dataImportStartIndex = 0
+    private var dataImportAcceptedCount = 0
     /// Arrivals without a matching reservation are an exceptional provider/caller condition. Keep
     /// their IDs so the projection can render them at the tail instead of silently hiding them.
     private var dataImportOverflowItemIDs: Set<PhotoAssetID> = []
@@ -201,16 +209,26 @@ final class ImageCollection: ObservableObject {
 
     init(
         scheduler: ImageWorkScheduler = ImageWorkScheduler(),
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        libraryFolderURL: URL = ImageCollection.defaultLibraryFolderURL
     ) {
         self.scheduler = scheduler
         self.defaults = defaults
+        self.libraryFolderURL = libraryFolderURL.standardizedFileURL
         if let data = defaults.data(forKey: Self.cullingStateKey),
            let states = try? JSONDecoder().decode([String: PersistedCullingState].self, from: data) {
             self.persistedCullingStates = states
         } else {
             self.persistedCullingStates = [:]
         }
+    }
+
+    nonisolated static var defaultLibraryFolderURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base
+            .appendingPathComponent("Lumo", isDirectory: true)
+            .appendingPathComponent("Library", isDirectory: true)
     }
 
     deinit {
@@ -223,6 +241,10 @@ final class ImageCollection: ObservableObject {
         guard isActive, let activeID = selection.activeID else { return nil }
         return items.first { $0.id == activeID }
     }
+
+    /// Token for callers that wait on a scan and must not act on a later incremental import that
+    /// cancelled that scan.
+    var scanToken: UInt64 { scanGeneration }
 
     /// The current edit-transfer destinations, in source order. The active item remains separate
     /// from this selection so command-click can prepare a batch without changing the open photo.
@@ -353,6 +375,18 @@ final class ImageCollection: ObservableObject {
         return true
     }
 
+    /// Restore Lumo-managed imports when no user source folder is configured. The folder is not
+    /// created on launch, so a clean profile remains an empty library without a warning.
+    @discardableResult
+    func restoreLibrary() -> Bool {
+        guard Self.isDirectory(libraryFolderURL), Self.containsSupportedImage(in: libraryFolderURL) else {
+            return false
+        }
+        sourceFolderURL = nil
+        loadFromFolder(libraryFolderURL)
+        return true
+    }
+
     private func saveBookmark(for url: URL) {
         do {
             let bookmark = try url.bookmarkData(
@@ -368,7 +402,8 @@ final class ImageCollection: ObservableObject {
 
     /// Re-scan the current source folder (e.g. after files change on disk).
     func refresh() {
-        guard let url = sourceFolderURL else { return }
+        let url = sourceFolderURL ?? libraryFolderURL
+        guard Self.isDirectory(url) else { return }
         loadFromFolder(url)
     }
 
@@ -422,40 +457,34 @@ final class ImageCollection: ObservableObject {
             )
             defer { interval.end() }
 
-            var knownItems: [String: Item] = [:]
-            let stream = Self.discoveryStream(url)
-            for await event in stream {
-                guard !Task.isCancelled, self.scanGeneration == generation else { return }
-                switch event {
-                case .warning(let warning):
-                    self.addScanWarning(warning)
-                case .batch(let discoveries):
-                    for discovery in discoveries {
-                        let path = discovery.url.standardizedFileURL.path
-                        let item = knownItems[path] ?? Item(
-                            asset: restoredCullingState(
-                                for: PhotoAsset(url: discovery.url, filename: discovery.displayName)
-                            ),
-                            thumbnail: nil,
-                            metadata: nil,
-                            subfolder: discovery.subfolder
-                        )
-                        knownItems[path] = item
-                        if !self.items.contains(where: { $0.id == item.id }) {
+            var seenItemIDs = Set<PhotoAssetID>()
+            for scanURL in self.scanURLs(primary: url) {
+                let stream = Self.discoveryStream(scanURL, managedLibraryURL: self.libraryFolderURL)
+                for await event in stream {
+                    guard !Task.isCancelled, self.scanGeneration == generation else { return }
+                    switch event {
+                    case .warning(let warning):
+                        self.addScanWarning(warning)
+                    case .batch(let discoveries):
+                        for discovery in discoveries {
+                            guard seenItemIDs.insert(discovery.asset.id).inserted else { continue }
+                            let item = Item(
+                                asset: restoredCullingState(for: discovery.asset),
+                                thumbnail: nil,
+                                metadata: nil,
+                                subfolder: discovery.subfolder
+                            )
                             self.items.append(item)
+                            self.enqueueMetadata(for: item, generation: generation)
                         }
-                        self.enqueueMetadata(for: item, generation: generation)
-                    }
 
-                    self.invalidateCollectionProjection()
-                    // Sorting the accumulated prefix on every batch keeps the final ordering
-                    // deterministic while still making the first useful rows visible immediately.
-                    self.items.sort(by: Self.itemPrecedes)
-                    self.reconcileSelection()
-                    self.isActive = !self.items.isEmpty
-                    self.generateThumbnails()
-                    // Let SwiftUI and cancellation run between batches even on a fast local disk.
-                    await Task.yield()
+                        self.invalidateCollectionProjection()
+                        self.reconcileSelection()
+                        self.isActive = !self.items.isEmpty
+                        self.generateThumbnails()
+                        // Let SwiftUI and cancellation run between batches even on a fast local disk.
+                        await Task.yield()
+                    }
                 }
             }
 
@@ -466,8 +495,36 @@ final class ImageCollection: ObservableObject {
         }
     }
 
+    private func scanURLs(primary: URL) -> [URL] {
+        let canonicalPrimary = primary.standardizedFileURL.resolvingSymlinksInPath()
+        let canonicalLibrary = libraryFolderURL.standardizedFileURL.resolvingSymlinksInPath()
+        // A user-selected source folder remains an isolated browsing scope. Managed imports are
+        // scanned when the managed library itself is restored, while the in-memory collection
+        // still retains any imports already present when a new source is chosen.
+        return [canonicalPrimary == canonicalLibrary ? canonicalLibrary : canonicalPrimary]
+    }
+
+    private static func isDirectory(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+    }
+
+    private static func containsSupportedImage(in url: URL) -> Bool {
+        guard let enumerator = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]
+        ) else { return false }
+        return enumerator.lazy.compactMap { $0 as? URL }.contains { imageURL in
+            guard (try? imageURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+                return false
+            }
+            return ImageDecoder.supportedExtensions.contains(imageURL.pathExtension.lowercased())
+        }
+    }
+
     private struct DiscoveredItem: Sendable {
         let url: URL
+        let asset: PhotoAsset
         let displayName: String
         let subfolder: String
     }
@@ -491,10 +548,12 @@ final class ImageCollection: ObservableObject {
 
     private nonisolated static let scanBatchSize = 32
 
-    /// Discover file names and relative folders off the main actor. This deliberately does not read
-    /// image properties: discovery is the cheap stage, while dimensions and capture metadata are
-    /// queued separately after each batch is published.
-    private nonisolated static func discoveryStream(_ url: URL) -> AsyncStream<DiscoveryEvent> {
+    /// Discover file names, relative folders, and durable file identities off the main actor.
+    /// Resource values and the bounded fingerprint are captured before a record crosses to the
+    /// publication task; dimensions and capture metadata remain a separate deferred stage.
+    private nonisolated static func discoveryStream(
+        _ url: URL, managedLibraryURL: URL
+    ) -> AsyncStream<DiscoveryEvent> {
         let (stream, continuation) = AsyncStream<DiscoveryEvent>.makeStream()
         let producer = Task.detached {
             let fm = FileManager.default
@@ -521,7 +580,7 @@ final class ImageCollection: ObservableObject {
 
             let rootPath = url.resolvingSymlinksInPath().path
             let rootPrefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
-            var batch: [DiscoveredItem] = []
+            var discoveries: [DiscoveredItem] = []
             while let fileURL = enumerator.nextObject() as? URL {
                 guard !Task.isCancelled else { break }
                 let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey])
@@ -534,20 +593,41 @@ final class ImageCollection: ObservableObject {
                     continue
                 }
 
-                let name = fileURL.deletingPathExtension().lastPathComponent
+                let name = Self.displayName(for: fileURL, root: url, managedLibraryURL: managedLibraryURL)
                 let dir = fileURL.deletingLastPathComponent().resolvingSymlinksInPath().path
                 let subfolder = dir == rootPath || dir.hasPrefix(rootPrefix)
                     ? String(dir.dropFirst(rootPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                     : ""
-                batch.append(DiscoveredItem(url: fileURL, displayName: name, subfolder: subfolder))
-                if batch.count == scanBatchSize {
-                    guard case .enqueued = continuation.yield(.batch(batch)) else { return }
-                    batch.removeAll(keepingCapacity: true)
-                    await Task.yield()
-                }
+                let canonicalURL = fileURL.standardizedFileURL.resolvingSymlinksInPath()
+                let fingerprint = PhotoSourceFingerprint.file(at: canonicalURL)
+                let asset = PhotoAsset(
+                    source: PhotoAssetSource(
+                        url: canonicalURL,
+                        fingerprint: fingerprint
+                    ),
+                    filename: name,
+                    fileType: canonicalURL.pathExtension
+                )
+                discoveries.append(DiscoveredItem(
+                    url: canonicalURL,
+                    asset: asset,
+                    displayName: name,
+                    subfolder: subfolder
+                ))
             }
-            if !batch.isEmpty, !Task.isCancelled {
-                _ = continuation.yield(.batch(batch))
+
+            guard !Task.isCancelled else {
+                continuation.finish()
+                return
+            }
+            discoveries.sort(by: discoveredItemPrecedes)
+            for start in stride(from: 0, to: discoveries.count, by: scanBatchSize) {
+                guard !Task.isCancelled else { return }
+                let end = min(start + scanBatchSize, discoveries.count)
+                guard case .enqueued = continuation.yield(
+                    .batch(Array(discoveries[start..<end]))
+                ) else { return }
+                await Task.yield()
             }
             continuation.finish()
         }
@@ -555,14 +635,33 @@ final class ImageCollection: ObservableObject {
         return stream
     }
 
-    private nonisolated static func itemPrecedes(_ lhs: Item, _ rhs: Item) -> Bool {
+    private nonisolated static func discoveredItemPrecedes(
+        _ lhs: DiscoveredItem, _ rhs: DiscoveredItem
+    ) -> Bool {
         if lhs.subfolder != rhs.subfolder {
             return lhs.subfolder.localizedStandardCompare(rhs.subfolder) == .orderedAscending
         }
         let nameOrder = lhs.displayName.localizedStandardCompare(rhs.displayName)
         if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
-        return (lhs.url?.standardizedFileURL.path ?? lhs.displayName)
-            < (rhs.url?.standardizedFileURL.path ?? rhs.displayName)
+        return lhs.url.standardizedFileURL.path < rhs.url.standardizedFileURL.path
+    }
+
+    private nonisolated static func displayName(
+        for fileURL: URL, root: URL, managedLibraryURL: URL
+    ) -> String {
+        let filename = fileURL.lastPathComponent
+        let canonicalRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        let canonicalLibrary = managedLibraryURL.standardizedFileURL.resolvingSymlinksInPath()
+        if canonicalRoot == canonicalLibrary,
+           filename.count > 17,
+           filename[filename.index(filename.startIndex, offsetBy: 16)] == "-" {
+            let prefix = filename.prefix(16)
+            if prefix.allSatisfy({ $0.isHexDigit }) {
+                let original = String(filename.dropFirst(17))
+                return URL(fileURLWithPath: original).deletingPathExtension().lastPathComponent
+            }
+        }
+        return fileURL.deletingPathExtension().lastPathComponent
     }
 
     // MARK: - Deferred metadata
@@ -641,8 +740,9 @@ final class ImageCollection: ObservableObject {
             items.remove(at: index)
             invalidateCollectionProjection()
             dataImportOverflowItemIDs.remove(itemID)
-            if dataImportOrdinals.indices.contains(index) {
-                dataImportOrdinals.remove(at: index)
+            let relativeIndex = index - dataImportStartIndex
+            if dataImportOrdinals.indices.contains(relativeIndex) {
+                dataImportOrdinals.remove(at: relativeIndex)
             }
             removeDataImportItemIndex(for: itemID, at: index)
             reconcileSelection()
@@ -674,24 +774,28 @@ final class ImageCollection: ObservableObject {
     /// **The second thumbnail site.** `generateThumbnails` below is the obvious one; this one builds
     /// its thumbnails inline and is easy to miss when the thumbnail path moves — which is why
     /// `docs/PHASE2_SPEC.md` §6 names both explicitly. Step 7 pointed both at `Thumbnails`.
-    func addFromData(_ dataItems: [(name: String, data: Data)]) {
+    @discardableResult
+    func addFromData(_ dataItems: [(name: String, data: Data)]) -> [PhotoAssetID] {
         beginDataImport(reservedCount: dataItems.count)
+        var identifiers: [PhotoAssetID] = []
         for (ordinal, item) in dataItems.enumerated() {
-            appendDataImport(
+            identifiers.append(appendDataImport(
                 PhotoImportItem(name: item.name, data: item.data), ordinal: ordinal
-            )
+            ))
         }
         finishDataImport()
+        return identifiers
     }
 
     /// Adopt selected local files as URL-backed assets without reading their source bytes into
-    /// memory. This is the one-off Open Image… path, so the renderer remains responsible for RAW
-    /// demosaicing and preview-scale decoding just as it is for folder and removable-media items.
+    /// memory. Non-source-folder files are copied into Lumo's managed library first; the renderer
+    /// remains responsible for RAW demosaicing and preview-scale decoding.
     @discardableResult
     func addFromURLs(_ urls: [URL]) -> [PhotoAssetID] {
-        clear()
+        prepareForIncrementalImport()
 
         var seen = Set<PhotoAssetID>()
+        var importedIDs: [PhotoAssetID] = []
         for url in urls.sorted(by: {
             $0.standardizedFileURL.path.localizedStandardCompare($1.standardizedFileURL.path)
                 == .orderedAscending
@@ -702,102 +806,119 @@ final class ImageCollection: ObservableObject {
                 continue
             }
 
-            let metadata = ImageMetadata.read(from: canonicalURL)
+            guard ImageDecoder.supportedExtensions.contains(canonicalURL.pathExtension.lowercased()) else {
+                addScanWarning("Skipped unsupported image \(canonicalURL.lastPathComponent).")
+                continue
+            }
+            guard let destinationURL = durableURL(for: canonicalURL) else {
+                addScanWarning("Could not copy \(canonicalURL.lastPathComponent) into Lumo's library.")
+                continue
+            }
+            let metadata = ImageMetadata.read(from: destinationURL)
             let asset = restoredCullingState(for: PhotoAsset(
-                url: canonicalURL,
-                filename: canonicalURL.lastPathComponent,
+                url: destinationURL,
+                filename: canonicalURL.deletingPathExtension().lastPathComponent,
                 metadata: PhotoAssetMetadata(imageMetadata: metadata),
-                bookmarkData: PhotoAssetSource.bookmarkData(for: canonicalURL)
+                bookmarkData: PhotoAssetSource.bookmarkData(for: destinationURL)
             ))
+            if let existingItem = items.first(where: { $0.url?.standardizedFileURL == destinationURL }) {
+                importedIDs.append(existingItem.id)
+                continue
+            }
             guard seen.insert(asset.id).inserted else {
                 addScanWarning("Skipped duplicate \(canonicalURL.lastPathComponent).")
                 continue
             }
             items.append(Item(asset: asset, metadata: metadata))
+            persistCullingState(for: asset)
+            importedIDs.append(asset.id)
         }
 
         invalidateCollectionProjection()
         reconcileSelection()
         isActive = !items.isEmpty
         enqueueThumbnails()
-        return items.map(\.id)
+        return importedIDs
     }
 
-    /// Adopt selected files from a removable volume without writing to that volume.  The files
-    /// remain URL-backed so the normal stable identity, metadata, orientation, edit-session, and
-    /// bookmark behavior applies exactly as it does for a source-folder asset.
-    @discardableResult
-    func addFromMediaVolume(_ volume: MediaVolume, files: [MediaVolumeFile]) -> [PhotoAssetID] {
+    /// Copy a file into the managed library using a deterministic path. Re-importing the same
+    /// source therefore addresses the existing managed copy instead of creating another item.
+    private func durableURL(for sourceURL: URL) -> URL? {
+        let canonicalSource = sourceURL.standardizedFileURL.resolvingSymlinksInPath()
+        let canonicalLibrary = libraryFolderURL.standardizedFileURL.resolvingSymlinksInPath()
+        if canonicalSource == canonicalLibrary || canonicalSource.path.hasPrefix(canonicalLibrary.path + "/") {
+            return canonicalSource
+        }
+        if items.contains(where: { $0.url?.standardizedFileURL == canonicalSource }) {
+            return canonicalSource
+        }
+        if let sourceFolderURL {
+            let canonicalSourceFolder = sourceFolderURL.standardizedFileURL.resolvingSymlinksInPath()
+            if canonicalSource == canonicalSourceFolder
+                || canonicalSource.path.hasPrefix(canonicalSourceFolder.path + "/") {
+                return canonicalSource
+            }
+        }
+
+        let token = PhotoAssetID.contentDigest(Data(canonicalSource.path.utf8)).prefix(16)
+        let filename = "\(token)-\(canonicalSource.lastPathComponent)"
+        let destinationURL = canonicalLibrary.appendingPathComponent(filename)
+        do {
+            try FileManager.default.createDirectory(
+                at: canonicalLibrary, withIntermediateDirectories: true
+            )
+            if !FileManager.default.fileExists(atPath: destinationURL.path) {
+                try FileManager.default.copyItem(at: canonicalSource, to: destinationURL)
+            } else if PhotoSourceFingerprint.file(at: canonicalSource)
+                != PhotoSourceFingerprint.file(at: destinationURL) {
+                let temporaryURL = canonicalLibrary.appendingPathComponent(
+                    ".(UUID().uuidString)-(canonicalSource.lastPathComponent)"
+                )
+                try FileManager.default.copyItem(at: canonicalSource, to: temporaryURL)
+                _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: temporaryURL)
+            }
+            return destinationURL.standardizedFileURL.resolvingSymlinksInPath()
+        } catch {
+            return nil
+        }
+    }
+
+    /// Stop a folder scan before appending. Existing items are deliberately retained; the import
+    /// becomes part of the same library rather than replacing a source-folder or earlier import.
+    private func prepareForIncrementalImport() {
         scanGeneration &+= 1
-        cancelThumbnailWork()
         scanTask?.cancel()
         scanTask = nil
         stopMetadataLoading()
-        stopScopedURL()
+        isScanning = false
+        pendingImportSlots.removeAll()
+        dataImportOrdinals.removeAll()
+        dataImportItemIndices.removeAll()
+        dataImportOverflowItemIDs.removeAll()
+        dataImportAcceptedCount = 0
+        startMetadataLoading()
+    }
+
+    /// Adopt selected files from a removable volume by copying them into the managed library. The
+    /// source volume is never modified, and existing collection items remain available.
+    @discardableResult
+    func addFromMediaVolume(_ volume: MediaVolume, files: [MediaVolumeFile]) -> [PhotoAssetID] {
         let accessURL = volume.resolvedAccessURL()
         _ = accessURL.startAccessingSecurityScopedResource()
         scopedURL = accessURL
-
-        items = []
-        invalidateCollectionProjection()
-        pendingImportSlots.removeAll()
-        dataImportOrdinals.removeAll()
-        dataImportOverflowItemIDs.removeAll()
-        dataImportItemIndices.removeAll()
-        selectedIndex = 0
-        selection.clear()
-        thumbnailDemandIDs.removeAll()
-        thumbnailDemandPriorities.removeAll()
-        preparedThumbnailIDs.removeAll()
-        sourceFolderURL = nil
-        isScanning = false
-        scanWarnings = []
-
-        var seen = Set<PhotoAssetID>()
-        for file in files.sorted(by: { $0.url.path.localizedStandardCompare($1.url.path) == .orderedAscending }) {
-            guard FileManager.default.isReadableFile(atPath: file.url.path) else {
-                addScanWarning("Skipped \(file.filename): the volume was removed or is no longer readable.")
-                continue
-            }
-            let metadata = file.metadata.isEmpty ? ImageMetadata.read(from: file.url) : file.metadata
-            let asset = restoredCullingState(for: PhotoAsset(
-                url: file.url,
-                filename: file.filename,
-                metadata: PhotoAssetMetadata(imageMetadata: metadata),
-                bookmarkData: PhotoAssetSource.bookmarkData(for: file.url)
-            ))
-            guard seen.insert(asset.id).inserted else {
-                addScanWarning("Skipped duplicate \(file.filename).")
-                continue
-            }
-            items.append(Item(asset: asset, metadata: metadata))
-        }
-        invalidateCollectionProjection()
-        reconcileSelection()
-        isActive = !items.isEmpty
-        enqueueThumbnails()
-        return items.map(\.id)
+        return addFromURLs(files.map(\.url))
     }
 
     /// Start a streamed Photos import. Items are published as they arrive instead of waiting for
     /// the picker to transfer the entire selection, so the first asset can be opened immediately
     /// and one failed/cancelled transfer does not discard earlier successes.
     func beginDataImport(reservedCount: Int = 0) {
-        scanGeneration &+= 1
+        prepareForIncrementalImport()
         cancelThumbnailWork()
-        scanTask?.cancel()
-        scanTask = nil
-        stopMetadataLoading()
-        stopScopedURL()
-        items = []
-        invalidateCollectionProjection()
         pendingImportSlots = (0..<max(0, reservedCount)).map { PendingImportSlot(ordinal: $0) }
         invalidateCollectionProjection()
+        dataImportStartIndex = items.count
         dataImportOrdinals.removeAll()
-        dataImportOverflowItemIDs.removeAll()
-        dataImportItemIndices.removeAll()
-        selectedIndex = 0
-        selection.clear()
         isThumbnailDemandDriven = false
         thumbnailDemandIDs.removeAll()
         thumbnailDemandPriorities.removeAll()
@@ -808,28 +929,44 @@ final class ImageCollection: ObservableObject {
         startMetadataLoading()
     }
 
-    /// Append one full-fidelity Photos payload to the live collection. The Data is retained as the
-    /// original source bytes; thumbnails are generated separately from the embedded preview and
-    /// never replace the source.
+    /// Append one full-fidelity Photos payload to the live collection. The bytes are copied into
+    /// the managed library and the resulting URL is the durable source; the transferred bytes are
+    /// retained only as a current-session cache.
     @discardableResult
     func appendDataImport(_ item: PhotoImportItem, ordinal: Int) -> PhotoAssetID {
-        let identifier = item.localIdentifier.map(PhotoAssetID.photos)
-            ?? .imported(dataDigest: item.contentDigest, name: item.name, ordinal: ordinal)
-        let sourceFingerprint = PhotoSourceFingerprint.data(item.data, digest: item.contentDigest)
-        let source = PhotoAssetSource(data: item.data, id: identifier, fingerprint: sourceFingerprint)
+        let importKey = item.localIdentifier
+            ?? "\(item.contentDigest):\(item.name):\(ordinal)"
+        let destinationURL = durableDataURL(for: item, key: importKey)
+        let identifier = PhotoAssetID.file(destinationURL)
+        if let existingIndex = items.firstIndex(where: { $0.url == destinationURL }) {
+            let existingID = items[existingIndex].id
+            dataImportItemIndices[existingID] = existingIndex
+            if let slotIndex = pendingImportSlots.firstIndex(where: { $0.ordinal == ordinal }) {
+                pendingImportSlots[slotIndex].assetID = existingID
+                pendingImportSlots[slotIndex].name = item.name
+            }
+            return existingID
+        }
+
+        let source = PhotoAssetSource(
+            url: destinationURL, id: identifier, data: item.data,
+            bookmarkData: PhotoAssetSource.bookmarkData(for: destinationURL)
+        )
         let asset = restoredCullingState(for: PhotoAsset(
             source: source,
             filename: item.name,
-            fileType: URL(fileURLWithPath: item.name).pathExtension
+            fileType: destinationURL.pathExtension
         ))
         var interval = LumoSignpostInterval(
             .photoCollectionInsert,
             context: LumoTraceContext(sourceFingerprint: identifier.raw, quality: "photosImport")
         )
-        let insertionIndex = dataImportOrdinals.firstIndex(where: { $0 > ordinal }) ?? items.count
+        let relativeIndex = dataImportOrdinals.firstIndex(where: { $0 > ordinal })
+            ?? dataImportOrdinals.count
+        let insertionIndex = dataImportStartIndex + relativeIndex
         items.insert(Item(asset: asset, metadata: nil), at: insertionIndex)
         invalidateCollectionProjection()
-        dataImportOrdinals.insert(ordinal, at: insertionIndex)
+        dataImportOrdinals.insert(ordinal, at: relativeIndex)
         let shiftedIDs = dataImportItemIndices.compactMap { itemID, itemIndex in
             itemIndex >= insertionIndex ? itemID : nil
         }
@@ -851,10 +988,51 @@ final class ImageCollection: ObservableObject {
         }
         reconcileSelection()
         isActive = true
+        dataImportAcceptedCount += 1
+        persistCullingState(for: asset)
         enqueueMetadata(for: items[insertionIndex], generation: scanGeneration)
         enqueueThumbnails()
         interval.end()
         return identifier
+    }
+
+    private func durableDataURL(for item: PhotoImportItem, key: String) -> URL {
+        let suppliedURL = URL(fileURLWithPath: item.name)
+        let ext = suppliedURL.pathExtension.isEmpty
+            ? inferredExtension(for: item.data)
+            : suppliedURL.pathExtension
+        let stem = suppliedURL.deletingPathExtension().lastPathComponent
+        let safeStem = stem.isEmpty ? "Imported Photo" : stem
+        let token = PhotoAssetID.contentDigest(Data(key.utf8)).prefix(16)
+        if let existing = (try? FileManager.default.contentsOfDirectory(
+            at: libraryFolderURL, includingPropertiesForKeys: nil
+        ))?.first(where: { $0.lastPathComponent.hasPrefix("\(token)-") }) {
+            return existing.standardizedFileURL.resolvingSymlinksInPath()
+        }
+        let filename = "\(token)-\(safeStem).\(ext)"
+        let destination = libraryFolderURL.appendingPathComponent(filename)
+        do {
+            try FileManager.default.createDirectory(
+                at: libraryFolderURL, withIntermediateDirectories: true
+            )
+            if !FileManager.default.fileExists(atPath: destination.path) {
+                try item.data.write(to: destination, options: .atomic)
+            }
+        } catch {
+            addScanWarning("Could not save imported photo \(item.name) into Lumo's library.")
+        }
+        return destination.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
+    private func inferredExtension(for data: Data) -> String {
+        if let source = CGImageSourceCreateWithData(data as CFData, nil),
+           let typeIdentifier = CGImageSourceGetType(source),
+           let type = UTType(typeIdentifier as String),
+           let ext = type.preferredFilenameExtension,
+           ImageDecoder.supportedExtensions.contains(ext.lowercased()) {
+            return ext
+        }
+        return "jpg"
     }
 
     /// Finish a streamed import after the picker task has transferred all items it can. Deferred
@@ -919,6 +1097,9 @@ final class ImageCollection: ObservableObject {
 
     /// Number of source items currently retained by a streamed import.
     var importedDataCount: Int { items.count }
+
+    /// Number of newly accepted items in the current streamed import operation.
+    var currentDataImportCount: Int { dataImportAcceptedCount }
 
     // MARK: - Navigation
 
@@ -1006,6 +1187,20 @@ final class ImageCollection: ObservableObject {
     /// above so both paths apply the same policy.
     func select(at index: Int) {
         select(at: index, modifiers: [])
+    }
+
+    /// Focus an item for an editor handoff while retaining any multi-selection made in the grid.
+    /// The focused item becomes the edit target; the selected set remains the user's batch.
+    func focus(id: PhotoAssetID) {
+        guard isActive, let index = items.firstIndex(where: { $0.id == id }),
+              filter.matches(flag: items[index].asset.flag, rating: items[index].asset.rating)
+        else { return }
+        var next = selection
+        next.focus(id, in: filteredItems.map(\.id))
+        selection = next
+        syncSelectedIndex()
+        prepareAdjacentThumbnails(around: selectedIndex)
+        reprioritizeThumbnails()
     }
 
     /// Select an item for edit-transfer without opening it. This compatibility seam keeps tests and

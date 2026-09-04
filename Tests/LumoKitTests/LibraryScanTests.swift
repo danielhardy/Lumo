@@ -226,7 +226,7 @@ final class LibraryScanTests: TempDirectoryTestCase {
         XCTAssertEqual(collection.items.map(\.subfolder), ["", "", "Trip"])
     }
 
-    func testLargeScanPublishesAFirstBatchBeforeTheTraversalFinishes() async throws {
+    func testLargeScanPublishesAFirstBatchBeforeTheScanFinishes() async throws {
         for index in 0..<96 {
             try Fixtures.writeJPEG(
                 width: 8, height: 8, orientation: 1,
@@ -247,7 +247,7 @@ final class LibraryScanTests: TempDirectoryTestCase {
             if Date() > deadline { break }
             await Task.yield()
         }
-        XCTAssertTrue(sawPartialScan, "a large folder should publish rows before traversal completes")
+        XCTAssertTrue(sawPartialScan, "a large folder should publish rows before the scan completes")
 
         await collection.scanCompletion()
         XCTAssertEqual(collection.items.count, 96)

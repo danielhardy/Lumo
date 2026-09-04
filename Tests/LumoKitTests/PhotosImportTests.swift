@@ -18,7 +18,7 @@ final class PhotosImportTests: TempDirectoryTestCase {
         let id = collection.appendDataImport(item, ordinal: 0)
         collection.finishDataImport()
 
-        XCTAssertEqual(id, .photos(localIdentifier: "photos.local.portrait"))
+        XCTAssertEqual(id, collection.items[0].url.map(PhotoAssetID.file))
         XCTAssertEqual(collection.items.count, 1)
         XCTAssertEqual(collection.items[0].imageData, data,
                        "the collection must retain the original payload, not a preview")
@@ -38,7 +38,7 @@ final class PhotosImportTests: TempDirectoryTestCase {
 
         XCTAssertEqual(item.contentDigest, PhotoAssetID.contentDigest(data))
         XCTAssertEqual(collection.items[0].dataFingerprint, item.contentDigest)
-        XCTAssertTrue(id.raw.contains(item.contentDigest))
+        XCTAssertEqual(id, collection.items[0].url.map(PhotoAssetID.file))
     }
 
     func testImportReservationsReplaceByOrdinalWithoutReordering() throws {
@@ -203,8 +203,8 @@ final class PhotosImportTests: TempDirectoryTestCase {
         )
         viewModel.finishPhotosImport(cancelled: true)
         XCTAssertTrue(viewModel.collection.pendingImportSlots.isEmpty)
-        XCTAssertEqual(viewModel.collection.thumbnailEntries.count, 1)
-        XCTAssertEqual(viewModel.collection.items.map(\.displayName), ["Cancelled"])
+        XCTAssertEqual(viewModel.collection.thumbnailEntries.count, 2)
+        XCTAssertEqual(viewModel.collection.items.map(\.displayName), ["Kept", "Cancelled"])
     }
 
     func testEmptyImportHasNoReservationsOrActiveDestination() {
@@ -246,10 +246,9 @@ final class PhotosImportTests: TempDirectoryTestCase {
             ordinal: 2
         )
 
-        XCTAssertEqual(viewModel.collection.items.map(\.asset.id), [
-            .photos(localIdentifier: "photos.first"),
-            .photos(localIdentifier: "photos.second"),
-        ])
+        XCTAssertTrue(viewModel.collection.items.allSatisfy {
+            $0.url?.path.hasPrefix(viewModel.collection.libraryFolderURL.path + "/") == true
+        })
         XCTAssertEqual(viewModel.collection.items.map(\.imageData), [firstData, secondData])
         XCTAssertEqual(viewModel.photosImportProgress?.processed, 3)
         XCTAssertEqual(viewModel.photosImportProgress?.imported, 2)

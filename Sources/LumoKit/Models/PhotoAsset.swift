@@ -20,6 +20,14 @@ struct PhotoAssetID: Codable, Hashable, Sendable, Equatable, CustomStringConvert
     static func file(_ url: URL) -> PhotoAssetID {
         let canonical = url.standardizedFileURL.resolvingSymlinksInPath()
         let fingerprint = PhotoSourceFingerprint.file(at: canonical)
+        return file(canonical, fingerprint: fingerprint)
+    }
+
+    /// Identity for a file when its fingerprint has already been read by the caller. Keeping this
+    /// seam explicit prevents a source construction from walking the file a second time just to
+    /// derive the resource identifier.
+    static func file(_ url: URL, fingerprint: PhotoSourceFingerprint) -> PhotoAssetID {
+        let canonical = url.standardizedFileURL.resolvingSymlinksInPath()
         if let resourceID = fingerprint.resourceIdentifier {
             return PhotoAssetID(rawValue: "file-resource:\(resourceID)")
         }
@@ -175,9 +183,28 @@ struct PhotoAssetSource: Codable, Hashable, Sendable, Equatable {
         fingerprint: PhotoSourceFingerprint? = nil
     ) {
         let canonical = url.standardizedFileURL.resolvingSymlinksInPath()
-        self.id = PhotoAssetID.file(canonical)
+        let resolvedFingerprint = fingerprint ?? PhotoSourceFingerprint.file(at: canonical)
+        self.id = PhotoAssetID.file(canonical, fingerprint: resolvedFingerprint)
         self.url = canonical
         self.data = nil
+        self.bookmarkData = bookmarkData
+        self.fingerprint = resolvedFingerprint
+    }
+
+    /// Build a URL-backed record while retaining an already-transferred payload for the current
+    /// import operation. The URL is the durable source; `data` is only a short-lived compatibility
+    /// cache for callers that already have the bytes in memory.
+    init(
+        url: URL,
+        id: PhotoAssetID,
+        data: Data?,
+        bookmarkData: Data? = nil,
+        fingerprint: PhotoSourceFingerprint? = nil
+    ) {
+        let canonical = url.standardizedFileURL.resolvingSymlinksInPath()
+        self.id = id
+        self.url = canonical
+        self.data = data
         self.bookmarkData = bookmarkData
         self.fingerprint = fingerprint ?? PhotoSourceFingerprint.file(at: canonical)
     }

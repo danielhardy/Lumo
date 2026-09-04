@@ -29,9 +29,10 @@ final class OpenImageDialogTests: TempDirectoryTestCase {
 
         viewModel.openImages(urls: [later, first])
 
-        XCTAssertEqual(viewModel.collection.items.map(\.url), [
-            first.standardizedFileURL, later.standardizedFileURL
-        ])
+        XCTAssertEqual(viewModel.collection.items.map(\.displayName), ["first", "later"])
+        XCTAssertTrue(viewModel.collection.items.allSatisfy {
+            $0.url?.path.hasPrefix(viewModel.collection.libraryFolderURL.path + "/") == true
+        })
         XCTAssertTrue(viewModel.collection.items.allSatisfy { $0.imageData == nil })
         XCTAssertTrue(viewModel.navigation.isEdit)
         try await waitUntil("the first selected image") {
@@ -48,7 +49,11 @@ final class OpenImageDialogTests: TempDirectoryTestCase {
         viewModel.openImages(urls: [image, image])
 
         XCTAssertEqual(viewModel.collection.items.count, 1)
-        XCTAssertEqual(viewModel.collection.items.first?.url, image.standardizedFileURL)
+        XCTAssertTrue(
+            viewModel.collection.items.first?.url?.path.hasPrefix(
+                viewModel.collection.libraryFolderURL.path + "/"
+            ) == true
+        )
         XCTAssertTrue(viewModel.navigation.isEdit)
         try await waitUntil("the single image") {
             viewModel.sourceName == image.lastPathComponent && viewModel.sourceImage != nil

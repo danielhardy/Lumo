@@ -270,7 +270,6 @@ struct PreviewView: View {
                 if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
                     viewModel.openSourceFolder(url: url)
                 } else {
-                    viewModel.collection.clear()
                     viewModel.openImage(url: url)
                 }
             }

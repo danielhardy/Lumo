@@ -148,20 +148,24 @@ final class ThumbnailTests: TempDirectoryTestCase {
         }
     }
 
-    /// Site two: a Photos import builds its thumbnails asynchronously from bytes, with no URL
-    /// anywhere. This is the site with no coverage before Step 7.
+    /// Site two: a Photos import builds its thumbnails asynchronously from the transferred bytes,
+    /// while retaining a managed URL for relaunch durability.
     func testImportingFromDataAlsoProducesThumbnails() async throws {
         let url = try Fixtures.writeJPEG(
             width: 80, height: 60, orientation: 6, named: "photo.jpg", in: tempDirectory
         )
         let data = try Data(contentsOf: url)
 
-        let collection = ImageCollection()
+        let libraryFolder = try Fixtures.makeTempDirectory("LumoImportLibrary")
+        let collection = ImageCollection(libraryFolderURL: libraryFolder)
         collection.addFromData([(name: "photo", data: data)])
 
         XCTAssertEqual(collection.items.count, 1)
         let item = try XCTUnwrap(collection.items.first)
-        XCTAssertNil(item.url, "a Photos import has no URL — that is what makes it the other site")
+        XCTAssertEqual(
+            item.url?.deletingLastPathComponent().standardizedFileURL,
+            libraryFolder.standardizedFileURL
+        )
         try await waitUntil("the imported thumbnail") {
             collection.items.first?.thumbnail != nil
         }

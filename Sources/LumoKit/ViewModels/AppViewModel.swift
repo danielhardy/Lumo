@@ -555,6 +555,7 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
     private var metadataTask: Task<Void, Never>?
     private var prefetchDelayTask: Task<Void, Never>?
     private var previewDebounceTask: Task<Void, Never>?
+    private var previewDebounceGeneration: UInt64 = 0
     private var cancellables: [AnyCancellable] = []
     private let mediaVolumeProvider: any MediaVolumeProviding
     private var mediaVolumeDiscoveryTask: Task<Void, Never>?
@@ -587,7 +588,8 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
         editStore: EditDocumentStore = EditDocumentStore(),
         preferences: UserDefaults = .standard,
         mediaVolumeProvider: any MediaVolumeProviding = MountedMediaVolumeProvider(),
-        includeBundledLooks: Bool = false
+        includeBundledLooks: Bool = false,
+        libraryFolderURL: URL = ImageCollection.defaultLibraryFolderURL
     ) {
         var interval = LumoSignpostInterval(.launch, context: .unknown)
         defer { interval.end() }
@@ -603,7 +605,9 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
         self.lookPreviewCoordinator = LookPreviewCoordinator(
             engine: engine, scheduler: ImageWorkScheduler()
         )
-        self.collection = ImageCollection(scheduler: workScheduler, defaults: preferences)
+        self.collection = ImageCollection(
+            scheduler: workScheduler, defaults: preferences, libraryFolderURL: libraryFolderURL
+        )
         self.library = LUTLibrary(
             preferences: preferences,
             userLookFolderURL: settings.ensureUserLookFolder(),
@@ -693,6 +697,9 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
             navigation.move(to: .grid)
             collection.beginThumbnailDemand()
             openFirstImageWhenScanned()
+        } else if collection.restoreLibrary() {
+            navigation.move(to: .grid)
+            collection.beginThumbnailDemand()
         }
     }
 
@@ -810,8 +817,10 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
 
     /// Open the first image of the source folder once its scan completes.
     private func openFirstImageWhenScanned() {
+        let scanToken = collection.scanToken
         Task {
             await collection.scanCompletion()
+            guard collection.scanToken == scanToken else { return }
             guard let first = collection.items.first, let fileURL = first.url else { return }
             // Folder open starts in Library even though the first image is also loaded so the
             // editor is ready for an immediate Enter/double-click handoff.
@@ -921,13 +930,52 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
     // MARK: - Image loading
 
     func openImage(url: URL) {
+        cancelPendingPreviewDebounce()
+        let ids = collection.addFromURLs([url])
         navigation.move(to: .edit)
-        load(name: url.lastPathComponent, url: url, data: nil)
+        guard let assetID = ids.first,
+              collection.items.contains(where: { $0.id == assetID }) else {
+            // Keep the editor's actionable failure state for a missing/unsupported URL even
+            // though there is no durable library item to adopt.
+            load(name: url.lastPathComponent, url: url, data: nil)
+            return
+        }
+        selectCollectionItem(id: assetID)
+        let durableURL = collection.items.first(where: { $0.id == assetID })?.url
+        // Keep the one-off editor's source label compatible with the URL picker and with
+        // source-folder opens; the collection item itself uses the extension-free display name.
+        load(name: url.lastPathComponent, url: durableURL ?? url, data: nil, assetID: assetID)
     }
 
     private func openImage(url: URL, assetID: PhotoAssetID) {
+        cancelPendingPreviewDebounce()
         navigation.move(to: .edit)
-        load(name: url.lastPathComponent, url: url, data: nil, assetID: assetID)
+        focusCollectionItem(id: assetID)
+        let itemName = collection.items.first(where: { $0.id == assetID })?.displayName
+        let name = itemName.map { displayName in
+            guard !url.pathExtension.isEmpty,
+                  !displayName.lowercased().hasSuffix(".\(url.pathExtension.lowercased())") else {
+                return displayName
+            }
+            return "\(displayName).\(url.pathExtension)"
+        } ?? url.lastPathComponent
+        load(name: name, url: url, data: nil, assetID: assetID)
+    }
+
+    private func selectCollectionItem(id: PhotoAssetID) {
+        guard let index = collection.items.firstIndex(where: { $0.id == id }) else { return }
+        collection.select(at: index)
+    }
+
+    private func focusCollectionItem(id: PhotoAssetID) {
+        collection.focus(id: id)
+    }
+
+    private func cancelPendingPreviewDebounce() {
+        previewDebounceGeneration &+= 1
+        previewDebounceTask?.cancel()
+        previewDebounceTask = nil
+        previewCoordinator.cancel()
     }
 
     /// Prepare a source without decoding pixels, then publish it and render the previews. RAW
@@ -988,7 +1036,7 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
         workScheduler.cancel(id: adjacentPreviewPrefetchJobID, pump: false)
         prefetchDelayTask?.cancel()
         prefetchDelayTask = nil
-        previewDebounceTask?.cancel()
+        cancelPendingPreviewDebounce()
         capabilitiesTask?.cancel()
         rawCapabilities = nil
         capabilitiesProbeCompleted = false
@@ -1099,13 +1147,16 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
         let shouldAdopt = !request.hadInMemorySession && !changedInMemory
         if shouldAdopt {
             activeHistory = EditHistory()
+            let documentChanged = document != stored.document
             document = stored.document
             editSessions[request.assetID] = PhotoEditSession(document: document, history: activeHistory)
             refreshLUTResolutionStatus()
-            documentRevision &+= 1
-            comparisonRevision &+= 1
-            schedulePreview()
-            scheduleAdjacentPreviewPrefetch()
+            if documentChanged {
+                documentRevision &+= 1
+                comparisonRevision &+= 1
+                schedulePreview()
+                scheduleAdjacentPreviewPrefetch()
+            }
         }
         if stored.status.isActionable {
             editStoreStatus = stored.status.message
@@ -1198,8 +1249,19 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
     // MARK: - Photo import
 
     func openImage(data: Data, name: String) {
+        let ids = collection.addFromData([(name: name, data: data)])
         navigation.move(to: .edit)
-        load(name: name, url: nil, data: data)
+        guard let assetID = ids.first,
+              let item = collection.items.first(where: { $0.id == assetID }) else {
+            load(name: name, url: nil, data: data)
+            return
+        }
+        selectCollectionItem(id: assetID)
+        load(
+            name: item.displayName, url: item.url,
+            data: item.url == nil ? data : nil, assetID: assetID,
+            dataFingerprint: item.dataFingerprint
+        )
     }
 
     func importFromPhotos() {
@@ -1239,10 +1301,12 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
         photosImportProgress = progress
         statusMessage = "Imported \(progress.processed)/\(progress.total)  \(item.name)…"
 
-        if collection.importedDataCount == 1 {
+        if collection.currentDataImportCount == 1 {
+            selectCollectionItem(id: assetID)
+            let durableURL = collection.items.first(where: { $0.id == assetID })?.url
             load(
-                name: item.name, url: nil, data: item.data, assetID: assetID,
-                traceQuality: "photosImport", dataFingerprint: item.contentDigest
+                name: item.name, url: durableURL, data: durableURL == nil ? item.data : nil,
+                assetID: assetID, traceQuality: "photosImport", dataFingerprint: item.contentDigest
             )
             presentInspectorForFirstPhotosImportItem()
         }
@@ -1285,10 +1349,13 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
     }
 
     func importPhotosData(_ items: [(name: String, data: Data)]) {
-        collection.addFromData(items)
-        if let first = items.first, let firstItem = collection.items.first {
+        let ids = collection.addFromData(items)
+        if let first = items.first, let firstID = ids.first,
+           let firstItem = collection.items.first(where: { $0.id == firstID }) {
+            selectCollectionItem(id: firstID)
             load(
-                name: first.name, url: nil, data: first.data, assetID: firstItem.id,
+                name: first.name, url: firstItem.url,
+                data: firstItem.url == nil ? first.data : nil, assetID: firstItem.id,
                 dataFingerprint: firstItem.dataFingerprint
             )
         }
@@ -1434,9 +1501,8 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
         removableMediaImportProgress = nil
     }
 
-    /// Explicitly add the checked files to Lumo's library. This operation is URL-backed and does
-    /// not copy, delete, or modify the source card; the selector makes that destination behavior
-    /// visible in its button label and the collection retains security-scoped bookmarks.
+    /// Explicitly add the checked files to Lumo's library. The collection copies them into its
+    /// managed library, never deletes or modifies the source card, and retains the imported copies.
     func importSelectedRemovableMedia() {
         guard let volume = removableMediaVolume else { return }
         let selected = selectedRemovableMediaFiles
@@ -2118,9 +2184,14 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
 
     private func scheduleSettledPreviewAfterDebounce() {
         previewDebounceTask?.cancel()
-        previewDebounceTask = Task {
+        previewDebounceGeneration &+= 1
+        let generation = previewDebounceGeneration
+        let revision = sourceRevision
+        previewDebounceTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(Self.intensityDebounceMs))
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, let self,
+                  self.previewDebounceGeneration == generation,
+                  self.sourceRevision == revision else { return }
             self.schedulePreview()
         }
     }

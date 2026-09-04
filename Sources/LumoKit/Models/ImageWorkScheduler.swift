@@ -23,6 +23,18 @@ final class ImageWorkScheduler {
         case thumbnail
     }
 
+    /// The single terminal notification delivered for an admitted job.
+    ///
+    /// A job can leave the scheduler without its operation ever running (for example when a newer
+    /// thumbnail evicts it). Callers that bridge a job to a continuation must be told about those
+    /// paths as well as normal execution, otherwise the continuation can remain suspended forever.
+    enum TerminalOutcome: Sendable, Equatable {
+        case completed
+        case cancelled
+        case evicted
+        case rejected
+    }
+
     struct JobID: Hashable, Sendable {
         let rawValue: String
 
@@ -42,6 +54,7 @@ final class ImageWorkScheduler {
     }
 
     typealias Operation = @MainActor @Sendable () async -> Void
+    typealias TerminalHandler = @MainActor @Sendable (TerminalOutcome) -> Void
 
     private struct Job {
         let id: JobID
@@ -49,12 +62,14 @@ final class ImageWorkScheduler {
         var priority: Priority
         let sequence: UInt64
         let operation: Operation
+        let onTerminal: TerminalHandler
     }
 
     private struct Running {
         let lane: Lane
         let token: UInt64
         let task: Task<Void, Never>
+        let onTerminal: TerminalHandler
     }
 
     private let configuration: Configuration
@@ -104,27 +119,40 @@ final class ImageWorkScheduler {
         id: JobID,
         lane: Lane,
         priority: Priority,
+        onTerminal: @escaping TerminalHandler = { _ in },
         operation: @escaping Operation
     ) -> Bool {
         cancel(id: id, countAsCancellation: false)
 
         nextSequence &+= 1
         let job = Job(
-            id: id, lane: lane, priority: priority, sequence: nextSequence, operation: operation
+            id: id, lane: lane, priority: priority, sequence: nextSequence, operation: operation,
+            onTerminal: onTerminal
         )
 
         if lane == .thumbnail {
             guard configuration.maxConcurrentThumbnails > 0 else {
                 droppedThumbnailCount += 1
+                onTerminal(.rejected)
                 return false
             }
-            guard configuration.maxQueuedThumbnails > 0 || runningThumbnailCount < configuration.maxConcurrentThumbnails else {
+            guard
+                configuration.maxQueuedThumbnails > 0
+                    || runningThumbnailCount < configuration.maxConcurrentThumbnails
+            else {
                 droppedThumbnailCount += 1
+                onTerminal(.rejected)
                 return false
             }
-            admitThumbnail(job)
+            guard admitThumbnail(job) else {
+                onTerminal(.rejected)
+                return false
+            }
         } else {
-            admitEditor(job)
+            guard admitEditor(job) else {
+                onTerminal(.rejected)
+                return false
+            }
         }
         let admitted = queued[job.id] != nil
         updatePeakQueue()
@@ -170,30 +198,36 @@ final class ImageWorkScheduler {
     }
 
     private func cancel(id: JobID, countAsCancellation: Bool) {
-        if queued.removeValue(forKey: id) != nil {
+        if let job = queued.removeValue(forKey: id) {
             if countAsCancellation { cancelledCount += 1 }
+            job.onTerminal(.cancelled)
             return
         }
         if let active = running.removeValue(forKey: id) {
             active.task.cancel()
             if countAsCancellation { cancelledCount += 1 }
+            active.onTerminal(.cancelled)
         }
     }
 
-    private func admitThumbnail(_ job: Job) {
+    private func admitThumbnail(_ job: Job) -> Bool {
         let pending = queued.values.filter { $0.lane == .thumbnail }
         // `pending` is only empty here when `maxQueuedThumbnails == 0` — the caller already
         // confirmed there is running capacity in that case, so there is nothing to evict and the
         // job should be queued (transiently) for `pump()` to pick straight up.
-        if pending.count >= configuration.maxQueuedThumbnails, let worst = pending.max(by: { precedes($0, $1) }) {
+        if pending.count >= configuration.maxQueuedThumbnails,
+            let worst = pending.max(by: { precedes($0, $1) })
+        {
             guard precedes(job, worst) else {
                 droppedThumbnailCount += 1
-                return
+                return false
             }
             queued.removeValue(forKey: worst.id)
             droppedThumbnailCount += 1
+            worst.onTerminal(.evicted)
         }
         queued[job.id] = job
+        return true
     }
 
     private(set) var droppedEditorCount = 0
@@ -202,7 +236,7 @@ final class ImageWorkScheduler {
         running.values.filter { $0.lane == .editor }.count
     }
 
-    private func admitEditor(_ job: Job) {
+    private func admitEditor(_ job: Job) -> Bool {
         // Once a visible edit arrives, queued histogram/comparison/prefetch work is obsolete. It
         // will be re-admitted after the frame is presented if it is still relevant.
         if job.priority == .activeEditor {
@@ -210,26 +244,30 @@ final class ImageWorkScheduler {
                 .filter { $0.lane == .editor && $0.priority != .activeEditor }
                 .map(\.id)
             for id in supportIDs {
-                queued.removeValue(forKey: id)
+                guard let support = queued.removeValue(forKey: id) else { continue }
                 droppedEditorCount += 1
+                support.onTerminal(.evicted)
             }
         }
 
         guard configuration.maxQueuedEditorJobs > 0 || runningEditorCount == 0 else {
             droppedEditorCount += 1
-            return
+            return false
         }
         let pending = queued.values.filter { $0.lane == .editor }
         if pending.count >= configuration.maxQueuedEditorJobs,
-           let worst = pending.max(by: { precedes($0, $1) }) {
+            let worst = pending.max(by: { precedes($0, $1) })
+        {
             guard precedes(job, worst) else {
                 droppedEditorCount += 1
-                return
+                return false
             }
             queued.removeValue(forKey: worst.id)
             droppedEditorCount += 1
+            worst.onTerminal(.evicted)
         }
         queued[job.id] = job
+        return true
     }
 
     private func pump() {
@@ -239,13 +277,15 @@ final class ImageWorkScheduler {
             let token = nextToken
             let task = Task { @MainActor [weak self, operation = next.operation] in
                 guard !Task.isCancelled else {
-                    self?.finished(id: next.id, token: token)
+                    self?.finished(id: next.id, token: token, outcome: .cancelled)
                     return
                 }
                 await operation()
-                self?.finished(id: next.id, token: token)
+                self?.finished(id: next.id, token: token, outcome: .completed)
             }
-            running[next.id] = Running(lane: next.lane, token: token, task: task)
+            running[next.id] = Running(
+                lane: next.lane, token: token, task: task, onTerminal: next.onTerminal
+            )
         }
     }
 
@@ -271,9 +311,10 @@ final class ImageWorkScheduler {
         peakQueuedThumbnailCount = max(peakQueuedThumbnailCount, pendingThumbnailCount)
     }
 
-    private func finished(id: JobID, token: UInt64) {
+    private func finished(id: JobID, token: UInt64, outcome: TerminalOutcome) {
         guard running[id]?.token == token else { return }
-        running.removeValue(forKey: id)
+        let active = running.removeValue(forKey: id)
+        active?.onTerminal(outcome)
         pump()
     }
 }

@@ -334,6 +334,19 @@ class TempDirectoryTestCase: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        // Imported-photo durability uses the real default Application Support location when a
+        // test does not inject a library URL. Keep those test copies scoped to the test process so
+        // one test's durable fixtures cannot change another test's expected collection contents.
+        let defaultLibrary = ImageCollection.defaultLibraryFolderURL
+        if let files = try? FileManager.default.contentsOfDirectory(
+            at: defaultLibrary, includingPropertiesForKeys: nil
+        ) {
+            for file in files where file.lastPathComponent.range(
+                of: "^[0-9a-f]{16}-", options: .regularExpression
+            ) != nil {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
         if let tempDirectory {
             try? FileManager.default.removeItem(at: tempDirectory)
         }
