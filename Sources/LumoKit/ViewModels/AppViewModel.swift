@@ -1175,13 +1175,24 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
         let panel = NSOpenPanel()
         panel.title = "Open Image"
         panel.allowedContentTypes = ImageDecoder.supportedTypes
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.directoryURL = settings.defaultSourceFolderURL
 
-        if panel.runModal() == .OK, let url = panel.url {
-            collection.clear()
-            openImage(url: url)
+        if panel.runModal() == .OK {
+            openImages(urls: panel.urls)
         }
+    }
+
+    /// Replace the one-off library with the selected files and open the first item. Keeping this
+    /// separate from the AppKit panel makes the selection behavior deterministic to test and
+    /// ensures an empty/cancelled result does not disturb the current edit.
+    func openImages(urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        let ids = collection.addFromURLs(urls)
+        guard let firstID = ids.first,
+              let firstItem = collection.items.first(where: { $0.id == firstID }),
+              let url = firstItem.url else { return }
+        openImage(url: url, assetID: firstID)
     }
 
     // MARK: - Photo import

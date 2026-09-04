@@ -684,6 +684,45 @@ final class ImageCollection: ObservableObject {
         finishDataImport()
     }
 
+    /// Adopt selected local files as URL-backed assets without reading their source bytes into
+    /// memory. This is the one-off Open Image… path, so the renderer remains responsible for RAW
+    /// demosaicing and preview-scale decoding just as it is for folder and removable-media items.
+    @discardableResult
+    func addFromURLs(_ urls: [URL]) -> [PhotoAssetID] {
+        clear()
+
+        var seen = Set<PhotoAssetID>()
+        for url in urls.sorted(by: {
+            $0.standardizedFileURL.path.localizedStandardCompare($1.standardizedFileURL.path)
+                == .orderedAscending
+        }) {
+            let canonicalURL = url.standardizedFileURL.resolvingSymlinksInPath()
+            guard FileManager.default.isReadableFile(atPath: canonicalURL.path) else {
+                addScanWarning("Skipped \(canonicalURL.lastPathComponent): the file is no longer readable.")
+                continue
+            }
+
+            let metadata = ImageMetadata.read(from: canonicalURL)
+            let asset = restoredCullingState(for: PhotoAsset(
+                url: canonicalURL,
+                filename: canonicalURL.lastPathComponent,
+                metadata: PhotoAssetMetadata(imageMetadata: metadata),
+                bookmarkData: PhotoAssetSource.bookmarkData(for: canonicalURL)
+            ))
+            guard seen.insert(asset.id).inserted else {
+                addScanWarning("Skipped duplicate \(canonicalURL.lastPathComponent).")
+                continue
+            }
+            items.append(Item(asset: asset, metadata: metadata))
+        }
+
+        invalidateCollectionProjection()
+        reconcileSelection()
+        isActive = !items.isEmpty
+        enqueueThumbnails()
+        return items.map(\.id)
+    }
+
     /// Adopt selected files from a removable volume without writing to that volume.  The files
     /// remain URL-backed so the normal stable identity, metadata, orientation, edit-session, and
     /// bookmark behavior applies exactly as it does for a source-folder asset.
