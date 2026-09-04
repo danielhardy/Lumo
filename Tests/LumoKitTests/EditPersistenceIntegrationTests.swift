@@ -225,9 +225,11 @@ final class EditPersistenceIntegrationTests: TempDirectoryTestCase {
         let imageURL = try Fixtures.writeGradientPNG(
             width: 32, height: 24, named: "raced-flush.png", in: tempDirectory
         )
+        let (writeStarted, writeStartedContinuation) = AsyncStream<Void>.makeStream()
         let store = EditDocumentStore(
             fileURL: tempDirectory.appendingPathComponent("raced-flush-edits.json"),
-            artificialWriteDelay: .milliseconds(100)
+            artificialWriteDelay: .milliseconds(100),
+            writeStartSignal: writeStartedContinuation
         )
         let viewModel = AppViewModel(engine: FakeRenderEngine(), editStore: store)
         viewModel.openImage(url: imageURL)
@@ -235,10 +237,24 @@ final class EditPersistenceIntegrationTests: TempDirectoryTestCase {
         viewModel.updateDocument { $0.adjustments = [.exposure(ev: 0.4)] }
 
         let firstFlush = Task { @MainActor in await viewModel.flushPendingWrites() }
-        // The injected delay happens after the atomic write, while the store.save call is still
-        // suspended. Avoid polling the actor here: its blocking test delay would prevent the
-        // polling accessor from observing the in-flight operation at all.
-        try await Task.sleep(for: .milliseconds(20))
+        // The store signals after the atomic write and before its non-blocking test delay, so this
+        // synchronization point proves the first worker is in flight and its snapshot is durable.
+        let didStart = await withTaskGroup(of: Bool.self) { group -> Bool in
+            group.addTask {
+                var iterator = writeStarted.makeAsyncIterator()
+                return await iterator.next() != nil
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(5))
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
+        XCTAssertTrue(didStart, "timed out waiting for the first durable write")
+        let writesBeforeReplacement = await store.writeCount
+        XCTAssertEqual(writesBeforeReplacement, 1)
 
         // The first flush is awaiting an in-flight write. The second flush cancels and replaces
         // that worker. The first worker has already made the snapshot durable, so its cancellation

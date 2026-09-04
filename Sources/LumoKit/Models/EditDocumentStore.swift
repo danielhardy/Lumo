@@ -132,18 +132,21 @@ actor EditDocumentStore {
     // the actor's durability behavior testable without introducing a protocol abstraction for a
     // small, concrete file store.
     private let artificialWriteDelay: Duration
+    private let writeStartSignal: AsyncStream<Void>.Continuation?
     private var failuresRemaining: Int
 
     init(
         fileURL: URL = EditDocumentStore.defaultFileURL,
         backupURL: URL? = nil,
         artificialWriteDelay: Duration = .zero,
-        failuresBeforeSuccess: Int = 0
+        failuresBeforeSuccess: Int = 0,
+        writeStartSignal: AsyncStream<Void>.Continuation? = nil
     ) {
         self.fileURL = fileURL
         self.backupURL = backupURL ?? fileURL.appendingPathExtension("bak")
         self.artificialWriteDelay = artificialWriteDelay
         self.failuresRemaining = failuresBeforeSuccess
+        self.writeStartSignal = writeStartSignal
     }
 
     static var defaultFileURL: URL {
@@ -215,7 +218,7 @@ actor EditDocumentStore {
     /// Save a document and its source locator. The operation is serialized by the actor and never
     /// modifies the source file. Identity documents are retained too, so clearing an existing edit
     /// survives relaunch rather than resurrecting the old record.
-    func save(_ document: EditDocument, for source: EditSourceReference) throws {
+    func save(_ document: EditDocument, for source: EditSourceReference) async throws {
         ensureLoaded()
         guard !writesBlockedByNewerSchema else {
             if case .unsupportedVersion(let version) = status { throw StoreError.newerSchema(version) }
@@ -229,14 +232,25 @@ actor EditDocumentStore {
         do {
             try persist()
             status = .ready
+            writeStartSignal?.yield(())
+            // Keep the save suspended after the write is durable so persistence tests can cancel
+            // a worker between its final successful save and its cancellation check. The delay is
+            // intentionally performed by a detached task: unlike Thread.sleep, it leaves this
+            // actor available for the test's synchronization point and for other store queries.
+            if artificialWriteDelay > .zero {
+                let delay = artificialWriteDelay
+                await Task.detached {
+                    try? await Task.sleep(for: delay)
+                }.value
+            }
         } catch {
             status = .writeFailure(error.localizedDescription)
             throw error
         }
     }
 
-    func save(_ document: EditDocument, for assetID: PhotoAssetID, url: URL? = nil) throws {
-        try save(document, for: EditSourceReference(assetID: assetID, url: url))
+    func save(_ document: EditDocument, for assetID: PhotoAssetID, url: URL? = nil) async throws {
+        try await save(document, for: EditSourceReference(assetID: assetID, url: url))
     }
 
     // MARK: - Loading and migration
@@ -364,15 +378,6 @@ actor EditDocumentStore {
             try data.write(to: fileURL, options: .atomic)
             writeCount += 1
             bytesWritten += data.count
-
-            // Keep the save suspended after the write is durable so persistence tests can cancel
-            // a worker between its final successful save and its cancellation check. This remains
-            // a test-only seam; normal stores use the zero delay.
-            if artificialWriteDelay > .zero {
-                let components = artificialWriteDelay.components
-                let seconds = Double(components.seconds) + Double(components.attoseconds) / 1e18
-                Thread.sleep(forTimeInterval: seconds)
-            }
         } catch {
             throw StoreError.cannotWrite(error.localizedDescription)
         }
