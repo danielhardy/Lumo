@@ -59,12 +59,17 @@ struct ImageSource: Sendable, Equatable {
     /// cache identity must continue to use the dynamic `cacheFingerprint` below.
     let traceToken: String
 
-    init(backing: Backing, kind: Kind, nativeExtent: CGSize) {
+    init(
+        backing: Backing,
+        kind: Kind,
+        nativeExtent: CGSize,
+        dataFingerprint: String? = nil
+    ) {
         self.backing = backing
         self.kind = kind
         self.nativeExtent = nativeExtent
         if case .data(let data) = backing {
-            self.dataFingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            self.dataFingerprint = dataFingerprint ?? PhotoAssetID.contentDigest(data)
         } else {
             self.dataFingerprint = nil
         }
@@ -85,8 +90,11 @@ struct ImageSource: Sendable, Equatable {
     /// There is no filename to inspect here, so the UTI ImageIO reports for the buffer decides. This
     /// is what makes a RAW dropped in as a payload — or a Photos item delivered as one — take the
     /// RAW path rather than being misread as a standard image.
-    init(data: Data, nativeExtent: CGSize) {
-        self.init(backing: .data(data), kind: Self.kind(forData: data), nativeExtent: nativeExtent)
+    init(data: Data, nativeExtent: CGSize, dataFingerprint: String? = nil) {
+        self.init(
+            backing: .data(data), kind: Self.kind(forData: data), nativeExtent: nativeExtent,
+            dataFingerprint: dataFingerprint
+        )
     }
 
     init(preparation: ImageSourcePreparation) {

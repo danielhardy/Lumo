@@ -1,10 +1,17 @@
 # Photos import performance
 
-Photos imports are now streamed one picker item at a time. The transfer task keeps only the
-currently awaited payload outside `ImageCollection`; each successful payload is inserted
-immediately, the first successful source begins decoding immediately, and thumbnail work remains
-on the existing four-worker/24-queued bounded scheduler. A failed or cancelled item does not remove
-successful items already published.
+Photos imports are streamed one picker item at a time. The transfer task keeps only the currently
+awaited payload outside `ImageCollection`; each successful payload is inserted immediately, the
+first successful source begins decoding immediately, and thumbnail work remains on the existing
+four-worker/24-queued bounded scheduler. A failed or cancelled item does not remove successful
+items already published.
+
+The one full-fidelity `Data` value for each accepted item remains owned by its source record because
+RAW re-development and later edits need the original bytes. There is no second batch array or
+temporary full-resolution copy: at most one provider payload is in flight, and the thumbnail queue
+is bounded. The content digest is calculated once off the main actor after transfer, then reused by
+the durable identity fallback, source fingerprint, thumbnail cache key, and first render. Photos
+local identifiers remain the durable asset identity when the provider supplies one.
 
 The import path emits these Points of Interest intervals under
 `com.lumo.app` / `workflow`:

@@ -36,7 +36,16 @@ struct PhotoAssetID: Codable, Hashable, Sendable, Equatable, CustomStringConvert
     /// Durable identity for a data-only import. Identical bytes intentionally identify one logical
     /// source; callers with two distinct Photos assets should use `photos(localIdentifier:)`.
     static func data(_ data: Data) -> PhotoAssetID {
-        PhotoAssetID(rawValue: "data:\(Self.sha256Hex(data))")
+        Self.data(dataDigest: contentDigest(data))
+    }
+
+    /// Identity for bytes whose digest was already calculated at the import boundary.
+    ///
+    /// Photos payloads are used by the asset record, thumbnail cache, and render source. Keeping
+    /// this initializer separate makes it possible for those consumers to share one full-buffer
+    /// digest instead of each walking a large RAW independently.
+    static func data(dataDigest: String) -> PhotoAssetID {
+        PhotoAssetID(rawValue: "data:\(dataDigest)")
     }
 
     /// Compatibility identity for a transient import whose provider has no durable identifier.
@@ -50,14 +59,19 @@ struct PhotoAssetID: Codable, Hashable, Sendable, Equatable, CustomStringConvert
     /// identifier. The ordinal distinguishes duplicate bytes within one import while the content
     /// and name let the same import be reopened and find its persisted edits after relaunch.
     static func imported(data: Data, name: String, ordinal: Int) -> PhotoAssetID {
-        let nameHash = SHA256.hash(data: Data(name.utf8)).map { String(format: "%02x", $0) }.joined()
-        return PhotoAssetID(rawValue: "import-data:\(Self.sha256Hex(data)):\(nameHash):\(ordinal)")
+        imported(dataDigest: contentDigest(data), name: name, ordinal: ordinal)
+    }
+
+    /// Stable identity for an imported item when the caller already owns the content digest.
+    static func imported(dataDigest: String, name: String, ordinal: Int) -> PhotoAssetID {
+        let nameHash = contentDigest(Data(name.utf8))
+        return PhotoAssetID(rawValue: "import-data:\(dataDigest):\(nameHash):\(ordinal)")
     }
 
     var raw: String { rawValue }
     var description: String { rawValue }
 
-    fileprivate static func sha256Hex(_ data: Data) -> String {
+    static func contentDigest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }
@@ -92,12 +106,12 @@ struct PhotoSourceFingerprint: Codable, Hashable, Sendable, Equatable {
         )
     }
 
-    static func data(_ data: Data) -> PhotoSourceFingerprint {
+    static func data(_ data: Data, digest: String? = nil) -> PhotoSourceFingerprint {
         PhotoSourceFingerprint(
             byteCount: Int64(data.count),
             modificationDate: nil,
             resourceIdentifier: nil,
-            sampleDigest: PhotoAssetID.sha256Hex(data)
+            sampleDigest: digest ?? PhotoAssetID.contentDigest(data)
         )
     }
 
@@ -139,7 +153,7 @@ struct PhotoSourceFingerprint: Codable, Hashable, Sendable, Equatable {
                 try handle.seek(toOffset: UInt64(max(0, byteCount - Int64(sampleSize))))
                 sample.append(try handle.read(upToCount: sampleSize) ?? Data())
             }
-            return PhotoAssetID.sha256Hex(sample)
+            return PhotoAssetID.contentDigest(sample)
         } catch {
             return nil
         }
@@ -170,13 +184,23 @@ struct PhotoAssetSource: Codable, Hashable, Sendable, Equatable {
 
     init(
         data: Data,
-        id: PhotoAssetID? = nil
+        id: PhotoAssetID? = nil,
+        fingerprint: PhotoSourceFingerprint? = nil
     ) {
-        self.id = id ?? PhotoAssetID.data(data)
+        let dataFingerprint = fingerprint ?? PhotoSourceFingerprint.data(data)
+        if let id {
+            self.id = id
+        } else if let digest = dataFingerprint.sampleDigest {
+            self.id = PhotoAssetID.data(dataDigest: digest)
+        } else {
+            // A caller-provided incomplete fingerprint is unusual, but never turn it into a
+            // shared "missing" identity. Fall back to the bytes for a safe durable identity.
+            self.id = PhotoAssetID.data(data)
+        }
         self.url = nil
         self.data = data
         self.bookmarkData = nil
-        self.fingerprint = PhotoSourceFingerprint.data(data)
+        self.fingerprint = dataFingerprint
     }
 
     /// Mint a security-scoped bookmark when the caller has authority to persist one. Failure is

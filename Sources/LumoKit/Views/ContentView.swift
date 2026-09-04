@@ -111,8 +111,19 @@ public struct ContentView: View {
                         wasCancelled = true
                         break
                     }
+                    // Hash the one transferred payload off the main actor. The digest is then
+                    // carried through the asset, thumbnail, and first-render paths, so this is
+                    // the only full-buffer hash performed for this Photos item.
+                    let contentDigest = await Task.detached(priority: .utility) {
+                        PhotoAssetID.contentDigest(data)
+                    }.value
+                    guard !Task.isCancelled else {
+                        wasCancelled = true
+                        break
+                    }
                     let payload = ImageCollection.PhotoImportItem(
-                        name: name, data: data, localIdentifier: item.itemIdentifier
+                        name: name, data: data, localIdentifier: item.itemIdentifier,
+                        contentDigest: contentDigest
                     )
                     viewModel.appendPhotosImport(payload, ordinal: ordinal)
                 } catch is CancellationError {

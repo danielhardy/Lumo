@@ -12,11 +12,15 @@ final class ImageCollection: ObservableObject {
         let name: String
         let data: Data
         let localIdentifier: String?
+        /// Computed once while the transferred payload is handed to the import pipeline. The
+        /// digest is shared by the durable source record, thumbnails, and the first render.
+        let contentDigest: String
 
-        init(name: String, data: Data, localIdentifier: String? = nil) {
+        init(name: String, data: Data, localIdentifier: String? = nil, contentDigest: String? = nil) {
             self.name = name
             self.data = data
             self.localIdentifier = localIdentifier
+            self.contentDigest = contentDigest ?? PhotoAssetID.contentDigest(data)
         }
     }
 
@@ -68,6 +72,7 @@ final class ImageCollection: ObservableObject {
         var url: URL? { asset.url }
         var displayName: String { asset.filename }
         var imageData: Data? { asset.source.data }
+        var dataFingerprint: String? { asset.source.fingerprint.sampleDigest }
 
         /// The upright display ratio is available from deferred metadata as soon as ImageIO has
         /// read it. Until then use a photographic 4:3 placeholder, which keeps the first layout
@@ -749,8 +754,9 @@ final class ImageCollection: ObservableObject {
     @discardableResult
     func appendDataImport(_ item: PhotoImportItem, ordinal: Int) -> PhotoAssetID {
         let identifier = item.localIdentifier.map(PhotoAssetID.photos)
-            ?? .imported(data: item.data, name: item.name, ordinal: ordinal)
-        let source = PhotoAssetSource(data: item.data, id: identifier)
+            ?? .imported(dataDigest: item.contentDigest, name: item.name, ordinal: ordinal)
+        let sourceFingerprint = PhotoSourceFingerprint.data(item.data, digest: item.contentDigest)
+        let source = PhotoAssetSource(data: item.data, id: identifier, fingerprint: sourceFingerprint)
         let asset = restoredCullingState(for: PhotoAsset(
             source: source,
             filename: item.name,
@@ -1087,7 +1093,10 @@ final class ImageCollection: ObservableObject {
             if let url {
                 thumbnail = await Task.detached { Thumbnails.generate(from: url) }.value
             } else if let data {
-                thumbnail = await Task.detached { Thumbnails.generate(from: data) }.value
+                let dataFingerprint = item.dataFingerprint
+                thumbnail = await Task.detached {
+                    Thumbnails.generate(from: data, dataFingerprint: dataFingerprint)
+                }.value
             } else {
                 thumbnail = nil
             }

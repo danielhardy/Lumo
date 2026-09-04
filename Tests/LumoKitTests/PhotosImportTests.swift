@@ -25,6 +25,22 @@ final class PhotosImportTests: TempDirectoryTestCase {
         XCTAssertEqual(collection.items[0].asset.source.id, id)
     }
 
+    func testImportedContentDigestIsSharedBySourceAndFallbackIdentity() throws {
+        let url = try Fixtures.writeJPEG(
+            width: 80, height: 60, orientation: 1, named: "digest.jpg", in: tempDirectory
+        )
+        let data = try Data(contentsOf: url)
+        let item = ImageCollection.PhotoImportItem(name: "Digest", data: data)
+        let collection = ImageCollection()
+
+        collection.beginDataImport()
+        let id = collection.appendDataImport(item, ordinal: 0)
+
+        XCTAssertEqual(item.contentDigest, PhotoAssetID.contentDigest(data))
+        XCTAssertEqual(collection.items[0].dataFingerprint, item.contentDigest)
+        XCTAssertTrue(id.raw.contains(item.contentDigest))
+    }
+
     func testImportReservationsReplaceByOrdinalWithoutReordering() throws {
         let url = try Fixtures.writeJPEG(
             width: 32, height: 24, orientation: 1, named: "reserved.jpg", in: tempDirectory

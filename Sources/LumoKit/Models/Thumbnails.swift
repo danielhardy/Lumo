@@ -63,15 +63,29 @@ enum Thumbnails {
     }
 
     /// Generate a thumbnail from in-memory data (Photos imports).
-    static func generate(from data: Data, maxPixelSize: Int = defaultMaxPixelSize) -> NSImage? {
+    ///
+    /// `dataFingerprint` is supplied by the import record when available. The fallback keeps this
+    /// API useful for one-off data opens, while streamed Photos imports avoid hashing the same RAW
+    /// again merely to form the thumbnail-cache key.
+    static func generate(
+        from data: Data,
+        maxPixelSize: Int = defaultMaxPixelSize,
+        dataFingerprint: String? = nil
+    ) -> NSImage? {
         var interval = LumoSignpostInterval(
             .photoThumbnail,
             context: LumoTraceContext(sourceFingerprint: "data:" + String(data.count), quality: "thumbnail")
         )
         defer { interval.end() }
         guard maxPixelSize > 0 else { return nil }
-        let sourceIdentity = ImageSource(data: data, nativeExtent: .zero)
-        let key = cacheKey(source: RenderSourceFingerprint(sourceIdentity).value, maxPixelSize: maxPixelSize)
+        // Supplying the digest lets ImageSource build the same cache identity without walking the
+        // full payload again. The zero extent is intentional: thumbnails do not depend on the
+        // source's full pixel dimensions.
+        let sourceIdentity = ImageSource(
+            data: data, nativeExtent: .zero, dataFingerprint: dataFingerprint
+        )
+        let sourceKey = RenderSourceFingerprint(sourceIdentity).value
+        let key = cacheKey(source: sourceKey, maxPixelSize: maxPixelSize)
         if let data = cache.value(for: key), let image = image(fromPNG: data) {
             LumoObservability.event(.cacheHit, quality: .thumbnail, detail: "layer=thumbnail")
             return image

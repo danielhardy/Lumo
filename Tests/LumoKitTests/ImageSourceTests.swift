@@ -41,6 +41,16 @@ final class ImageSourceTests: TempDirectoryTestCase {
         XCTAssertEqual(ImageSource.kind(forData: Data()), .standard)
     }
 
+    func testDataSourceCanReuseAnImportFingerprint() throws {
+        let url = try Fixtures.writeJPEG(width: 16, height: 12, orientation: 1,
+                                         named: "fingerprint.jpg", in: tempDirectory)
+        let data = try Data(contentsOf: url)
+        let digest = "already-computed"
+        let source = ImageSource(data: data, nativeExtent: .zero, dataFingerprint: digest)
+
+        XCTAssertTrue(source.cacheFingerprint.contains("data:\(digest):standard:0:0"))
+    }
+
     /// The half the extension rule cannot cover: RAW bytes with no filename. A local file may still
     /// be usable through its URL extension while the current decoder refuses its extension-free
     /// byte payload, so only decoder-recognized byte fixtures participate in this check.

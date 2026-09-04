@@ -936,7 +936,7 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
     /// below deliberately has one active preparation and one replaceable pending request.
     private func load(
         name: String, url: URL?, data: Data?, assetID: PhotoAssetID? = nil,
-        traceQuality: String = "open"
+        traceQuality: String = "open", dataFingerprint: String? = nil
     ) {
         let assetID = assetID ?? (url.map(PhotoAssetID.file) ?? data.map(PhotoAssetID.data) ?? .data(Data()))
         endUndoGrouping()
@@ -1004,7 +1004,9 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
         if let url {
             source = ImageSource(url: url, nativeExtent: .zero)
         } else if let data {
-            source = ImageSource(data: data, nativeExtent: .zero)
+            source = ImageSource(
+                data: data, nativeExtent: .zero, dataFingerprint: dataFingerprint
+            )
         } else {
             source = ImageSource(backing: .data(Data()), kind: .standard, nativeExtent: .zero)
         }
@@ -1142,7 +1144,9 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
                 if let url = item.url {
                     source = ImageSource(url: url, nativeExtent: extent)
                 } else if let data = item.imageData {
-                    source = ImageSource(data: data, nativeExtent: extent)
+                    source = ImageSource(
+                        data: data, nativeExtent: extent, dataFingerprint: item.dataFingerprint
+                    )
                 } else {
                     return nil
                 }
@@ -1231,8 +1235,10 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
         statusMessage = "Imported \(progress.processed)/\(progress.total)  \(item.name)…"
 
         if collection.importedDataCount == 1 {
-            load(name: item.name, url: nil, data: item.data, assetID: assetID,
-                 traceQuality: "photosImport")
+            load(
+                name: item.name, url: nil, data: item.data, assetID: assetID,
+                traceQuality: "photosImport", dataFingerprint: item.contentDigest
+            )
             presentInspectorForFirstPhotosImportItem()
         }
     }
@@ -1275,8 +1281,11 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
 
     func importPhotosData(_ items: [(name: String, data: Data)]) {
         collection.addFromData(items)
-        if let first = items.first, let assetID = collection.items.first?.id {
-            load(name: first.name, url: nil, data: first.data, assetID: assetID)
+        if let first = items.first, let firstItem = collection.items.first {
+            load(
+                name: first.name, url: nil, data: first.data, assetID: firstItem.id,
+                dataFingerprint: firstItem.dataFingerprint
+            )
         }
     }
 
@@ -1575,7 +1584,10 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
         if let url = item.url {
             openImage(url: url, assetID: item.id)
         } else if let data = item.imageData {
-            load(name: item.displayName, url: nil, data: data, assetID: item.id)
+            load(
+                name: item.displayName, url: nil, data: data, assetID: item.id,
+                dataFingerprint: item.dataFingerprint
+            )
         }
     }
 
@@ -1726,7 +1738,10 @@ public final class AppViewModel: ObservableObject, LookPreviewProviding {
             openImage(url: url, assetID: item.id)
         } else if let data = item.imageData {
             if loadMode { navigation.move(to: .edit) }
-            load(name: item.displayName, url: nil, data: data, assetID: item.id)
+            load(
+                name: item.displayName, url: nil, data: data, assetID: item.id,
+                dataFingerprint: item.dataFingerprint
+            )
         }
     }
 
