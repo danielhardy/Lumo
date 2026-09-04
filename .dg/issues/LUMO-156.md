@@ -2,7 +2,7 @@
 id: LUMO-156
 title: Replace Look color swatches with photo thumbnails showing the applied Look
 type: feature
-status: ready
+status: done
 priority: medium
 labels:
   - looks
@@ -10,9 +10,45 @@ labels:
   - preview
   - verification
 created: 2026-09-03T14:41:57.393Z
-updated: 2026-09-03T14:55:06.497Z
+updated: 2026-09-03T16:21:23.081Z
 order: a0
 board: product
+verification_report:
+  verdict: pass
+  acceptance_criteria:
+    - criterion: Look rows show a recognizable applied-Look photo thumbnail (~100px scale) instead of only a color gradient
+      result: pass
+      notes: LookPreviewThumbnail renders a 168x112 RenderEngine thumbnail displayed at 84x56pt; LookPreviewLayout.rowMinHeight=72 fits the inspector.
+    - criterion: Thumbnails support visual comparison while preserving name, selected state, intensity controls, and apply behavior
+      result: pass
+      notes: LookRow layout unchanged besides the swatch->thumbnail swap; selection, name, checkmark all intact.
+    - criterion: Preview generation is bounded/cached/lazy so scrolling does not stall the UI
+      result: pass
+      notes: Lazy via SwiftUI .task(id:), 24-entry/8MiB BoundedLRUCache keyed by source+document+LUT+size, and a dedicated bounded ImageWorkScheduler (own instance, uniform .visibleGrid priority) separate from the editor/grid scheduler.
+    - criterion: Uses the current photo when available with a deterministic fallback for no-photo/render-failure
+      result: pass
+      notes: image() returns nil for no source or scheduler rejection/render failure; LookPreviewThumbnail falls back to the existing LUT-swatch gradient, covered by testNoSourceReturnsDeterministicFallbackSignalWithoutSchedulingRender.
+    - criterion: Bundled, imported, and saved Looks all get the same preview treatment; missing/invalid LUTs fail gracefully
+      result: pass
+      notes: LookRow/LookPreviewThumbnail treatment is applied uniformly in LookInspectorView regardless of CubeLUT.source; failure path returns nil -> fallback swatch, does not remove the row.
+    - criterion: Preview thumbnails expose accessibility labels or stay hidden from VoiceOver appropriately
+      result: pass
+      notes: LookPreviewThumbnail is .accessibilityHidden(true); LookRow already carries an accessibilityLabel/Value with name and selection state.
+    - criterion: Automated coverage for preview selection/fallback, caching/render bounds, and row layout at supported widths
+      result: pass
+      notes: LookPreviewTests covers thumbnail-quality request shape, non-mutation of the active document, cache hit/coalescing, and the no-source fallback; LookInspectorViewTests covers rendered layout at supported inspector widths.
+  checks_run:
+    - swift test --filter LookPreviewTests (4 passed)
+    - swift test --filter LookInspectorViewTests (4 passed)
+    - swift build -c release (clean)
+    - manual trace of ImageWorkScheduler queue-eviction vs LookPreviewCoordinator continuation bridging for a hang risk
+  findings: []
+  fixes: []
+  verification_commits: []
+  actor: claude
+  resolved_model: sonnet
+  completed_at: 2026-09-03T16:21:23.078Z
+  session: 01MTLQAHA1ITB25GQ0
 ---
 
 ## Objective
@@ -62,6 +98,36 @@ update when the selected photo changes, and whether a static sample image is nee
 as the no-photo fallback. Preserve the macOS 14 and zero-third-party-dependency
 constraints.
 
+### Comment — codex @ 2026-09-03T16:17:18.782Z
+
+Implemented and verified in commit be0d66b. Added applied-photo Look thumbnails backed by the shared RenderEngine thumbnail path, with 168×112 bounded renders, lazy loading, 24-entry/8 MiB LRU caching, source/document revision refresh, deterministic LUT-swatch fallback for no-photo/render-failure states, non-destructive full-strength Look auditioning, and VoiceOver-hidden decorative previews. Bundled, imported, and saved Looks use the same row treatment. Checks: swift test --filter LookPreviewTests; swift test --filter LookInspectorViewTests; swift build -c release; git diff --check; dg validate. All passed; dg validate reports only the known pickup-runner model warning.
+
 ## Agent log
 
 <!-- Generated summaries only. Detailed activity lives in events.jsonl. -->
+
+- 2026-09-03T16:21:23.079Z: Verification report
+Verdict: PASS
+Acceptance criteria:
+- [x] Look rows show a recognizable applied-Look photo thumbnail (~100px scale) instead of only a color gradient (pass) — LookPreviewThumbnail renders a 168x112 RenderEngine thumbnail displayed at 84x56pt; LookPreviewLayout.rowMinHeight=72 fits the inspector.
+- [x] Thumbnails support visual comparison while preserving name, selected state, intensity controls, and apply behavior (pass) — LookRow layout unchanged besides the swatch->thumbnail swap; selection, name, checkmark all intact.
+- [x] Preview generation is bounded/cached/lazy so scrolling does not stall the UI (pass) — Lazy via SwiftUI .task(id:), 24-entry/8MiB BoundedLRUCache keyed by source+document+LUT+size, and a dedicated bounded ImageWorkScheduler (own instance, uniform .visibleGrid priority) separate from the editor/grid scheduler.
+- [x] Uses the current photo when available with a deterministic fallback for no-photo/render-failure (pass) — image() returns nil for no source or scheduler rejection/render failure; LookPreviewThumbnail falls back to the existing LUT-swatch gradient, covered by testNoSourceReturnsDeterministicFallbackSignalWithoutSchedulingRender.
+- [x] Bundled, imported, and saved Looks all get the same preview treatment; missing/invalid LUTs fail gracefully (pass) — LookRow/LookPreviewThumbnail treatment is applied uniformly in LookInspectorView regardless of CubeLUT.source; failure path returns nil -> fallback swatch, does not remove the row.
+- [x] Preview thumbnails expose accessibility labels or stay hidden from VoiceOver appropriately (pass) — LookPreviewThumbnail is .accessibilityHidden(true); LookRow already carries an accessibilityLabel/Value with name and selection state.
+- [x] Automated coverage for preview selection/fallback, caching/render bounds, and row layout at supported widths (pass) — LookPreviewTests covers thumbnail-quality request shape, non-mutation of the active document, cache hit/coalescing, and the no-source fallback; LookInspectorViewTests covers rendered layout at supported inspector widths.
+Checks run:
+- swift test --filter LookPreviewTests (4 passed)
+- swift test --filter LookInspectorViewTests (4 passed)
+- swift build -c release (clean)
+- manual trace of ImageWorkScheduler queue-eviction vs LookPreviewCoordinator continuation bridging for a hang risk
+Findings:
+- None
+Fixes:
+- None
+Verification commits:
+- None
+Actor: claude
+Resolved model: sonnet
+Pickup session: 01MTLQAHA1ITB25GQ0
+Summary: Independent counterpoint pass: reviewed LookPreviewCoordinator, ImageWorkScheduler, LookInspectorView, and LookPreviewTests. Traced the checked-continuation bridge in image() against the scheduler's queue-eviction path for a possible permanent hang on eviction; confirmed it cannot trigger here because the coordinator uses its own dedicated ImageWorkScheduler instance at a single uniform priority (.visibleGrid), so a full queue always drops the newest job (properly resuming with nil) rather than evicting an already-admitted one. All acceptance criteria hold. swift test --filter LookPreviewTests (4/4), swift test --filter LookInspectorViewTests (4/4), and swift build -c release all pass. No fixes needed; no blockers found.

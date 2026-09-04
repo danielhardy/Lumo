@@ -2,7 +2,7 @@
 id: LUMO-161
 title: "main branch fails swift build: AppViewModel/LookSaveCoordinator reference LUTLibrary/CubeLUT APIs never committed"
 type: bug
-status: backlog
+status: done
 priority: urgent
 creation_provenance:
   runner: claude
@@ -12,9 +12,9 @@ labels:
   - verification
   - build
 created: 2026-09-03T15:08:17.525Z
-updated: 2026-09-03T15:08:51.493Z
+updated: 2026-09-03T18:18:41.786Z
 parent: LUMO-155
-order: zzzh
+order: zzzzzzzh
 board: product
 ---
 

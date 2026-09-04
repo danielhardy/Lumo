@@ -63,4 +63,51 @@ final class LumoWindowAppearanceControllerTests: XCTestCase {
         XCTAssertNil(window.appearance)
         controller.stop()
     }
+
+    func testStartedControllerAppliesAppearanceToNativeApplicationChrome() {
+        let settings = makeSettings()
+        var appliedAppearanceNames: [NSAppearance.Name?] = []
+        let controller = LumoWindowAppearanceController(
+            settings: settings,
+            windowProvider: { [] },
+            applicationAppearanceApplier: { appearance in
+                appliedAppearanceNames.append(appearance?.name)
+            }
+        )
+        controller.start()
+
+        settings.alwaysDarkMode = true
+        settings.alwaysDarkMode = false
+
+        XCTAssertEqual(appliedAppearanceNames, [nil, .darkAqua, nil])
+        controller.stop()
+    }
+
+    func testAQueuedWindowRefreshCannotRestoreDarkModeAfterTurningItOff() async {
+        let settings = makeSettings()
+        var appliedAppearanceNames: [NSAppearance.Name?] = []
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: true
+        )
+        let controller = LumoWindowAppearanceController(
+            settings: settings,
+            windowProvider: { [window] },
+            applicationAppearanceApplier: { appearance in
+                appliedAppearanceNames.append(appearance?.name)
+            }
+        )
+        controller.start()
+
+        settings.alwaysDarkMode = true
+        settings.alwaysDarkMode = false
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        await Task.yield()
+
+        XCTAssertNil(window.appearance)
+        XCTAssertEqual(appliedAppearanceNames.suffix(2), [nil, nil])
+        controller.stop()
+    }
 }

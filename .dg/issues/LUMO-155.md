@@ -2,7 +2,7 @@
 id: LUMO-155
 title: Always dark mode updates Settings but not the main app
 type: bug
-status: review
+status: done
 priority: medium
 labels:
   - appearance
@@ -10,11 +10,11 @@ labels:
   - macos
   - verification
 created: 2026-09-03T14:39:40.454Z
-updated: 2026-09-03T15:12:22.108Z
+updated: 2026-09-03T18:19:01.684Z
 depends_on:
   - LUMO-160
   - LUMO-161
-order: w
+order: zzzzzzzq
 board: product
 ---
 

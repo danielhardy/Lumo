@@ -2,7 +2,7 @@
 id: LUMO-159
 title: Opening a second image leaves the app stuck on the loading spinner
 type: bug
-status: backlog
+status: done
 priority: high
 labels:
   - loading
@@ -11,9 +11,36 @@ labels:
   - lifecycle
   - verification
 created: 2026-09-03T15:06:01.276Z
-updated: 2026-09-03T15:06:01.276Z
-order: zzy
+updated: 2026-09-03T16:11:53.325Z
+order: t
 board: product
+commits:
+  - deaa14d
+verification_report:
+  verdict: pass
+  acceptance_criteria:
+    - criterion: Sequential replacement preview completes without an unrelated user action and leaves loading state
+      result: pass
+    - criterion: Preview surfaces are directly observed while loading, so new source frames trigger view construction and drawable presentation
+      result: pass
+    - criterion: Existing source revision, cancellation, failure, comparison, and persistence behavior remains covered by the existing lifecycle suites
+      result: pass
+    - criterion: Gated fake-renderer regression covers the second preview and terminal ready state
+      result: pass
+  checks_run:
+    - swift test --filter ThumbnailSwitchLifecycleTests
+    - swift test (708 tests, 0 failures, 14 expected skips)
+    - swift build -c release
+    - git diff --check
+    - dg validate
+  findings: []
+  fixes: []
+  verification_commits:
+    - deaa14d
+  actor: codex
+  resolved_model: gpt-5.6-luna
+  completed_at: 2026-09-03T16:11:53.319Z
+  session: 01MTLPQCPLHW56EKD1
 ---
 
 ## Objective
@@ -66,3 +93,27 @@ control and must not make source switching mutate edit history.
 ## Agent log
 
 <!-- Generated summaries only. Detailed activity lives in events.jsonl. -->
+
+- 2026-09-03T16:11:53.322Z: Verification report
+Verdict: PASS
+Acceptance criteria:
+- [x] Sequential replacement preview completes without an unrelated user action and leaves loading state (pass)
+- [x] Preview surfaces are directly observed while loading, so new source frames trigger view construction and drawable presentation (pass)
+- [x] Existing source revision, cancellation, failure, comparison, and persistence behavior remains covered by the existing lifecycle suites (pass)
+- [x] Gated fake-renderer regression covers the second preview and terminal ready state (pass)
+Checks run:
+- swift test --filter ThumbnailSwitchLifecycleTests
+- swift test (708 tests, 0 failures, 14 expected skips)
+- swift build -c release
+- git diff --check
+- dg validate
+Findings:
+- None
+Fixes:
+- None
+Verification commits:
+- deaa14d
+Actor: codex
+Resolved model: gpt-5.6-luna
+Pickup session: 01MTLPQCPLHW56EKD1
+Summary: Keep PreviewView subscribed to the main and comparison preview surfaces while loading so completed replacement renders trigger the canvas lifecycle; add gated sequential A-to-B regression coverage.
