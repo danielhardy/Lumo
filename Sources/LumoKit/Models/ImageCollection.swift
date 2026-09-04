@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import Combine
 
 /// Manages a collection of imported images with async thumbnail generation.
 @MainActor
@@ -59,14 +60,14 @@ final class ImageCollection: ObservableObject {
         var isPlaceholder: Bool { placeholder != nil }
     }
 
-    struct Item: Identifiable {
-        var asset: PhotoAsset
-        var thumbnail: NSImage?
+    final class Item: ObservableObject, Identifiable {
+        @Published var asset: PhotoAsset
+        @Published var thumbnail: NSImage?
         /// Filled after discovery. A nil value means deferred metadata work has not completed.
-        var metadata: ImageMetadata? = nil
+        @Published var metadata: ImageMetadata? = nil
         /// Relative directory from the source-folder root ("" for top level).
         /// Drives the grouped file browser; empty for Photos imports.
-        var subfolder: String = ""
+        @Published var subfolder: String
 
         var id: PhotoAssetID { asset.id }
         var url: URL? { asset.url }
@@ -99,7 +100,7 @@ final class ImageCollection: ObservableObject {
 
         /// UI compatibility initializer. The durable record is built first; the AppKit thumbnail
         /// remains a presentation concern of `ImageCollection.Item`.
-        init(
+        convenience init(
             url: URL?,
             displayName: String,
             thumbnail: NSImage? = nil,
@@ -141,6 +142,12 @@ final class ImageCollection: ObservableObject {
     /// The persistent source folder, if one is set (nil for Photos imports or
     /// one-off single-image opens).
     @Published var sourceFolderURL: URL?
+
+    /// Revisions cover only inputs to the shared collection projections. In particular, thumbnail
+    /// state and the decoded NSImage live on `Item` and do not advance this value.
+    private var collectionRevision: UInt64 = 0
+    private var filterRevision: UInt64 = 0
+    private var projectionCache = CollectionProjection.Cache()
 
     private static let bookmarkKey = "imageSourceFolderBookmark"
     private static let cullingStateKey = "imageLibraryCullingState"
@@ -228,18 +235,23 @@ final class ImageCollection: ObservableObject {
     }
 
     var filteredItems: [Item] {
-        CollectionProjection.filteredItems(items: items, filter: filter)
+        let projection = collectionProjection
+        return projection.filteredIndices.map { items[$0] }
     }
 
     var filteredIndices: [Int] {
-        CollectionProjection.filteredIndices(items: items, filter: filter)
+        collectionProjection.filteredIndices
     }
 
     var filteredItemCount: Int { filteredIndices.count }
 
+    /// Internal performance evidence for the opt-in large-library benchmark and cache tests.
+    var projectionRebuildCount: Int { projectionCache.rebuildCount }
+
     func setFilter(_ filter: LibraryFilter) {
         guard self.filter != filter else { return }
         self.filter = filter
+        filterRevision &+= 1
         reconcileFilteredSelection()
     }
 
@@ -259,6 +271,7 @@ final class ImageCollection: ObservableObject {
             return false
         }
         recordCullingChange(itemID: itemID, oldState: oldState)
+        invalidateCollectionProjection(notify: true)
         items[index].asset.flag = flag
         persistCullingState(for: items[index].asset)
         if shouldAdvance { advance(from: index) }
@@ -275,6 +288,7 @@ final class ImageCollection: ObservableObject {
         let oldState = items[index].asset.libraryState
         guard oldState.rating != clamped else { return false }
         recordCullingChange(itemID: itemID, oldState: oldState)
+        invalidateCollectionProjection(notify: true)
         items[index].asset.rating = clamped
         persistCullingState(for: items[index].asset)
         if !filteredIndices.contains(selectedIndex) { reconcileFilteredSelection() }
@@ -288,6 +302,7 @@ final class ImageCollection: ObservableObject {
         guard let change = cullingUndoStack.popLast(),
               let index = items.firstIndex(where: { $0.id == change.itemID }) else { return false }
         items[index].asset.libraryState = change.oldState
+        invalidateCollectionProjection(notify: true)
         persistCullingState(for: items[index].asset)
         if let activeID = change.activeIDBefore,
            filteredIndices.contains(where: { items[$0].id == activeID }) {
@@ -384,6 +399,7 @@ final class ImageCollection: ObservableObject {
         scanTask?.cancel()
         stopMetadataLoading()
         items = []
+        invalidateCollectionProjection()
         pendingImportSlots.removeAll()
         dataImportOrdinals.removeAll()
         dataImportOverflowItemIDs.removeAll()
@@ -431,6 +447,7 @@ final class ImageCollection: ObservableObject {
                         self.enqueueMetadata(for: item, generation: generation)
                     }
 
+                    self.invalidateCollectionProjection()
                     // Sorting the accumulated prefix on every batch keeps the final ordering
                     // deterministic while still making the first useful rows visible immediately.
                     self.items.sort(by: Self.itemPrecedes)
@@ -610,6 +627,7 @@ final class ImageCollection: ObservableObject {
         case .success(let metadata):
             items[index].metadata = metadata
             items[index].asset.updateMetadata(from: metadata)
+            invalidateCollectionProjection(notify: true)
         case .failure(let warning):
             addScanWarning(warning)
             let item = items[index]
@@ -621,6 +639,7 @@ final class ImageCollection: ObservableObject {
             scheduler.cancel(id: thumbnailJobID(for: item))
             thumbnailJobIDs.remove(thumbnailJobID(for: item))
             items.remove(at: index)
+            invalidateCollectionProjection()
             dataImportOverflowItemIDs.remove(itemID)
             if dataImportOrdinals.indices.contains(index) {
                 dataImportOrdinals.remove(at: index)
@@ -681,6 +700,7 @@ final class ImageCollection: ObservableObject {
         scopedURL = accessURL
 
         items = []
+        invalidateCollectionProjection()
         pendingImportSlots.removeAll()
         dataImportOrdinals.removeAll()
         dataImportOverflowItemIDs.removeAll()
@@ -713,6 +733,7 @@ final class ImageCollection: ObservableObject {
             }
             items.append(Item(asset: asset, metadata: metadata))
         }
+        invalidateCollectionProjection()
         reconcileSelection()
         isActive = !items.isEmpty
         enqueueThumbnails()
@@ -730,7 +751,9 @@ final class ImageCollection: ObservableObject {
         stopMetadataLoading()
         stopScopedURL()
         items = []
+        invalidateCollectionProjection()
         pendingImportSlots = (0..<max(0, reservedCount)).map { PendingImportSlot(ordinal: $0) }
+        invalidateCollectionProjection()
         dataImportOrdinals.removeAll()
         dataImportOverflowItemIDs.removeAll()
         dataImportItemIndices.removeAll()
@@ -766,6 +789,7 @@ final class ImageCollection: ObservableObject {
         )
         let insertionIndex = dataImportOrdinals.firstIndex(where: { $0 > ordinal }) ?? items.count
         items.insert(Item(asset: asset, metadata: nil), at: insertionIndex)
+        invalidateCollectionProjection()
         dataImportOrdinals.insert(ordinal, at: insertionIndex)
         let shiftedIDs = dataImportItemIndices.compactMap { itemID, itemIndex in
             itemIndex >= insertionIndex ? itemID : nil
@@ -778,11 +802,13 @@ final class ImageCollection: ObservableObject {
             pendingImportSlots[slotIndex].assetID = identifier
             pendingImportSlots[slotIndex].name = item.name
             pendingImportSlots[slotIndex].state = .pending
+            invalidateCollectionProjection()
         } else {
             // Keep an unexpected ordinal visible as a tail entry for this streamed operation.
             // The normal PHPhotosPicker path reserves every ordinal, so this is a defensive
             // fallback for a provider delivering more items than it declared or a misused caller.
             dataImportOverflowItemIDs.insert(identifier)
+            invalidateCollectionProjection()
         }
         reconcileSelection()
         isActive = true
@@ -799,6 +825,7 @@ final class ImageCollection: ObservableObject {
         metadataContinuation = nil
         pendingImportSlots.removeAll()
         dataImportOverflowItemIDs.removeAll()
+        invalidateCollectionProjection()
         isActive = !items.isEmpty
         enqueueThumbnails()
     }
@@ -811,6 +838,7 @@ final class ImageCollection: ObservableObject {
         }
         pendingImportSlots[index].name = name
         pendingImportSlots[index].state = .failed
+        invalidateCollectionProjection()
     }
 
     /// Mark the next unresolved reservation as failed for compatibility with callers that do not
@@ -828,13 +856,26 @@ final class ImageCollection: ObservableObject {
     /// the active culling filter and can therefore collapse out during an import. An arrival with
     /// no reservation is rendered as a loaded tail entry rather than being silently omitted.
     var thumbnailEntries: [ThumbnailEntry] {
-        CollectionProjection.thumbnailEntries(
+        collectionProjection.thumbnailEntries
+    }
+
+    private var collectionProjection: CollectionProjection.Snapshot {
+        projectionCache.snapshot(
             items: items,
             filter: filter,
+            collectionRevision: collectionRevision,
+            filterRevision: filterRevision,
             pendingSlots: pendingImportSlots,
             itemIndices: dataImportItemIndices,
             overflowIDs: dataImportOverflowItemIDs
         )
+    }
+
+    private func invalidateCollectionProjection(notify: Bool = false) {
+        collectionRevision &+= 1
+        if notify {
+            objectWillChange.send()
+        }
     }
 
     /// Number of source items currently retained by a streamed import.
@@ -945,6 +986,7 @@ final class ImageCollection: ObservableObject {
         stopMetadataLoading()
         stopScopedURL()
         items = []
+        invalidateCollectionProjection()
         pendingImportSlots.removeAll()
         dataImportOrdinals.removeAll()
         dataImportOverflowItemIDs.removeAll()
@@ -1036,6 +1078,7 @@ final class ImageCollection: ObservableObject {
         let id = thumbnailJobID(for: item)
         let url = item.url
         let data = item.imageData
+        let dataFingerprint = item.dataFingerprint
         let itemID = item.id
         scheduler.enqueue(
             id: id, lane: .thumbnail,
@@ -1045,7 +1088,6 @@ final class ImageCollection: ObservableObject {
             if let url {
                 thumbnail = await Task.detached { Thumbnails.generate(from: url) }.value
             } else if let data {
-                let dataFingerprint = item.dataFingerprint
                 thumbnail = await Task.detached {
                     Thumbnails.generate(from: data, dataFingerprint: dataFingerprint)
                 }.value

@@ -6,6 +6,61 @@ import Foundation
 /// derived views as value functions gives the library and grid a small, independently testable seam
 /// and makes it explicit that thumbnail arrival must not alter selection authority.
 enum CollectionProjection {
+    struct Snapshot {
+        let filteredIndices: [Int]
+        let thumbnailEntries: [ImageCollection.ThumbnailEntry]
+    }
+
+    /// Memoizes projections that are shared by the grid, filmstrip, and collection commands.
+    /// Thumbnail changes intentionally do not alter either revision, so a completed cell does not
+    /// make a large library walk its full item array again.
+    struct Cache {
+        private var key: Key?
+        private var value: Snapshot?
+        private(set) var rebuildCount = 0
+
+        private struct Key: Equatable {
+            let collectionRevision: UInt64
+            let filterRevision: UInt64
+        }
+
+        mutating func snapshot(
+            items: [ImageCollection.Item],
+            filter: LibraryFilter,
+            collectionRevision: UInt64,
+            filterRevision: UInt64,
+            pendingSlots: [ImageCollection.PendingImportSlot],
+            itemIndices: [PhotoAssetID: Int],
+            overflowIDs: Set<PhotoAssetID>
+        ) -> Snapshot {
+            let nextKey = Key(
+                collectionRevision: collectionRevision,
+                filterRevision: filterRevision
+            )
+            if key == nextKey, let value {
+                return value
+            }
+
+            let filteredIndices = CollectionProjection.filteredIndices(items: items, filter: filter)
+            let thumbnailEntries = CollectionProjection.thumbnailEntries(
+                items: items,
+                filter: filter,
+                pendingSlots: pendingSlots,
+                itemIndices: itemIndices,
+                overflowIDs: overflowIDs,
+                filteredIndices: filteredIndices
+            )
+            let nextValue = Snapshot(
+                filteredIndices: filteredIndices,
+                thumbnailEntries: thumbnailEntries
+            )
+            key = nextKey
+            value = nextValue
+            rebuildCount += 1
+            return nextValue
+        }
+    }
+
     static func selectedIndices(
         items: [ImageCollection.Item],
         selection: LibrarySelectionModel
@@ -34,10 +89,12 @@ enum CollectionProjection {
         filter: LibraryFilter,
         pendingSlots: [ImageCollection.PendingImportSlot],
         itemIndices: [PhotoAssetID: Int],
-        overflowIDs: Set<PhotoAssetID>
+        overflowIDs: Set<PhotoAssetID>,
+        filteredIndices: [Int]? = nil
     ) -> [ImageCollection.ThumbnailEntry] {
         guard !pendingSlots.isEmpty else {
-            return filteredIndices(items: items, filter: filter).map { index in
+            let indices = filteredIndices ?? Self.filteredIndices(items: items, filter: filter)
+            return indices.map { index in
                 ImageCollection.ThumbnailEntry(
                     id: items[index].id,
                     itemIndex: index,

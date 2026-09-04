@@ -162,7 +162,7 @@ struct SourceBrowserView: View {
 // MARK: - Row
 
 private struct SourceBrowserRow: View {
-    let item: ImageCollection.Item
+    @ObservedObject var item: ImageCollection.Item
     let isSelected: Bool
 
     var body: some View {

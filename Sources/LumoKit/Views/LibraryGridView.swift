@@ -15,17 +15,18 @@ struct LibraryGridView: View {
     @State private var mosaicCache = LibraryMosaicLayoutCache()
 
     var body: some View {
+        let entries = collection.thumbnailEntries
+
         VStack(spacing: 0) {
             LibraryFilterBar(collection: collection)
             Divider()
 
             GeometryReader { geometry in
-                if collection.thumbnailEntries.isEmpty {
+                if entries.isEmpty {
                     LibraryEmptyState(collection: collection)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
-                        let entries = collection.thumbnailEntries
                         let itemIDs = entries.map(\.id)
                         let rows = mosaicCache.rows(
                             itemIDs: itemIDs,
@@ -238,7 +239,7 @@ private struct LibraryEmptyState: View {
 }
 
 private struct LibraryGridCell: View {
-    let item: ImageCollection.Item
+    @ObservedObject var item: ImageCollection.Item
     let isSelected: Bool
     let isActive: Bool
     let imageWidth: Double

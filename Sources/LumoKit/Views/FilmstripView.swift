@@ -7,10 +7,13 @@ struct FilmstripView: View {
     let onSelect: (Int, Bool) -> Void
 
     var body: some View {
+        let entries = collection.thumbnailEntries
+        let filteredIndices = collection.filteredIndices
+
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 8) {
-                    ForEach(collection.thumbnailEntries) { entry in
+                    ForEach(entries) { entry in
                         if let index = entry.itemIndex {
                             let item = collection.items[index]
                             Button {
@@ -27,7 +30,7 @@ struct FilmstripView: View {
                                 let direction: FilmstripNavigation.Direction =
                                     press.key == .leftArrow ? .previous : .next
                                 guard let adjacentIndex = FilmstripNavigation.adjacentIndex(
-                                    in: collection.filteredIndices,
+                                    in: filteredIndices,
                                     selectedIndex: collection.selectedIndex,
                                     direction: direction
                                 ) else {
@@ -95,7 +98,7 @@ enum FilmstripNavigation {
 }
 
 struct FilmstripThumbnail: View {
-    let item: ImageCollection.Item
+    @ObservedObject var item: ImageCollection.Item
     let isSelected: Bool
 
     var body: some View {
