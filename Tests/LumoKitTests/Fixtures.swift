@@ -1,8 +1,9 @@
-import Foundation
 import CoreGraphics
+import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 import XCTest
+
 @testable import LumoKit
 
 /// Test fixtures are **generated**, never checked in: Lumo's inputs are RAWs
@@ -34,10 +35,11 @@ enum Fixtures {
         for b in 0..<size {
             for g in 0..<size {
                 for r in 0..<size {
-                    lines.append(String(
-                        format: "%.6f %.6f %.6f",
-                        Float(r) / denom, Float(g) / denom, Float(b) / denom
-                    ))
+                    lines.append(
+                        String(
+                            format: "%.6f %.6f %.6f",
+                            Float(r) / denom, Float(g) / denom, Float(b) / denom
+                        ))
                 }
             }
         }
@@ -54,7 +56,8 @@ enum Fixtures {
         lineEnding: String = "\n"
     ) throws -> URL {
         let url = directory.appendingPathComponent(name)
-        let converted = lineEnding == "\n"
+        let converted =
+            lineEnding == "\n"
             ? text
             : text.replacingOccurrences(of: "\n", with: lineEnding)
         try converted.write(to: url, atomically: true, encoding: .utf8)
@@ -64,14 +67,18 @@ enum Fixtures {
     // MARK: - Images
 
     /// A solid-color RGB CGImage.
-    static func makeCGImage(width: Int, height: Int, red: CGFloat = 0.5,
-                            green: CGFloat = 0.4, blue: CGFloat = 0.3) throws -> CGImage {
+    static func makeCGImage(
+        width: Int, height: Int, red: CGFloat = 0.5,
+        green: CGFloat = 0.4, blue: CGFloat = 0.3
+    ) throws -> CGImage {
         let space = CGColorSpaceCreateDeviceRGB()
-        guard let ctx = CGContext(
-            data: nil, width: width, height: height,
-            bitsPerComponent: 8, bytesPerRow: width * 4, space: space,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { throw FixtureError.cannotCreateContext }
+        guard
+            let ctx = CGContext(
+                data: nil, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4, space: space,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        else { throw FixtureError.cannotCreateContext }
         ctx.setFillColor(red: red, green: green, blue: blue, alpha: 1)
         ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
         guard let image = ctx.makeImage() else { throw FixtureError.cannotCreateContext }
@@ -92,14 +99,16 @@ enum Fixtures {
     ) throws -> URL {
         let url = directory.appendingPathComponent(name)
         let image = try makeCGImage(width: width, height: height)
-        guard let dest = CGImageDestinationCreateWithURL(
-            url as CFURL, UTType.jpeg.identifier as CFString, 1, nil
-        ) else { throw FixtureError.cannotCreateDestination }
+        guard
+            let dest = CGImageDestinationCreateWithURL(
+                url as CFURL, UTType.jpeg.identifier as CFString, 1, nil
+            )
+        else { throw FixtureError.cannotCreateDestination }
 
         let properties: [CFString: Any] = [
             kCGImagePropertyOrientation: orientation,
             kCGImagePropertyTIFFDictionary: [
-                kCGImagePropertyTIFFOrientation: orientation,
+                kCGImagePropertyTIFFOrientation: orientation
             ] as [CFString: Any],
         ]
         CGImageDestinationAddImage(dest, image, properties as CFDictionary)
@@ -118,9 +127,11 @@ enum Fixtures {
     ) throws -> URL {
         let url = directory.appendingPathComponent(name)
         let image = try makeCGImage(width: 64, height: 48)
-        guard let dest = CGImageDestinationCreateWithURL(
-            url as CFURL, UTType.jpeg.identifier as CFString, 1, nil
-        ) else { throw FixtureError.cannotCreateDestination }
+        guard
+            let dest = CGImageDestinationCreateWithURL(
+                url as CFURL, UTType.jpeg.identifier as CFString, 1, nil
+            )
+        else { throw FixtureError.cannotCreateDestination }
 
         var properties: [CFString: Any] = [:]
         if !exif.isEmpty { properties[kCGImagePropertyExifDictionary] = exif }
@@ -138,20 +149,24 @@ enum Fixtures {
     /// would pass against a stage that never ran.
     static func makeGradientCGImage(width: Int, height: Int) throws -> CGImage {
         let space = CGColorSpace(name: CGColorSpace.sRGB)!
-        guard let ctx = CGContext(
-            data: nil, width: width, height: height,
-            bitsPerComponent: 8, bytesPerRow: width * 4, space: space,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { throw FixtureError.cannotCreateContext }
+        guard
+            let ctx = CGContext(
+                data: nil, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4, space: space,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        else { throw FixtureError.cannotCreateContext }
 
-        guard let gradient = CGGradient(
-            colorsSpace: space,
-            colors: [
-                CGColor(colorSpace: space, components: [0.9, 0.1, 0.1, 1])!,
-                CGColor(colorSpace: space, components: [0.1, 0.2, 0.9, 1])!,
-            ] as CFArray,
-            locations: [0, 1]
-        ) else { throw FixtureError.cannotCreateContext }
+        guard
+            let gradient = CGGradient(
+                colorsSpace: space,
+                colors: [
+                    CGColor(colorSpace: space, components: [0.9, 0.1, 0.1, 1])!,
+                    CGColor(colorSpace: space, components: [0.1, 0.2, 0.9, 1])!,
+                ] as CFArray,
+                locations: [0, 1]
+            )
+        else { throw FixtureError.cannotCreateContext }
 
         ctx.drawLinearGradient(
             gradient,
@@ -174,9 +189,11 @@ enum Fixtures {
     ) throws -> URL {
         let url = directory.appendingPathComponent(name)
         let image = try makeGradientCGImage(width: width, height: height)
-        guard let dest = CGImageDestinationCreateWithURL(
-            url as CFURL, UTType.png.identifier as CFString, 1, nil
-        ) else { throw FixtureError.cannotCreateDestination }
+        guard
+            let dest = CGImageDestinationCreateWithURL(
+                url as CFURL, UTType.png.identifier as CFString, 1, nil
+            )
+        else { throw FixtureError.cannotCreateDestination }
         CGImageDestinationAddImage(dest, image, nil)
         guard CGImageDestinationFinalize(dest) else { throw FixtureError.cannotWriteImage }
         return url
@@ -221,9 +238,11 @@ enum Fixtures {
             shouldInterpolate: false,
             intent: .defaultIntent
         )!
-        guard let dest = CGImageDestinationCreateWithURL(
-            url as CFURL, UTType.png.identifier as CFString, 1, nil
-        ) else { throw FixtureError.cannotCreateDestination }
+        guard
+            let dest = CGImageDestinationCreateWithURL(
+                url as CFURL, UTType.png.identifier as CFString, 1, nil
+            )
+        else { throw FixtureError.cannotCreateDestination }
         CGImageDestinationAddImage(dest, image, nil)
         guard CGImageDestinationFinalize(dest) else { throw FixtureError.cannotWriteImage }
         return url
@@ -231,22 +250,28 @@ enum Fixtures {
 
     // MARK: - Local-only RAW
 
-    /// A real RAW file, if this checkout happens to have one.
+    /// A real RAW file, if a caller supplied a local fixture directory.
     ///
     /// Everything else here is generated, but a RAW cannot be: a synthetic DNG that `CIRAWFilter`
     /// will actually decode is a project of its own. Real-world fixtures are optional, so CI and
-    /// checkouts without released camera files still skip RAW-dependent tests rather than fail.
-    /// See `docs/PHASE2_SPEC.md` §8.9.
+    /// checkouts without a licensed local fixture directory skip RAW-dependent tests rather than
+    /// fail. See `realworldtest/README.md`.
     static var localRAWURLs: [URL] {
-        let repoRoot = URL(fileURLWithPath: #filePath)   // Tests/LumoKitTests/Fixtures.swift
-            .deletingLastPathComponent()                 // Tests/LumoKitTests
-            .deletingLastPathComponent()                 // Tests
-            .deletingLastPathComponent()                 // repo root
-        let folder = repoRoot.appendingPathComponent("realworldtest")
-        guard let entries = try? FileManager.default.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: nil
-        ) else { return [] }
-        return entries
+        let repoRoot = URL(fileURLWithPath: #filePath)  // Tests/LumoKitTests/Fixtures.swift
+            .deletingLastPathComponent()  // Tests/LumoKitTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // repo root
+        let folder =
+            ProcessInfo.processInfo.environment["LUMO_RAW_FIXTURE_DIR"]
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? repoRoot.appendingPathComponent("realworldtest", isDirectory: true)
+        guard
+            let entries = try? FileManager.default.contentsOfDirectory(
+                at: folder, includingPropertiesForKeys: nil
+            )
+        else { return [] }
+        return
+            entries
             .filter { ImageDecoder.rawExtensions.contains($0.pathExtension.lowercased()) }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
@@ -255,35 +280,39 @@ enum Fixtures {
         localRAWURLs.first
     }
 
-    /// A real (RAW, in-camera JPG) pair, if this checkout happens to have one.
+    /// A real (RAW, in-camera JPG) pair, if the local fixture directory contains one.
     ///
     /// The derive gate needs both halves of the same frame: the cube is fit by comparing a neutral
     /// RAW render against the JPEG the camera produced from it. Matched on the filename stem, because
-    /// that is how cameras write the pair and how `realworldtest/` happens to hold one — anything
+    /// that is how cameras write the pair and how a camera fixture directory holds one — anything
     /// looser could pick up an unrelated JPG and the geometry check would reject it with a confusing
     /// message.
     ///
-    /// `nil` on CI, which never has a RAW. A test that needs this must `XCTSkip`.
+    /// `nil` when `LUMO_RAW_FIXTURE_DIR` is not supplied. A test that needs this must `XCTSkip`.
     static var localRAWJPGPair: (raw: URL, jpg: URL)? {
         guard let raw = localRAWURL else { return nil }
         let stem = raw.deletingPathExtension().lastPathComponent
         let folder = raw.deletingLastPathComponent()
-        guard let entries = try? FileManager.default.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: nil
-        ) else { return nil }
-        guard let jpg = entries.first(where: {
-            ["jpg", "jpeg"].contains($0.pathExtension.lowercased())
-                && $0.deletingPathExtension().lastPathComponent == stem
-        }) else { return nil }
+        guard
+            let entries = try? FileManager.default.contentsOfDirectory(
+                at: folder, includingPropertiesForKeys: nil
+            )
+        else { return nil }
+        guard
+            let jpg = entries.first(where: {
+                ["jpg", "jpeg"].contains($0.pathExtension.lowercased())
+                    && $0.deletingPathExtension().lastPathComponent == stem
+            })
+        else { return nil }
         return (raw, jpg)
     }
 
     /// Dimensions ImageIO reports for a file on disk.
     static func storedSize(of url: URL) -> CGSize? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let w = props[kCGImagePropertyPixelWidth] as? Int,
-              let h = props[kCGImagePropertyPixelHeight] as? Int
+            let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+            let w = props[kCGImagePropertyPixelWidth] as? Int,
+            let h = props[kCGImagePropertyPixelHeight] as? Int
         else { return nil }
         return CGSize(width: w, height: h)
     }

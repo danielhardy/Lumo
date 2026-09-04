@@ -7,7 +7,8 @@ set -euo pipefail
 # Requires a logged-in macOS display (a real drawable); never run in CI.
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-source_path="${1:-$repo_root/realworldtest/DSC07826.ARW}"
+fixture_root="${LUMO_RAW_FIXTURE_DIR:-$repo_root/realworldtest}"
+source_path="${1:-$fixture_root/DSC07826.ARW}"
 capture_id="${LUMO_CAPTURE_ID:-LUMO-123}"
 item_count="${LUMO_CONCURRENT_CAPTURE_ITEMS:-6}"
 gesture_count="${LUMO_CONCURRENT_CAPTURE_GESTURES:-10}"
@@ -34,7 +35,7 @@ if [[ -z "$xctest_path" || ! -x "$xctest_path" ]]; then
     exit 2
 fi
 
-secondary="$repo_root/realworldtest/DSC07241.ARW"
+secondary="$fixture_root/DSC07241.ARW"
 secondary_env=()
 if [[ -f "$secondary" ]]; then
     secondary_env=(--env "LUMO_CONCURRENT_CAPTURE_RAW_SECONDARY=$secondary")

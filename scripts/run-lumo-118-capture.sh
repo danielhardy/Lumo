@@ -2,7 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-source_path="${1:-$repo_root/realworldtest/DSC07826.ARW}"
+fixture_root="${LUMO_RAW_FIXTURE_DIR:-$repo_root/realworldtest}"
+source_path="${1:-$fixture_root/DSC07826.ARW}"
 capture_id="${LUMO_CAPTURE_ID:-LUMO-118}"
 iteration_count="${LUMO_METAL_BENCHMARK_ITERATIONS:-20}"
 time_limit="${LUMO_CAPTURE_TIME_LIMIT:-60s}"

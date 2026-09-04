@@ -1,4 +1,4 @@
-# LUTzy Phase 2 — non-destructive render pipeline + RAW develop
+# Lumo Phase 2 — non-destructive render pipeline + RAW develop
 
 **Status:** partly built. Steps 0–10b of the migration are done — the preview, both export paths and the
 histogram all render from the document, `ImageProcessor` is gone, derive registers its result by ID,
@@ -9,6 +9,10 @@ This is a distillation. The original draft ran 4,180 lines of multi-agent output
 itself across sections and spent a good fraction of its length arguing with earlier drafts about bugs
 that never existed. Everything load-bearing is below; the original is in git history at `05ac1d6`.
 
+**Current inventory:** the repository contains **735 XCTest methods**. Counts in the migration table
+are historical ship-gate snapshots; the current CI lanes run the complete deterministic suite and
+report the optional RAW/hardware lane separately.
+
 **Baseline note:** the original was written against the pre-review codebase. Several of its premises
 have since been fixed and are marked ✅ below — do not re-solve them.
 
@@ -16,7 +20,7 @@ have since been fixed and are marked ✅ below — do not re-solve them.
 
 ## 1. What Phase 2 is for
 
-LUTzy applies one LUT to one image and bakes the result. Phase 2 makes the edit a **value** instead of
+Lumo applies one LUT to one image and bakes the result. Phase 2 makes the edit a **value** instead of
 a baked image, which buys four things at once:
 
 1. **Preview/export parity becomes structural.** Preview and export are requests to one renderer;
@@ -32,7 +36,7 @@ a baked image, which buys four things at once:
 
 | | |
 |---|---|
-| ✅ `LUTzyKit` library + thin `@main` executable, 95 XCTest cases, `swift test` in CI | Step 0 is **done** |
+| ✅ `LumoKit` library + thin `@main` executable, 735 current XCTest methods, `swift test` in CI | Step 0 is **done**; the original 95-test gate is historical |
 | ✅ Preview rasterization and decode run off the main actor; intensity slider debounced | the "full filter graph on the main thread" bug is **fixed** |
 | ✅ LUT intensity ships today — `lutIntensity`, `CubeLUT.apply(to:intensity:)`, toolbar slider | the original called this "NEW behavior… exists nowhere". It exists. |
 | ✅ EXIF orientation baked at load for every non-RAW decode | the original's "standard images have NO orientation baking" is stale |
@@ -57,7 +61,7 @@ type is gone. Its GPU duties went to `actor RenderEngine`, its thumbnails to `en
 
 ✅ **Step 8 turned it on, and went further than planned.** The plan was Swift 5 language mode with
 `-strict-concurrency=complete`, which reports data-race problems as *warnings*. Measured first:
-`LUTzyKit` compiles with **zero** diagnostics in full **Swift 6 language mode**, where they are
+`LumoKit` compiles with **zero** diagnostics in full **Swift 6 language mode**, where they are
 errors. So `Package.swift` moved to a 6.0 tools version and declares `.swiftLanguageMode(.v6)` on all
 three targets — library, executable and tests — rather than the weaker flag.
 
@@ -295,7 +299,7 @@ leaf by leaf, delete the old path last.
 
 | Step | Work | Ship gate |
 |---|---|---|
-| ~~0~~ | ~~`LUTzyKit` split + test harness~~ | ✅ **done** — 95 tests, CI green |
+| ~~0~~ | ~~`LumoKit` split + test harness~~ | ✅ **done** — historical 95-test gate; current suite has 735 methods and CI is green |
 | ~~1~~ | ~~`WorkingSpace`; route all six colour sites through it~~ | ✅ **done** — export, preview pixels and histogram byte-identical at sRGB; parity + lockstep tests added |
 | ~~2~~ | ~~`EditDocument`, `RAWDevelopSettings`, `AdjustmentNode`, `LUTSettings`, `LUTID`, `ImageSource` — **defined but unused**~~ | ✅ **done** — plus `RenderScale`; 132 tests, nothing in the app references them, app launches unchanged |
 | ~~3~~ | ~~`RenderPipeline.buildImage` + the actor-side LUT filter cache — **defined but unused**~~ | ✅ **done** — 162 tests; identity is pixel-exact, intensity endpoints exact, 21 mutations caught |
@@ -305,8 +309,8 @@ leaf by leaf, delete the old path last.
 | ~~7~~ | ~~Move thumbnails (**both** `ImageCollection` sites); dissolve `ImageProcessor` GPU duties~~ | ✅ **done** — 208 tests; 18 mutations caught, 2 shown equivalent by measurement; `RenderStackTests` asserts the context count |
 | ~~8~~ | ~~Flip strict concurrency on~~ | ✅ **done** — full **Swift 6 language mode** (errors, not warnings) on all three targets; 214 tests; 9 mutations caught, 1 untestable and named |
 | ~~9~~ | ~~Wire derive into the new state: register the derived LUT by ID, keep the scratch-file bookkeeping~~ | ✅ **done** — 230 tests; 19 mutations caught, 1 shown equivalent by inspection; fixed a **shipped** bug where a derived LUT never resolved (see below) |
-| ~~10a~~ | ~~RAW develop inspector + the per-image capability probe~~ | ✅ **done** — `RAWCapabilities` crosses the actor boundary carrying nine gates and twelve per-image seeds; the probe measures **~25 ms warm** against **~183 ms** for a full develop, so it runs once per open and never per render. 33 mutations, 32 caught on the first run and the one survivor closed with the test it exposed. **The RAW-gated tests `XCTSkip` on CI**, which has no DNG — a green tick there says nothing about them |
-| ~~10b~~ | ~~Adjustments inspector — fixed slots, one node of each, canonical pipeline order~~ | ✅ **done** — 308 tests (up from 272), 3 skipped without a DNG; nine per-parameter rows over the five `AdjustmentNode` cases, driving `EditDocument.adjustments` live. `AdjustmentNode`, `RenderPipeline`, `RenderEngine` and `EditDocument` carry no logic, signature or behaviour change — purely additive, aside from two stale §8.7 doc comments corrected in the first two. No mutation run was performed here; `AdjustmentControl`'s sparse-array contract and the slider map are covered instead by pure-value tests needing no GPU, image or RAW, so — unlike 10a's RAW-gated tests — they run on CI. Closed §8.5's, §8.6's and §8.7's remaining open halves, see below |
+| ~~10a~~ | ~~RAW develop inspector + the per-image capability probe~~ | ✅ **done** — `RAWCapabilities` crosses the actor boundary carrying nine gates and twelve per-image seeds; the probe measures **~25 ms warm** against **~183 ms** for a full develop, so it runs once per open and never per render. The historical mutation gate is preserved in git history. RAW-dependent methods run in the separate slow lane when `LUMO_RAW_FIXTURE_DIR` is supplied. |
+| ~~10b~~ | ~~Adjustments inspector — fixed slots, one node of each, canonical pipeline order~~ | ✅ **done** — historical 308-test gate; the current suite has 735 methods. Three RAW-dependent methods skip without `LUMO_RAW_FIXTURE_DIR`; deterministic coverage runs on CI. |
 | 11 | Per-image undo keyed by `Item.id`, plus an `EditDocumentStore` | ⌘Z scoped per image |
 | 12 | *(deferred)* export descriptor, metadata/ICC | — |
 
@@ -330,7 +334,7 @@ scales — export runs once per action and would otherwise pin full-resolution i
 
 With the memo the cutover is a wash per render (~1 ms either way) and *saves* ~200 ms when opening a
 RAW, because the eager full-resolution decode is no longer on the path to first pixels. `swift test
---filter PreviewCostBenchmark` with `LUTZY_BENCH=1` reproduces the numbers.
+--filter PreviewCostBenchmark` with `LUMO_BENCH=1` reproduces the numbers.
 
 **Step 6 inherited this, and measured it.** Export at `.full` is deliberately not memoized, so it
 rebuilds its source every time — the exact shape of the regression above. On a 6000×4000 source:
@@ -396,12 +400,14 @@ What the step settled:
   that the temp path no longer *names* the LUT.
 - `RecipeExtractor` did **not** move onto the engine, so `RenderStackTests` is untouched.
 
-The ship gate, `DeriveInvarianceTests`, derives from the `realworldtest` pair and checks the cube
+The ship gate, `DeriveInvarianceTests`, derives from a local licensed RAW/JPG pair selected through
+`LUMO_RAW_FIXTURE_DIR` and checks the cube
 lands the same way through the new pipeline as it does over `developRAWNeutral` (tolerance 1,
 interleaved in one process). A second assertion bounds mean absolute error against the in-camera JPG:
 measured **1.25/255**, bounded at 3.0, against **5.30** with no cube at all — so the bound has real
-discriminating power. **These tests skip on CI**, which has no DNG; the suite's green tick there says
-nothing about derive.
+discriminating power. **These tests skip when `LUMO_RAW_FIXTURE_DIR` is not supplied**, so the
+deterministic lane's green tick there says
+nothing about derive. See `realworldtest/README.md` for the privacy, licensing, and storage policy.
 
 ### What Step 6 did with the histogram
 
@@ -453,8 +459,8 @@ the next frame. `ImageProcessor.histogram` is gone; the tally is now a pure
    that: exposure, white balance and the rest are decoder defaults **measured per file**, not a
    portable look, and Step 10a is the first thing that writes to them. Carrying `document` forward now
    also carries a stale seed. Set white balance to 3200 K on one RAW, press → to the next, and the new
-   image renders at 3200 K while its own probed as-shot temperature — 5842 K on the Leica in
-   `realworldtest/` — sits unused in `rawCapabilities`, never read because `neutralTemperature` is no
+   image renders at 3200 K while its own probed as-shot temperature — 5842 K on a historical local
+   Leica fixture — sits unused in `rawCapabilities`, never read because `neutralTemperature` is no
    longer `nil`. `EditDocument.originalForComparison` (§8.5) keeps `rawDevelop` for its baseline, so
    the A/B "original" is wrong the same way: it shows image B developed with image A's white balance,
    not image B's own as-shot rendering. Step 5 could not have reasoned about this — develop did not
@@ -482,7 +488,7 @@ the next frame. `ImageProcessor.histogram` is gone; the tally is now a pure
 7. ~~**`CITemperatureAndTint` direction.**~~ **Closed at Step 10b**, by measuring the *other* knob
    rather than changing this one. Step 3's table stands — raising the node's Kelvin still *cools*,
    pinned by `testRaisingKelvinCoolsTheImage` — and Step 10b measured `CIRAWFilter.neutralTemperature`
-   on the Leica M11 DNG in `realworldtest/`, moving only that property:
+   on a historical local Leica M11 DNG fixture, moving only that property:
 
    | target | mean R−B |
    |---|---|
@@ -496,8 +502,10 @@ the next frame. `ImageProcessor.histogram` is gone; the tally is now a pure
    Develop's 2000…50000 because the reflection must be closed — `13000 − K` maps 2000…50000 onto
    11000…−37000, and negative Kelvin is not a colour.
 8. **Edit persistence across launches.** `EditDocument` is `Codable` to enable it; v1 in-memory only.
-9. **RAW fixtures in CI.** Derive-invariance and RAW-parity tests need a license-clean small `.dng`+`.jpg`
-   pair, else `XCTSkip`. Everything else in the suite generates its fixtures.
+9. **RAW fixtures.** Derive-invariance and RAW-parity tests need a license-clean local RAW/JPG pair.
+   The files are intentionally outside Git and are selected with `LUMO_RAW_FIXTURE_DIR`; without
+   them, those tests `XCTSkip`. Everything else in the suite generates its fixtures. CI keeps this
+   slow lane separate from the complete deterministic regression lane.
 
 ---
 

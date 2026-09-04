@@ -15,8 +15,9 @@ swift build -c release
 LUMO_METAL_BENCHMARK=1 swift test --filter MetalPresentationBenchmark/testRealMetalPresentationBenchmark
 
 # automated representative RAW drawable capture; writes a .trace and summary under /tmp
-# Set LUMO_CAPTURE_ID=LUMO-121 for a post-LUMO-107 capture.
-scripts/run-lumo-118-capture.sh realworldtest/DSC07826.ARW
+# Set LUMO_CAPTURE_ID=LUMO-121 and LUMO_RAW_FIXTURE_DIR for a licensed local fixture.
+LUMO_RAW_FIXTURE_DIR=/absolute/path/to/fixtures \
+scripts/run-lumo-118-capture.sh /absolute/path/to/fixtures/DSC07826.ARW
 
 # tracing overhead; run with and without an active Instruments recording
 LUMO_TRACE_BENCHMARK=1 swift test --filter TracingOverheadBenchmark/testMeasureTracingOverhead
@@ -53,9 +54,9 @@ Do not substitute the fake renderer's 60 MP-class test for these rows: it is orc
 
 ## Current checkout record
 
-Two released Sony ILCE-7M2 ARW fixtures are available in `realworldtest/`
-(`DSC07826.ARW` and `DSC07241.ARW`). The post-LUMO-107 representative Release capture using
-`DSC07826.ARW` is recorded in [the LUMO-121 durable summary](LUMO-121-DSC07826-20260901-222341-summary.md);
-the generated `.trace` remains at the capture host's `/tmp` path recorded there. It measures the
+The historical post-LUMO-107 representative Release capture using `DSC07826.ARW` is recorded in
+[the LUMO-121 durable summary](LUMO-121-DSC07826-20260901-222341-summary.md); the generated `.trace`
+remains at the capture host's `/tmp` path recorded there. New captures require a licensed local
+fixture directory selected with `LUMO_RAW_FIXTURE_DIR`. The historical run measures the
 completed-texture warm-transform path and ordinary Light-adjustment settle path; it does not claim
 cold coverage, supporting-work coverage, exhaustive controls, or full source-size coverage.

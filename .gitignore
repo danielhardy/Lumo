@@ -31,7 +31,10 @@ build/
 # Claude Code
 .claude/
 
-# Real-world RAW/JPG fixtures are checked in when the contributor has released them for project use.
+# Real-world camera files stay outside the repository. Set LUMO_RAW_FIXTURE_DIR to a local,
+# license-cleared directory when running the slow RAW lane.
+realworldtest/*
+!realworldtest/README.md
 
 # DispatchGraph pickup worktrees (local checkouts, not for version control)
 dg-worktrees/

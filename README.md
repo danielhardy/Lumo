@@ -209,6 +209,9 @@ swift build -c release
 
 # Run the test suite.
 swift test
+
+# Check changed Swift files against the repository style.
+SWIFT_FORMAT_BASE=HEAD^ scripts/check-swift-format.sh
 ```
 
 `swift run` launches the bare Swift Package executable. It does not include the bundled asset
@@ -227,10 +230,12 @@ a particular volume class from the entitlement alone, Lumo keeps the volume visi
 to select its root in an Open panel, and scans the resulting security-scoped bookmark. Run the full
 Xcode-built app to verify this path; `swift run` does not apply the entitlement.
 
-The suite currently contains **574 XCTest methods**. Fixtures are generated in temporary
-directories; RAW-dependent tests may use files under `realworldtest/` and skip cleanly when a
-required RAW/JPG pair is unavailable. CI runs a debug build, tests, and a release build on every
-push and pull request using the macOS 26 runner.
+The suite currently contains **735 XCTest methods** (`swift test list`), including deterministic
+regression coverage and opt-in benchmarks. Fixtures are generated in temporary directories. The
+slow RAW/hardware lane accepts a separately licensed local fixture directory through
+`LUMO_RAW_FIXTURE_DIR`; it skips cleanly when that directory is not supplied. CI runs the
+deterministic tests in parallel, reports the slow lane separately, and builds/verifies a signed app
+bundle on every push and pull request using the macOS 26 runner.
 
 Optional local benchmarks:
 
@@ -241,13 +246,14 @@ LUMO_PERSISTENCE_BENCHMARK=1 swift test --filter EditPersistenceBenchmarkTests
 # Real CAMetalLayer drawable presentation and input-to-presentation latency.
 LUMO_METAL_BENCHMARK=1 swift test --filter MetalPresentationBenchmark/testRealMetalPresentationBenchmark
 
-# The same real drawable benchmark using a released RAW fixture.
+# The same real drawable benchmark using a licensed local RAW fixture.
 LUMO_METAL_BENCHMARK=1 \
-LUMO_METAL_BENCHMARK_RAW=/absolute/path/to/realworldtest/DSC07826.ARW \
+LUMO_METAL_BENCHMARK_RAW=/absolute/path/to/representative.ARW \
 swift test -c release --filter MetalPresentationBenchmark/testRealMetalPresentationBenchmark
 
 # Automated xctrace capture with Points of Interest + Metal System Trace.
-scripts/run-lumo-118-capture.sh realworldtest/DSC07826.ARW
+LUMO_RAW_FIXTURE_DIR=/absolute/path/to/fixtures \
+scripts/run-lumo-118-capture.sh /absolute/path/to/fixtures/DSC07826.ARW
 
 # Tracing overhead with and without an active Instruments recording.
 LUMO_TRACE_BENCHMARK=1 swift test --filter TracingOverheadBenchmark/testMeasureTracingOverhead
@@ -312,7 +318,7 @@ Useful starting points are [`EditDocument`](Sources/LumoKit/Models/EditDocument.
 
 ## Preparing for the App Store
 
-1. Build and verify the product icon and signed bundle with [`scripts/build-macos-app.sh`](scripts/build-macos-app.sh), [`scripts/verify-app-icon.sh`](scripts/verify-app-icon.sh), and [`scripts/verify-app-signature.sh`](scripts/verify-app-signature.sh); see [`docs/LUMO_ICON.md`](docs/LUMO_ICON.md) for the source, safe area, and review checklist. Packaging renders into `.build/` and does not modify the tracked catalog.
+1. Build and verify the product icon and signed bundle with [`scripts/build-macos-app.sh`](scripts/build-macos-app.sh), [`scripts/verify-app-icon.sh`](scripts/verify-app-icon.sh), and [`scripts/verify-app-signature.sh`](scripts/verify-app-signature.sh); see [`docs/LUMO_ICON.md`](docs/LUMO_ICON.md) for the source, safe area, and review checklist. Packaging renders into disposable `.build/` staging paths and does not modify tracked source files.
    Release signing uses `LUMO_CODESIGN_IDENTITY` (or `CODE_SIGN_IDENTITY`) and optionally `LUMO_PROVISIONING_PROFILE` (or `PROVISIONING_PROFILE`). If neither is set, the script uses an ad-hoc signature for local/CI structural verification; configure the release identity and profile in CI for distribution builds.
 2. Set the Bundle Identifier and Team in Xcode's Signing & Capabilities.
 3. Keep App Sandbox enabled with the included entitlements.

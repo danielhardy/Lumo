@@ -1,36 +1,41 @@
 name: CI
 
-# Build Lumo on every push to main and every PR targeting it, so broken
-# commits are caught automatically. Zero third-party actions beyond the
-# official checkout — matches the project's zero-dependency ethos.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
 
-# Cancel an in-progress run if newer commits are pushed to the same ref.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  SWIFT_FORMAT_CONFIGURATION: .swift-format
+
 jobs:
-  build:
-    # The runner sets the **SDK**; `Package.swift` sets the **deployment target**, and that stays at
-    # macOS 14. Those are different things, and conflating them cost a red build: this job used to run
-    # `macos-14` (Xcode 15.4, macOS 14.5 SDK), where any API newer than the SDK simply does not exist
-    # and `#available` cannot reach it — an availability check gates a call at runtime, it cannot
-    # conjure a symbol the SDK never declared.
-    #
-    # Building against a current SDK while deploying to macOS 14 is the normal Apple model and is the
-    # *stricter* of the two: with a 14.0 deployment target the compiler refuses newer API unless it is
-    # `#available`-guarded, so the guard is enforced rather than merely remembered. `macos-14` is also
-    # deprecated by GitHub.
-    #
-    # Building on a *lower* SDK than the developer's is what silently diverges, so the image default
-    # is deliberate — and "Show toolchain" prints the SDK it resolved, so any future drift is visible
-    # in the log rather than inferred from a failure.
-    name: swift build (macOS 26 SDK, deploys to macOS 14)
+  format:
+    name: Swift-format (changed files)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check changed Swift files
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            git fetch origin "$GITHUB_BASE_REF" --depth=1
+            export SWIFT_FORMAT_BASE="origin/$GITHUB_BASE_REF"
+          elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+            export SWIFT_FORMAT_BASE=HEAD^
+          fi
+          scripts/check-swift-format.sh
+
+  tests-fast:
+    name: Tests (deterministic, parallel)
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
@@ -44,15 +49,76 @@ jobs:
       - name: Build (debug)
         run: swift build -v
 
-      - name: Test
-        run: swift test
+      - name: Test deterministic lane
+        run: >-
+          swift test --parallel
+          --skip '(MetalPresentationBenchmark|ConcurrentExportEditingBenchmark|PhotosImportPerformanceTests|PreviewCostBenchmark|EditPersistenceBenchmarkTests|TracingOverheadBenchmark)'
 
       - name: Build (release)
         run: swift build -c release
 
-      - name: Build app bundle and verify AppIcon packaging
+  tests-slow:
+    name: Tests (RAW and hardware lane)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show slow-lane policy
         run: |
-          scripts/build-macos-app.sh
+          echo "RAW fixtures are external and privacy/licensing controlled."
+          echo "Set LUMO_RAW_FIXTURE_DIR on a licensed local/self-hosted runner to exercise them."
+
+      - name: Run RAW and hardware coverage
+        run: >-
+          swift test --parallel
+          --filter '(RAWCapabilitiesTests|RAWDevelopSettingsTests|DeriveInvarianceTests|ImageLoadingTests|ImageSourceTests|RenderPipelineTests|RenderEngineTests|PreviewCutoverTests|MetalPresentationBenchmark|ConcurrentExportEditingBenchmark|PhotosImportPerformanceTests|PreviewCostBenchmark)'
+
+  package:
+    name: Package, sign, and verify app
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+          echo "SDK: $(xcrun --sdk macosx --show-sdk-version) at $(xcrun --sdk macosx --show-sdk-path)"
+
+      - name: Build app bundle
+        run: scripts/build-macos-app.sh
+
+      - name: Verify packaged assets and signature
+        run: |
           scripts/verify-app-icon.sh
           scripts/verify-app-signature.sh
-          git diff --exit-code -- Sources/Lumo/Assets.xcassets
+
+      - name: Assert packaging did not modify tracked source files
+        run: |
+          if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+            echo "Packaging changed or created repository files:"
+            git status --short --untracked-files=all
+            exit 1
+          fi
+
+  smoke:
+    name: Application smoke path
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build app bundle
+        run: scripts/build-macos-app.sh
+
+      - name: Launch, open, Settings/menu, and export smoke path
+        shell: bash
+        run: |
+          set +e
+          scripts/smoke-macos-app.sh
+          status=$?
+          set -e
+          if [[ "$status" == 2 ]]; then
+            echo "Smoke path deferred: hosted runner has no accessible WindowServer session."
+            exit 0
+          fi
+          exit "$status"
