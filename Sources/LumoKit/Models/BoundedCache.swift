@@ -13,9 +13,13 @@ struct RenderCacheConfiguration: Sendable, Equatable {
     var previewMaxEntries = 12
     var previewMaxCostBytes = 64 * 1024 * 1024
     var developedSourceMaxEntries = 4
+    /// Materialized image costs include the CPU-backed RGBA-half bytes and the estimated GPU
+    /// texture bytes. An entry must fit before its backing buffer is allocated.
     var developedSourceMaxCostBytes = 256 * 1024 * 1024
     /// Completed pre-LUT prefixes are larger than encoded previews, so they have their own budget.
     /// Keeping this separate prevents a LUT/grain drag from evicting the final preview working set.
+    /// Materialized-prefix costs use the same CPU + GPU working-set accounting as the developed
+    /// source budget.
     var processingPrefixMaxEntries = 4
     var processingPrefixMaxCostBytes = 256 * 1024 * 1024
 
@@ -34,6 +38,8 @@ struct RenderCacheStatistics: Sendable, Equatable {
 /// Values are intentionally not required to be `Sendable`: the developed-source cache stores
 /// `CIImage`, which must remain inside `RenderEngine`. The owner provides the isolation. A byte cost
 /// is supplied by the caller because Core Image intermediates are opaque reference values.
+/// Materialized image callers should account for the retained CPU backing store and the estimated
+/// GPU copy in that cost before insertion.
 final class BoundedLRUCache<Key: Hashable, Value> {
     private struct Entry {
         let value: Value

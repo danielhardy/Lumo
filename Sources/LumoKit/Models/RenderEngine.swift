@@ -82,6 +82,7 @@ struct RenderWorkStatistics: Sendable, Equatable {
     let rawPropertyWrites: Int
     let rawOutputRequests: Int
     let processingPrefixMaterializations: Int
+    let materializationBudgetSkips: Int
 }
 
 extension RenderEngining {
@@ -273,6 +274,7 @@ actor RenderEngine: RenderEngining {
     private var rawPropertyWriteCount = 0
     private var rawOutputRequestCount = 0
     private var processingPrefixMaterializationCount = 0
+    private var materializationBudgetSkipCount = 0
     private var memoryPressureSource: DispatchSourceMemoryPressure?
 
     init(configuration: RenderCacheConfiguration = .default) {
@@ -722,7 +724,8 @@ actor RenderEngine: RenderEngining {
             rawFilterConstructions: rawFilterConstructionCount,
             rawPropertyWrites: rawPropertyWriteCount,
             rawOutputRequests: rawOutputRequestCount,
-            processingPrefixMaterializations: processingPrefixMaterializationCount
+            processingPrefixMaterializations: processingPrefixMaterializationCount,
+            materializationBudgetSkips: materializationBudgetSkipCount
         )
     }
 
@@ -828,38 +831,81 @@ actor RenderEngine: RenderEngining {
         let costBytes: Int
     }
 
+    private struct MaterializationEstimate {
+        let rowBytes: Int
+        let cpuBytes: Int
+        let gpuBytes: Int
+
+        var workingSetBytes: Int {
+            cpuBytes > Int.max - gpuBytes ? Int.max : cpuBytes + gpuBytes
+        }
+    }
+
     /// Complete a prefix at half-float precision so later graph construction cannot pull the RAW
     /// decoder or expensive spatial nodes back into the next LUT/grain evaluation. This is a
     /// bounded, preview-only boundary; full-resolution/export requests stay on the original fused
     /// graph and never pay for an intermediate readback.
-    private func materializedImage(_ image: CIImage, space: WorkingSpace) -> MaterializedImage? {
+    private func materializedImage(
+        _ image: CIImage,
+        space: WorkingSpace,
+        maxWorkingSetBytes: Int
+    ) -> MaterializedImage? {
         let rect = image.extent.integral
         guard rect.isRasterizable,
               rect.width <= CGFloat(Int.max), rect.height <= CGFloat(Int.max),
               rect.width > 0, rect.height > 0 else { return nil }
         let width = Int(rect.width)
         let height = Int(rect.height)
-        let rowBytes = width.multipliedReportingOverflow(by: 8)
-        guard !rowBytes.overflow else { return nil }
-        let byteCount = rowBytes.partialValue.multipliedReportingOverflow(by: height)
-        guard !byteCount.overflow else { return nil }
+        guard let estimate = materializationEstimate(width: width, height: height) else {
+            return nil
+        }
+        guard maxWorkingSetBytes > 0, estimate.workingSetBytes <= maxWorkingSetBytes else {
+            // Above-budget images stay on the caller's lazy/fused path. In particular, do not
+            // allocate the CPU bitmap just to let BoundedLRUCache reject it after the fact.
+            materializationBudgetSkipCount += 1
+            return nil
+        }
 
-        var data = Data(repeating: 0, count: byteCount.partialValue)
+        var data = Data(repeating: 0, count: estimate.cpuBytes)
         data.withUnsafeMutableBytes { bytes in
             guard let baseAddress = bytes.baseAddress else { return }
             context.render(
-                image, toBitmap: baseAddress, rowBytes: rowBytes.partialValue, bounds: rect,
+                image, toBitmap: baseAddress, rowBytes: estimate.rowBytes, bounds: rect,
                 format: .RGBAh, colorSpace: space.cgColorSpace
             )
         }
         let image = CIImage(
-            bitmapData: data, bytesPerRow: rowBytes.partialValue, size: rect.size,
+            bitmapData: data, bytesPerRow: estimate.rowBytes, size: rect.size,
             format: .RGBAh, colorSpace: space.cgColorSpace
         )
         let positioned = rect.origin == .zero
             ? image
             : image.transformed(by: CGAffineTransform(translationX: rect.minX, y: rect.minY))
-        return MaterializedImage(image: positioned, costBytes: byteCount.partialValue)
+        return MaterializedImage(image: positioned, costBytes: estimate.workingSetBytes)
+    }
+
+    private func materializationEstimate(width: Int, height: Int) -> MaterializationEstimate? {
+        guard width > 0, height > 0 else { return nil }
+        let pixels = width.multipliedReportingOverflow(by: height)
+        guard !pixels.overflow else { return nil }
+        let rowBytes = width.multipliedReportingOverflow(by: 8)
+        guard !rowBytes.overflow else { return nil }
+        let cpuBytes = pixels.partialValue.multipliedReportingOverflow(by: 8)
+        guard !cpuBytes.overflow else { return nil }
+        let gpuBytes = pixels.partialValue.multipliedReportingOverflow(by: 8)
+        guard !gpuBytes.overflow else {
+            return MaterializationEstimate(
+                rowBytes: rowBytes.partialValue, cpuBytes: cpuBytes.partialValue, gpuBytes: Int.max
+            )
+        }
+        // The completed prefix is retained as an RGBA16Float CIImage and can be consumed by a
+        // Metal-backed downstream render. Reserve the corresponding GPU footprint in the same
+        // admission decision, with saturating arithmetic for hostile or synthetic dimensions.
+        return MaterializationEstimate(
+            rowBytes: rowBytes.partialValue,
+            cpuBytes: cpuBytes.partialValue,
+            gpuBytes: gpuBytes.partialValue
+        )
     }
 
     private func processingPrefix(
@@ -894,7 +940,10 @@ actor RenderEngine: RenderEngining {
             developed: developed, document: document, toneCurveCache: toneCurveCache,
             includePostRenderWhiteBalance: includePostRenderWhiteBalance
         )
-        guard let completed = materializedImage(prefix, space: space) else { return nil }
+        guard let completed = materializedImage(
+            prefix, space: space,
+            maxWorkingSetBytes: resources.configuration.processingPrefixMaxCostBytes
+        ) else { return nil }
         processingPrefixMaterializationCount += 1
         processingPrefixCache.insert(completed.image, for: key, cost: completed.costBytes)
         return completed.image
@@ -961,7 +1010,12 @@ actor RenderEngine: RenderEngining {
             )
             let result = session.output(
                 rawDevelop: rawDevelop, scale: scale,
-                materialize: { [self] image in materializedImage(image, space: space)?.image }
+                materialize: { [self] image in
+                    materializedImage(
+                        image, space: space,
+                        maxWorkingSetBytes: resources.configuration.developedSourceMaxCostBytes
+                    )?.image
+                }
             )
             rawPropertyWriteCount += result.propertyWrites
             if result.requestedOutput { rawOutputRequestCount += 1 }
@@ -997,9 +1051,19 @@ actor RenderEngine: RenderEngining {
 
         // RAW output is mutable-filter-backed. Complete it before putting it in the settled cache,
         // otherwise a later render can ask Core Image to evaluate the same decoder graph again.
-        if source.kind == .raw, let completed = materializedImage(image, space: space) {
-            developedSourceCache.insert(completed.image, for: key, cost: completed.costBytes)
-            return completed.image
+        if source.kind == .raw {
+            if let completed = materializedImage(
+                image, space: space,
+                maxWorkingSetBytes: resources.configuration.developedSourceMaxCostBytes
+            ) {
+                developedSourceCache.insert(completed.image, for: key, cost: completed.costBytes)
+                return completed.image
+            }
+            // A lazy RAW output is backed by a decoder graph whose full working set is unknown to
+            // this cache. If the completed half-float form did not fit, keep this request-local
+            // output out of the settled cache rather than admitting it with an optimistic RGBA8
+            // estimate.
+            return image
         }
 
         let extent = image.extent.integral

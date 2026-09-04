@@ -9,6 +9,7 @@ import Metal
 /// sent out of the engine actor; its non-Sendable members therefore stay behind the same isolation
 /// boundary as before.
 final class RenderEngineResources {
+    let configuration: RenderCacheConfiguration
     let context: CIContext
     let device: MTLDevice?
     let commandQueue: MTLCommandQueue?
@@ -21,6 +22,7 @@ final class RenderEngineResources {
     let processingPrefixCache: BoundedLRUCache<ProcessingPrefixCacheKey, CIImage>
 
     init(configuration: RenderCacheConfiguration) {
+        self.configuration = configuration
         if let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() {
             self.device = device
             self.commandQueue = queue
@@ -45,6 +47,7 @@ final class RenderEngineResources {
     }
 
     init(context: CIContext, configuration: RenderCacheConfiguration) {
+        self.configuration = configuration
         self.context = context
         // An injected context may target a device unknown to the caller. Keep the deterministic
         // graph seam and do not guess a mismatched queue/device pair.

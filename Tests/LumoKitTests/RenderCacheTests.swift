@@ -231,6 +231,77 @@ final class RenderCacheTests: TempDirectoryTestCase {
         XCTAssertGreaterThanOrEqual(stats.processingPrefix.evictions, 1)
     }
 
+    /// A 3,000×2,000 RGBA-half prefix is 48 MB on the CPU and another 48 MB when consumed as a
+    /// Metal texture. With a 64 MB working-set budget it must stay fused; rendering it repeatedly
+    /// must not allocate and then reject the same intermediate on every downstream edit.
+    func testAboveBudgetStandardPrefixStaysFusedWithoutMaterializationStorm() async throws {
+        let url = try Fixtures.writeGradientPNG(
+            width: 3_000, height: 2_000, named: "uncacheable-standard.png", in: tempDirectory
+        )
+        let source = ImageSource(url: url, nativeExtent: CGSize(width: 3_000, height: 2_000))
+        let engine = RenderEngine(configuration: RenderCacheConfiguration(
+            previewMaxEntries: 12, previewMaxCostBytes: 10_000_000,
+            developedSourceMaxEntries: 2, developedSourceMaxCostBytes: 256 * 1024 * 1024,
+            processingPrefixMaxEntries: 1, processingPrefixMaxCostBytes: 64 * 1024 * 1024
+        ))
+        let request = { (grain: Double) in
+            RenderRequest(
+                source: source,
+                document: EditDocument(
+                    light: LightAdjustments(exposure: 0.25),
+                    effects: EffectsAdjustments(grain: GrainAdjustments(amount: grain))
+                ),
+                targetSize: CGSize(width: 3_000, height: 2_000), quality: .preview
+            )
+        }
+
+        let first = await engine.makeCGImage(request(10))
+        let second = await engine.makeCGImage(request(40))
+        let third = await engine.makeCGImage(request(80))
+        XCTAssertNotNil(first)
+        XCTAssertNotNil(second)
+        XCTAssertNotNil(third)
+
+        let stats = await engine.cacheStatistics()
+        let work = await engine.workStatistics()
+        XCTAssertEqual(stats.processingPrefix.count, 0)
+        XCTAssertEqual(work.processingPrefixMaterializations, 0)
+        XCTAssertEqual(work.materializationBudgetSkips, 3)
+    }
+
+    /// The RAW session has the same no-retain fallback. This is opt-in because Core Image needs a
+    /// licensed camera file, but when one is available every edit must avoid the rejected half-float
+    /// allocation while still returning a renderable frame.
+    func testAboveBudgetRAWSessionDoesNotMaterializeOnEveryEdit() async throws {
+        guard let rawURL = Fixtures.localRAWURL else {
+            throw XCTSkip("no local RAW to develop; see Fixtures.localRAWURL")
+        }
+        let source = ImageSource(url: rawURL, nativeExtent: CGSize(width: 6_000, height: 4_000))
+        let engine = RenderEngine(configuration: RenderCacheConfiguration(
+            previewMaxEntries: 12, previewMaxCostBytes: 10_000_000,
+            developedSourceMaxEntries: 2, developedSourceMaxCostBytes: 1_024 * 1_024,
+            processingPrefixMaxEntries: 1, processingPrefixMaxCostBytes: 1_024 * 1_024
+        ))
+        let request = { (exposure: Double) in
+            RenderRequest(
+                source: source,
+                document: EditDocument(rawDevelop: RAWDevelopSettings(exposure: exposure)),
+                targetSize: CGSize(width: 3_000, height: 2_000), quality: .interactive
+            )
+        }
+
+        let first = await engine.makeCGImage(request(0.0))
+        let second = await engine.makeCGImage(request(0.5))
+        let third = await engine.makeCGImage(request(1.0))
+        XCTAssertNotNil(first)
+        XCTAssertNotNil(second)
+        XCTAssertNotNil(third)
+
+        let work = await engine.workStatistics()
+        XCTAssertEqual(work.rawOutputRequests, 3)
+        XCTAssertEqual(work.materializationBudgetSkips, 3)
+    }
+
     func testCacheCostAccountingCannotOverflow() {
         let cache = BoundedLRUCache<Int, Int>(maxEntries: 2, maxCostBytes: Int.max)
         cache.insert(1, for: 1, cost: Int.max)
