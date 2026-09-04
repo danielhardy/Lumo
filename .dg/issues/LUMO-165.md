@@ -2,7 +2,7 @@
 id: LUMO-165
 title: "Audit: complete Look preview jobs on cancellation and eviction"
 type: bug
-status: backlog
+status: done
 priority: high
 creation_provenance:
   runner: codex
@@ -14,9 +14,20 @@ labels:
   - look
   - audit
 created: 2026-09-03T23:28:46.385Z
-updated: 2026-09-03T23:28:46.385Z
-order: zzzh
+updated: 2026-09-04T02:05:01.391Z
+order: n
 board: product
+verification_report:
+  verdict: pass
+  acceptance_criteria: []
+  checks_run: []
+  findings: []
+  fixes: []
+  verification_commits: []
+  actor: codex
+  resolved_model: gpt-5.6-luna
+  completed_at: 2026-09-04T02:05:01.386Z
+  session: 01MTMAWET3EBTEE3CA
 ---
 
 ## Objective
@@ -41,3 +52,20 @@ Ensure every admitted Look-preview job reaches a terminal result when cancelled,
 ## Agent log
 
 <!-- Generated summaries only. Detailed activity lives in events.jsonl. -->
+
+- 2026-09-04T02:05:01.389Z: Verification report
+Verdict: PASS
+Acceptance criteria:
+- None supplied
+Checks run:
+- None
+Findings:
+- None
+Fixes:
+- None
+Verification commits:
+- None
+Actor: codex
+Resolved model: gpt-5.6-luna
+Pickup session: 01MTMAWET3EBTEE3CA
+Summary: Look preview scheduler jobs now report one terminal outcome for completion, cancellation, eviction, and rejection; coordinator cancellation clears inFlight and permits retries.

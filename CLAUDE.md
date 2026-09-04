@@ -91,4 +91,5 @@ scripts/agent-worktree.sh remove "$DIR"   # clean up when done
 - Default branch `main`; commit messages end with the `Co-Authored-By: Claude …` trailer.
 - Build artifacts (`.build/`, ~hundreds of MB), `.DS_Store`, and `.claude/` are gitignored. `.claude/` is ignored, so **shared agent guidance belongs here in `CLAUDE.md`**, not under `.claude/`.
 - `docs/PHASE2_SPEC.md` is the implementation plan for the non-destructive render pipeline + RAW develop controls. It is a distillation — keep it that way; per-component transcripts belong in the PR that implements the step, not in the spec.
+- `docs/PHASE3_SPEC.md` is the implementation plan for the Photo Intelligence / shared mask foundation / subject-aware Auto subsystem, tracked as DG epic `LUMO-181` with child tickets `LUMO-182`–`LUMO-207`. Same distillation rule applies.
 - `docs/CODE_REVIEW.md` records the standing review findings: what was fixed, and what is still open.
